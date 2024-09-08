@@ -18,11 +18,7 @@ Develop, build, deploy, test, monitor, and manage multiple runtime applications 
 #### Installation
 
 ```bash
-npm run preinstall
-```
-
-```bash
-npm install
+npm run install-template
 ```
 
 #### Usage
