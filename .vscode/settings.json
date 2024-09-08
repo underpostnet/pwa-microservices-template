@@ -1,0 +1,101 @@
+{
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.formatOnSave": true,
+  "explorer.compactFolders": false,
+  "javascript.preferences.importModuleSpecifierEnding": "js",
+  "[javascript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.python"
+  },
+  "cSpell.words": [
+    "ANAME",
+    "browserconfig",
+    "certbot",
+    "certonly",
+    "changefreq",
+    "chebyshev",
+    "Contracultura",
+    "cooldown",
+    "cryptokoyn",
+    "cyberia",
+    "cyberiaonline",
+    "dbname",
+    "dists",
+    "DOGMADUAL",
+    "dondominio",
+    "dont",
+    "fileupload",
+    "fontawesome",
+    "fortawesome",
+    "googlebot",
+    "Hexa",
+    "htdocs",
+    "htmls",
+    "inlt",
+    "ipfs",
+    "jsonld",
+    "lampp",
+    "loadingio",
+    "Longname",
+    "Microdata",
+    "minami",
+    "MMORPG",
+    "mysqldump",
+    "neodrag",
+    "nexodev",
+    "pathfinding",
+    "Pixi",
+    "plantuml",
+    "privkey",
+    "runas",
+    "Scatterplot",
+    "sortablejs",
+    "supervisord",
+    "taffydb",
+    "tinymce",
+    "underpost",
+    "Unequip",
+    "webroot",
+    "xampp",
+    "xfwd",
+    "youtu"
+  ],
+  "[dockerfile]": {
+    "editor.defaultFormatter": "ms-azuretools.vscode-docker"
+  },
+  "[php]": {
+    "editor.defaultFormatter": "bmewburn.vscode-intelephense-client"
+  },
+  "[xml]": {
+    "editor.defaultFormatter": "redhat.vscode-xml"
+  },
+  "docwriter.style": "JSDoc",
+  "docwriter.progress.trackFunctions": false,
+  "docwriter.progress.trackMethods": false,
+  "files.exclude": {
+    "**/.git": true, // this is a default value
+    "**/.DS_Store": true, // this is a default value
+
+    "**/node_modules": true, // this excludes all folders
+    // named "node_modules" from
+    // the explore tree
+
+    // alternative version
+    "node_modules": true, // this excludes the folder
+    // only from the root of
+    // your workspace
+    "public": true,
+    "engine-private": true,
+    "conf": true,
+    "tmp": true,
+    "bkt": true,
+    "logs": true,
+    "build": true,
+    "coverage": true,
+    "prometheus_data": true,
+    "grafana_data": true,
+    ".nyc_output": true
+  }
+}

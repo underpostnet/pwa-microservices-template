@@ -1,0 +1,13 @@
+/node_modules
+/public
+/conf
+/tmp
+/bkt
+/logs
+/build
+/.env
+/coverage
+/prometheus_data
+/grafana_data
+.nyc_output
+.cache
