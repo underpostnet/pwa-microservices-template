@@ -10,6 +10,7 @@ Develop, build, deploy, test, monitor, and manage multiple runtime applications 
 
 <a href='https://pgp.mongodb.com/' target="_blank"><img alt='mongodb' src='https://img.shields.io/badge/mongodb_server >= v7.0-100000?style=flat&logo=mongodb&logoColor=white&labelColor=47A248&color=727273'/></a>
 
+<!-- Base template for pwa/api-rest project -->
 <!-- #### Optional version environments -->
 <!-- https://kapasia-dev-ed.my.site.com/Badges4Me/s/ -->
 <!-- https://simpleicons.org/ -->
@@ -17,15 +18,31 @@ Develop, build, deploy, test, monitor, and manage multiple runtime applications 
 #### Installation
 
 ```bash
+npm run preinstall
+```
+
+```bash
 npm install
 ```
 
 #### Usage
 
-Run dev
+Build client bundle
+
+```bash
+npm run build
+```
+
+Run dev client server
 
 ```bash
 npm run dev
+```
+
+Run dev api server
+
+```bash
+npm run dev-api
 ```
 
 Run on `pm2`
