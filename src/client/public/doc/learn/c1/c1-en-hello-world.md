@@ -1,8 +1,8 @@
 ### Chapter 1.0: Hello world
 
-**1.1.** Install node: *https://nodejs.org/download/release/v21.2.0/* win/linux
+**1.1.** Install node v21.2.0: *https://nodejs.org/download/release/v21.2.0/* win/linux
 
-**1.2.** Install mongodb server *https://pgp.mongodb.com/* server-7.0 pub(win) asc(linux)
+**1.2.** Install mongodb server v7.0: *https://pgp.mongodb.com/* server-7.0 pub(win) asc(linux)
 
 **1.3.** Install vscode *https://code.visualstudio.com/download* win/linux
 
