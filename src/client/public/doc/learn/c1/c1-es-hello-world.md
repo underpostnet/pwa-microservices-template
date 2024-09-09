@@ -4,7 +4,7 @@
 
 **1.2.** Instalar mongodb server v7.0: *https://pgp.mongodb.com/* server-7.0 pub(win) asc(linux)
 
-**1.3.** Instalar vscode *https://code.visualstudio.com/download* win/linux
+**1.3.** Instalar vscode: *https://code.visualstudio.com/download* win/linux
 
 **1.4** En su terminal de preferencia:
 
