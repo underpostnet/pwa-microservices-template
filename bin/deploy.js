@@ -370,8 +370,8 @@ try {
             if (argHost && argPath && (!argHost.includes(host) || !argPath.includes(path))) {
               delete serverConf[host][path];
             } else {
-              serverConf[host][path].lightBuild = false;
-              serverConf[host][path].minifyBuild = true;
+              serverConf[host][path].lightBuild = process.argv.includes('l') ? true : false;
+              serverConf[host][path].minifyBuild = process.env.NODE_ENV === 'production' ? true : false;
             }
           }
         }
