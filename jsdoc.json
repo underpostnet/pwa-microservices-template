@@ -8,18 +8,25 @@
     "includePattern": ".js$",
     "excludePattern": "(node_modules/|docs)"
   },
-  "plugins": ["plugins/markdown"],
-  "templates": {
-    "cleverLinks": false,
-    "monospaceLinks": true,
-    "useLongnameInNav": false,
-    "showInheritedInNav": true
-  },
+  "plugins": ["plugins/markdown", "plugins/summarize", "plugins/shout"],
   "opts": {
-    "destination": "./src/client/public/doc/",
-    "encoding": "utf8",
-    "private": true,
+    "template": "node_modules/clean-jsdoc-theme",
+    "readme": "./README.md",
     "recurse": true,
-    "template": "node_modules/minami"
+    "destination": "./public/default.net/docs/",
+    "encoding": "utf8",
+    "verbose": true,
+    "theme_opts": {
+      "default_theme": "fallback-light",
+      "search": true,
+      "title": "Home",
+      "homepageTitle": "Docs",
+      "favicon": "./public/default.net/"
+    },
+    "tutorials": "./public/default.net/docs/learn"
+  },
+  "markdown": {
+    "hardwrap": false,
+    "idInHeadings": true
   }
 }
