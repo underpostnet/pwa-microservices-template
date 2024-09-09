@@ -116,7 +116,6 @@
     "mocha": "^10.4.0",
     "plantuml": "^0.0.2",
     "swagger-autogen": "^2.23.7",
-    "taffydb": "^2.7.3",
     "to-json-schema": "^0.2.5"
   }
 }
