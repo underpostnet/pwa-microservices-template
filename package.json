@@ -18,7 +18,7 @@
     "install-global": "npm install -g pm2 && npm install -g jsdoc && npm install -g prettier && npm install -g env-cmd",
     "install-test": "npm install -g mocha && npm install -g c8 && npm install -g nyc && npm install -g coveralls",
     "install-vs-extensions": "node bin/vs install-extensions",
-    "preinstall": "npm config set audit false && npm config set loglevel silent",
+    "preinstall": "npm config set audit false && npm config set loglevel error",
     "restore-preinstall": "npm config set audit true && npm config set loglevel notice",
     "install": "npm run install-global && npm run install-test --no-audit --no-warnings",
     "docker:start": "docker-compose up",
