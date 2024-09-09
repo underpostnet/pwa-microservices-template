@@ -13,6 +13,7 @@
     "dev": "env-cmd -f .env.development node src/client.dev --no-warnings",
     "dev-api": "env-cmd -f .env.development nodemon --watch src --ignore src/client src/api",
     "docs": "jsdoc -c jsdoc.json",
+    "backup": "node bin/db default.net/ export",
     "install-template": "npm run preinstall && npm install && npm run build",
     "install-global": "npm install -g pm2 && npm install -g jsdoc && npm install -g prettier && npm install -g env-cmd",
     "install-test": "npm install -g mocha && npm install -g c8 && npm install -g nyc && npm install -g coveralls",
