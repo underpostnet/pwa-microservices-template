@@ -24,14 +24,18 @@
     "docker:start": "docker-compose up",
     "prettier": "prettier --write .",
     "coveralls": "nyc npm run test --reporter=text-lcov | coveralls -v",
-    "test": "env-cmd -f .env.test c8 mocha"
+    "test": "env-cmd -f .env.test c8 mocha",
+    "update": "npm update -g && npm update && npm audit fix --force && npm audit fix --force"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/underpostnet/engine.git"
+    "url": "git+https://github.com/underpostnet/pwa-microservices-template.git"
   },
   "keywords": [
-    "engine",
+    "pwa",
+    "template",
+    "microservices",
+    "api",
     "server",
     "proxy",
     "client"
@@ -39,9 +43,9 @@
   "author": "https://github.com/underpostnet",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/underpostnet/engine/issues"
+    "url": "https://github.com/underpostnet/pwa-microservices-template/issues"
   },
-  "homepage": "https://github.com/underpostnet/engine#readme",
+  "homepage": "https://github.com/underpostnet/pwa-microservices-template#readme",
   "dependencies": {
     "@fortawesome/fontawesome-free": "^6.4.2",
     "@loadingio/css-spinner": "^2.0.2",
@@ -61,6 +65,7 @@
     "deepmerge": "^4.3.1",
     "detect-port": "^1.5.1",
     "dotenv": "^16.3.1",
+    "easymde": "^2.18.0",
     "env-cmd": "^10.1.0",
     "eventemitter3": "^5.0.1",
     "express": "^4.18.2",
@@ -101,7 +106,6 @@
     "swagger-ui-express": "^5.0.0",
     "systeminformation": "^5.21.17",
     "text-to-image": "^5.2.0",
-    "tinymce": "6.1.0",
     "uglify-js": "^3.17.4",
     "validator": "^13.11.0",
     "winston": "^3.11.0"
