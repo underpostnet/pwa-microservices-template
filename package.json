@@ -20,7 +20,7 @@
     "install-vs-extensions": "node bin/vs install-extensions",
     "preinstall": "npm config set audit false && npm config set loglevel error",
     "restore-preinstall": "npm config set audit true && npm config set loglevel notice",
-    "install": "npm run install-global && npm run install-test --no-audit --no-warnings",
+    "install": "npm run install-global && npm run install-test && npm run restore-preinstall --no-audit --no-warnings",
     "docker:start": "docker-compose up",
     "prettier": "prettier --write .",
     "coveralls": "nyc npm run test --reporter=text-lcov | coveralls -v",
