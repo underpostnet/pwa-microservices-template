@@ -17,7 +17,7 @@
     "install-template": "npm run preinstall && npm install && npm run build && npm run install-vs-extensions",
     "install-global": "npm install -g pm2 && npm install -g jsdoc && npm install -g prettier && npm install -g env-cmd",
     "install-test": "npm install -g mocha && npm install -g c8 && npm install -g nyc && npm install -g coveralls",
-    "install-vs-extensions": "node bin/vs install-extensions",
+    "install-vs-extensions": "node bin/vs import",
     "preinstall": "npm config set audit false && npm config set loglevel error",
     "restore-preinstall": "npm config set audit true && npm config set loglevel notice",
     "install": "npm run install-global && npm run install-test && npm run restore-preinstall --no-audit --no-warnings",
