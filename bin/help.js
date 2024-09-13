@@ -13,6 +13,10 @@ const logger = loggerFactory(import.meta);
 // ssl: `npm run ssl <os> <deploy-id> <host>`
 // clean empty folder: `node bin/util delete-empty-folder`
 // sync env port: `node bin/deploy sync-env-port <deployId>`
+// node bin/vs import
+// node bin/vs export
+// build macro replica: `node bin/deploy build-macro-replica dd`
+// node bin/deploy update-version 2.5.2
 
 const data = {
   help: `

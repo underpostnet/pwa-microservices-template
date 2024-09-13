@@ -222,7 +222,7 @@ const DefaultConf = {
       },
     },
   },
-  dns: {
+  cron: {
     ipDaemon: {
       ip: null,
       minutesTimeInterval: 3,

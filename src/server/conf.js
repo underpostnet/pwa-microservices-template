@@ -1,12 +1,13 @@
 import fs from 'fs-extra';
 import dotenv from 'dotenv';
-import { cap, newInstance, range, timer } from '../client/components/core/CommonJs.js';
+import { cap, capFirst, newInstance, range, timer } from '../client/components/core/CommonJs.js';
 import * as dir from 'path';
 import cliProgress from 'cli-progress';
 import cliSpinners from 'cli-spinners';
 import logUpdate from 'log-update';
 import colors from 'colors';
 import { loggerFactory } from './logger.js';
+import { shellExec } from './process.js';
 import { DefaultConf } from '../../conf.js';
 
 colors.enable();
@@ -150,7 +151,7 @@ const cloneConf = async (
   );
   fs.writeFileSync(`${confToFolder}/.env.test`, fs.readFileSync(`${confFromFolder}/.env.test`, 'utf8'), 'utf8');
 
-  for (const confTypeId of ['server', 'client', 'dns', 'ssr']) {
+  for (const confTypeId of ['server', 'client', 'cron', 'ssr']) {
     const confFromData = JSON.parse(fs.readFileSync(`${confFromFolder}/conf.${confTypeId}.json`, 'utf8'));
     fs.writeFileSync(`${confToFolder}/conf.${confTypeId}.json`, formattedSrc(confFromData), 'utf8');
   }
@@ -489,6 +490,105 @@ const cliSpinner = async (time = 5000, message0, message1, color, type = 'dots')
   }
 };
 
+const getDataDeploy = (options = { buildSingleReplica: false, deployGroupId: '' }) => {
+  let dataDeploy = JSON.parse(
+    fs.readFileSync(
+      `./engine-private/deploy/${options?.deployGroupId ? options.deployGroupId : process.argv[3]}.json`,
+      'utf8',
+    ),
+  ).map((deployId) => {
+    return {
+      deployId,
+    };
+  });
+
+  if (options && options.buildSingleReplica && fs.existsSync(`./engine-private/replica`))
+    fs.removeSync(`./engine-private/replica`);
+
+  let buildDataDeploy = [];
+  for (const deployObj of dataDeploy) {
+    const serverConf = loadReplicas(
+      JSON.parse(fs.readFileSync(`./engine-private/conf/${deployObj.deployId}/conf.server.json`, 'utf8')),
+    );
+    let replicaDataDeploy = [];
+    for (const host of Object.keys(serverConf))
+      for (const path of Object.keys(serverConf[host])) {
+        if (serverConf[host][path].replicas && serverConf[host][path].singleReplica) {
+          if (options && options.buildSingleReplica)
+            shellExec(`node bin/deploy build-single-replica ${deployObj.deployId} ${host} ${path}`);
+          replicaDataDeploy = replicaDataDeploy.concat(
+            serverConf[host][path].replicas.map((r) => {
+              return {
+                deployId: `${deployObj.deployId}-${r.slice(1)}`,
+                replicaHost: host,
+              };
+            }),
+          );
+        }
+      }
+    buildDataDeploy.push(deployObj);
+    if (replicaDataDeploy.length > 0) buildDataDeploy = buildDataDeploy.concat(replicaDataDeploy);
+  }
+
+  logger.info('buildDataDeploy', buildDataDeploy);
+  return buildDataDeploy;
+};
+
+const validateTemplatePath = (absolutePath = '') => {
+  const host = 'default.net';
+  const path = '/';
+  const client = 'default';
+  const ssr = 'Default';
+  const confServer = DefaultConf.server[host][path];
+  const confClient = DefaultConf.client[client];
+  const confSsr = DefaultConf.ssr[ssr];
+  const clients = Object.keys(confClient).concat(['core', 'test']);
+
+  if (absolutePath.match('src/api') && !confServer.apis.find((p) => absolutePath.match(`src/api/${p}/`))) {
+    return false;
+  }
+  if (
+    absolutePath.match('src/client/services/') &&
+    !clients.find((p) => absolutePath.match(`src/client/services/${p}/`))
+  ) {
+    return false;
+  }
+  if (absolutePath.match('src/client/public/') && !clients.find((p) => absolutePath.match(`src/client/public/${p}/`))) {
+    return false;
+  }
+  if (
+    absolutePath.match('src/client/components/') &&
+    !clients.find((p) => absolutePath.match(`src/client/components/${p}/`))
+  ) {
+    return false;
+  }
+  if (absolutePath.match('src/client/sw/') && !clients.find((p) => absolutePath.match(`src/client/sw/${p}.sw.js`))) {
+    return false;
+  }
+  if (
+    absolutePath.match('src/client/ssr/body-components') &&
+    !confSsr.body.find((p) => absolutePath.match(`src/client/ssr/body-components/${p}.js`))
+  ) {
+    return false;
+  }
+  if (
+    absolutePath.match('src/client/ssr/head-components') &&
+    !confSsr.head.find((p) => absolutePath.match(`src/client/ssr/head-components/${p}.js`))
+  ) {
+    return false;
+  }
+  if (
+    absolutePath.match('.index.js') &&
+    !clients.find((p) => absolutePath.match(`src/client/${capFirst(p)}.index.js`))
+  ) {
+    return false;
+  }
+  if (absolutePath.match('src/ws/') && !clients.find((p) => absolutePath.match(`src/ws/${p}/`))) {
+    return false;
+  }
+  return true;
+};
+
 export {
   Config,
   loadConf,
@@ -505,4 +605,6 @@ export {
   buildProxyRouter,
   cliBar,
   cliSpinner,
+  getDataDeploy,
+  validateTemplatePath,
 };

@@ -296,12 +296,12 @@ const Modal = {
                 </div>
               </div>`,
             );
-            s(`.action-btn-profile-log-in`).onclick = () => {
+            EventsUI.onClick(`.action-btn-profile-log-in`, () => {
               s(`.main-btn-account`).click();
-            };
-            s(`.action-btn-profile-log-out`).onclick = () => {
+            });
+            EventsUI.onClick(`.action-btn-profile-log-out`, () => {
               s(`.main-btn-sign-up`).click();
-            };
+            });
             s(`.input-info-${inputSearchBoxId}`).style.textAlign = 'left';
             htmls(`.input-info-${inputSearchBoxId}`, '');
             const inputInfoNode = s(`.input-info-${inputSearchBoxId}`).cloneNode(true);
@@ -595,10 +595,10 @@ const Modal = {
                   Modal.removeModal(searchBoxHistoryId);
                 }
               };
-              s(`.top-bar-search-box-container`).onclick = () => {
+              EventsUI.onClick(`.top-bar-search-box-container`, () => {
                 searchBoxHistoryOpen();
                 searchBoxCallBack(formDataInfoNode[0]);
-              };
+              });
 
               const timePressDelay = 100;
               Keyboard.instanceMultiPressKey({
@@ -880,22 +880,20 @@ const Modal = {
                   };
                   Responsive.Event[`view-${id}`]();
                 }
-                s(`.action-btn-left`).onclick = (e) => {
+                EventsUI.onClick(`.action-btn-left`, (e) => {
                   e.preventDefault();
                   window.history.back();
-                };
-                s(`.action-btn-center`).onclick = (e) => {
+                });
+                EventsUI.onClick(`.action-btn-center`, (e) => {
                   e.preventDefault();
-                  // if (!s(`.btn-close-modal-menu`).classList.contains('hide')) return s(`.main-btn-home`).click();
-                  if (!s(`.btn-close-modal-menu`).classList.contains('hide')) return s(`.btn-close-modal-menu`).click();
-                  if (!s(`.btn-menu-modal-menu`).classList.contains('hide')) return s(`.btn-menu-modal-menu`).click();
-                };
-                s(`.action-btn-right`).onclick = (e) => {
+                  this.actionBtnCenter();
+                });
+                EventsUI.onClick(`.action-btn-right`, (e) => {
                   e.preventDefault();
                   window.history.forward();
-                };
-                s(`.action-btn-home`).onclick = () => s(`.main-btn-home`).click();
-                s(`.action-btn-app-icon`).onclick = () => s(`.action-btn-home`).click();
+                });
+                EventsUI.onClick(`.action-btn-home`, () => s(`.main-btn-home`).click());
+                EventsUI.onClick(`.action-btn-app-icon`, () => s(`.action-btn-home`).click());
                 Keyboard.instanceMultiPressKey({
                   id: 'input-shortcut-global-escape',
                   keys: ['Escape'],
@@ -1179,7 +1177,7 @@ const Modal = {
           }
           s(`.btn-close-modal-menu`).click();
         };
-        s(`.btn-icon-menu-mode`).onclick = () => {
+        EventsUI.onClick(`.btn-icon-menu-mode`, () => {
           if (s(`.btn-icon-menu-mode-right`).classList.contains('hide')) {
             s(`.btn-icon-menu-mode-right`).classList.remove('hide');
             s(`.btn-icon-menu-mode-left`).classList.add('hide');
@@ -1196,9 +1194,6 @@ const Modal = {
                 sa(`.tooltip-menu`).forEach((el) => el.classList.remove('hide'));
                 s(`.${idModal}`).style.overflow = 'visible';
               }
-
-              s(`.action-btn-center`).click();
-              s(`.action-btn-center`).click();
             }
             if (options.onCollapseMenu) options.onCollapseMenu();
           } else {
@@ -1210,12 +1205,12 @@ const Modal = {
               s(`.${idModal}`).style.overflow = null;
             }
 
-            s(`.action-btn-center`).click();
-            s(`.action-btn-center`).click();
             if (options.onExtendMenu) options.onExtendMenu();
           }
           // btn-bar-center-icon-menu
-        };
+          this.actionBtnCenter();
+          this.actionBtnCenter();
+        });
 
         break;
 
@@ -1544,6 +1539,11 @@ const Modal = {
     });
   },
   headerTitleHeight: 40,
+  actionBtnCenter: function () {
+    // if (!s(`.btn-close-modal-menu`).classList.contains('hide')) return s(`.main-btn-home`).click();
+    if (!s(`.btn-close-modal-menu`).classList.contains('hide')) return s(`.btn-close-modal-menu`).click();
+    if (!s(`.btn-menu-modal-menu`).classList.contains('hide')) return s(`.btn-menu-modal-menu`).click();
+  },
 };
 
 const renderMenuLabel = ({ img, text, icon }) => {

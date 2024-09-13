@@ -20,6 +20,7 @@ import {
   buildWsSrc,
   cloneSrcComponents,
   cliSpinner,
+  getDataDeploy,
 } from '../src/server/conf.js';
 import { buildClient } from '../src/server/client-build.js';
 import { range, setPad, timer } from '../src/client/components/core/CommonJs.js';
@@ -136,47 +137,6 @@ const deployRun = async (dataDeploy, reset) => {
   }
 };
 
-const getDataDeploy = (options = { buildSingleReplica: false }) => {
-  let dataDeploy = JSON.parse(fs.readFileSync(`./engine-private/deploy/${process.argv[3]}.json`, 'utf8')).map(
-    (deployId) => {
-      return {
-        deployId,
-      };
-    },
-  );
-
-  if (options && options.buildSingleReplica && fs.existsSync(`./engine-private/replica`))
-    fs.removeSync(`./engine-private/replica`);
-
-  let buildDataDeploy = [];
-  for (const deployObj of dataDeploy) {
-    const serverConf = loadReplicas(
-      JSON.parse(fs.readFileSync(`./engine-private/conf/${deployObj.deployId}/conf.server.json`, 'utf8')),
-    );
-    let replicaDataDeploy = [];
-    for (const host of Object.keys(serverConf))
-      for (const path of Object.keys(serverConf[host])) {
-        if (serverConf[host][path].replicas && serverConf[host][path].singleReplica) {
-          if (options && options.buildSingleReplica)
-            shellExec(`node bin/deploy build-single-replica ${deployObj.deployId} ${host} ${path}`);
-          replicaDataDeploy = replicaDataDeploy.concat(
-            serverConf[host][path].replicas.map((r) => {
-              return {
-                deployId: `${deployObj.deployId}-${r.slice(1)}`,
-                replicaHost: host,
-              };
-            }),
-          );
-        }
-      }
-    buildDataDeploy.push(deployObj);
-    if (replicaDataDeploy.length > 0) buildDataDeploy = buildDataDeploy.concat(replicaDataDeploy);
-  }
-
-  logger.info('buildDataDeploy', buildDataDeploy);
-  return buildDataDeploy;
-};
-
 const updateSrc = () => {
   const silent = true;
   shellExec(`git pull origin master`, { silent });
@@ -281,6 +241,11 @@ try {
         buildWsSrc({ toOptions, fromOptions });
       }
       break;
+    case 'conf': {
+      loadConf(process.argv[3]);
+      if (process.argv[4]) fs.writeFileSync(`.env`, fs.readFileSync(`.env.${process.argv[4]}`, 'utf8'), 'utf8');
+      break;
+    }
     case 'run':
       {
         loadConf(process.argv[3]);
@@ -356,6 +321,8 @@ try {
       {
         const { deployId, folder } = loadConf(process.argv[3]);
 
+        await logger.setUpInfo();
+
         let argHost = process.argv[4] ? process.argv[4].split(',') : undefined;
         let argPath = process.argv[5] ? process.argv[5].split(',') : undefined;
         const serverConf = deployId
@@ -408,7 +375,10 @@ try {
         updateSrc();
         const dataDeploy = getDataDeploy({ buildSingleReplica: true });
         shellExec(`node bin/deploy sync-env-port ${process.argv[3]}`);
-        for (const deploy of dataDeploy) shellExec(Cmd.clientBuild(deploy), { silent: true });
+        for (const deploy of dataDeploy) {
+          shellExec(`node bin/deploy conf ${deploy.deployId} production`);
+          shellExec(Cmd.clientBuild(deploy), { silent: true });
+        }
         await deployRun(dataDeploy, true);
       }
       break;
@@ -446,7 +416,7 @@ try {
       for (const deployIdObj of dataDeploy) {
         const { deployId, replicaHost } = deployIdObj;
         if (replicaHost && !singleReplicaHosts.includes(replicaHost)) singleReplicaHosts.push(replicaHost);
-        const proxyInstance = deployId.match('proxy') || deployId.match('dns');
+        const proxyInstance = deployId.match('proxy') || deployId.match('cron');
         const baseConfPath = fs.existsSync(`./engine-private/replica/${deployId}`)
           ? `./engine-private/replica`
           : `./engine-private/conf`;
@@ -487,7 +457,7 @@ try {
               client: '',
               ssr: '',
               server: '',
-              dns: '',
+              cron: '',
             };
 
         if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
@@ -568,6 +538,59 @@ try {
     case 'build-macro-replica':
       getDataDeploy({ buildSingleReplica: true });
       shellExec(`node bin/deploy sync-env-port ${process.argv[3]}`);
+      break;
+    case 'update-version':
+      {
+        const newVersion = process.argv[3];
+        const originPackageJson = JSON.parse(fs.readFileSync(`package.json`, 'utf8'));
+        const { version } = originPackageJson;
+        originPackageJson.version = newVersion;
+        fs.writeFileSync(`package.json`, JSON.stringify(originPackageJson, null, 4), 'utf8');
+
+        {
+          const files = await fs.readdir(`./engine-private/conf`, { recursive: true });
+          for (const relativePath of files) {
+            const filePah = `./engine-private/conf/${relativePath.replaceAll(`\\`, '/')}`;
+            if (filePah.split('/').pop() === 'package.json') {
+              const originPackage = JSON.parse(fs.readFileSync(filePah, 'utf8'));
+              originPackage.version = newVersion;
+              fs.writeFileSync(filePah, JSON.stringify(originPackage, null, 4), 'utf8');
+            }
+          }
+        }
+
+        fs.writeFileSync(
+          `./docker-compose.yml`,
+          fs
+            .readFileSync(`./docker-compose.yml`, 'utf8')
+            .replaceAll(`engine.version: '${version}'`, `engine.version: '${newVersion}'`),
+          'utf8',
+        );
+
+        fs.writeFileSync(
+          `./.github/workflows/docker-image.yml`,
+          fs
+            .readFileSync(`./.github/workflows/docker-image.yml`, 'utf8')
+            .replaceAll(`underpost-engine:v${version}`, `underpost-engine:v${newVersion}`),
+          'utf8',
+        );
+
+        fs.writeFileSync(
+          `./src/client/components/core/Docs.js`,
+          fs
+            .readFileSync(`./src/client/components/core/Docs.js`, 'utf8')
+            .replaceAll(`/engine/${version}`, `/engine/${newVersion}`),
+          'utf8',
+        );
+
+        fs.writeFileSync(
+          `./src/client/ssr/body-components/CacheControl.js`,
+          fs
+            .readFileSync(`./src/client/ssr/body-components/CacheControl.js`, 'utf8')
+            .replaceAll(`v${version}`, `v${newVersion}`),
+          'utf8',
+        );
+      }
       break;
     default:
       break;

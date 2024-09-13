@@ -13,17 +13,17 @@
     "template": "node_modules/clean-jsdoc-theme",
     "readme": "./README.md",
     "recurse": true,
-    "destination": "./public/default.net/docs/",
+    "destination": "./public/www.nexodev.org/docs/",
     "encoding": "utf8",
     "verbose": true,
     "theme_opts": {
       "default_theme": "light",
       "search": true,
-      "title": "Home",
+      "title": "Nexodev - ERP, CRM Development & Cloud DevOps Services",
       "homepageTitle": "Docs",
-      "favicon": "./public/default.net/"
+      "favicon": "./public/www.nexodev.org/"
     },
-    "tutorials": "./public/default.net/docs/learn"
+    "tutorials": "./public/www.nexodev.org/docs/learn"
   },
   "markdown": {
     "hardwrap": false,
