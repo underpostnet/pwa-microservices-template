@@ -38,13 +38,11 @@ Develop, build, deploy, test, monitor, and manage multiple runtime applications 
 <!-- https://kapasia-dev-ed.my.site.com/Badges4Me/s/ -->
 <!-- https://simpleicons.org/ -->
 
-````
-
 #### Create a New project
 
 ```bash
 git clone https://github.com/underpostnet/pwa-microservices-template
-````
+```
 
 ```bash
 cd pwa-microservices-template
