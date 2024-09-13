@@ -28,7 +28,7 @@
     "update": "npm update -g && npm update && npm audit fix --force && npm audit fix --force",
     "publish": "npm publish --access public",
     "login": "npm adduser",
-    "bin": "npm link"
+    "bin": "npm link --force"
   },
   "bin": {
     "underpost": "bin/index.js"
