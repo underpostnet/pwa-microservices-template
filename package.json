@@ -2,8 +2,8 @@
   "type": "module",
   "main": "src/server.js",
   "name": "underpost-pwa-api-rest-template",
-  "version": "0.0.1",
-  "description": "underpost pwa api rest template",
+  "version": "2.5.2",
+  "description": "pwa api rest template",
   "scripts": {
     "start": "env-cmd -f .env.production node --max-old-space-size=8192 src/server",
     "pm2": "env-cmd -f .env.production pm2 start src/server.js --node-args=\"--max-old-space-size=8192\" --name engine && pm2 logs",
