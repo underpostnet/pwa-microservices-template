@@ -29,6 +29,9 @@
     "publish": "npm publish --access public",
     "login": "npm adduser"
   },
+  "bin": {
+    "underpost": "bin/index.js"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/underpostnet/pwa-microservices-template.git"
