@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://underpost.net/assets/splash/android-chrome-256x256.png" alt="underpost engine core server"/>
+  <img src="https://underpost.net/assets/splash/apple-touch-icon-precomposed.png" alt="underpost engine core server"/>
 </p>
 
 <div align="center">
@@ -26,9 +26,9 @@ template
 
 </div>
 
-#### Base template for pwa/api-rest projects.
-
 <div align="center">
+
+#### Base template for pwa/api-rest projects.
 
 Develop, build, deploy, test, monitor, and manage multiple runtime applications on virtual machines or container instances.
 
