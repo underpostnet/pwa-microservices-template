@@ -38,22 +38,14 @@ Develop, build, deploy, test, monitor, and manage multiple runtime applications 
 <!-- https://kapasia-dev-ed.my.site.com/Badges4Me/s/ -->
 <!-- https://simpleicons.org/ -->
 
-#### Create a New project
+#### Create a new project
 
 ```bash
-git clone https://github.com/underpostnet/pwa-microservices-template
+npm install -g underpost
 ```
 
 ```bash
-cd pwa-microservices-template
+underpost new my-project-name
 ```
 
-```bash
-npm run install-template
-```
-
-```bash
-npm run dev
-```
-
-The server will run on [http://localhost:4001](http://localhost:4001)
+After template installation, the server will be running on [http://localhost:4001](http://localhost:4001)
