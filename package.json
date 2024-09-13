@@ -25,7 +25,9 @@
     "prettier": "prettier --write .",
     "coveralls": "nyc npm run test --reporter=text-lcov | coveralls -v",
     "test": "env-cmd -f .env.test c8 mocha",
-    "update": "npm update -g && npm update && npm audit fix --force && npm audit fix --force"
+    "update": "npm update -g && npm update && npm audit fix --force && npm audit fix --force",
+    "publish": "npm publish --access public",
+    "login": "npm adduser"
   },
   "repository": {
     "type": "git",
