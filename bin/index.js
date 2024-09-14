@@ -11,16 +11,18 @@ const logger = loggerFactory(import.meta);
 
 await logger.setUpInfo();
 
-console.log(process.cwd());
-
 switch (process.argv[3]) {
   case 'new':
-    // const projectName = process.argv[4] || 'my-project';
-    // fs.mkdirSync(projectName, { recursive: true });
-    // fs.copySync(`./node_modules/underpost`, `./${projectName}`);
-    // shellCd(`${projectName}`);
-    // shellExec(`npm run install-template`);
-    // shellExec(`npm run dev`);
+    {
+      const projectName = process.argv[4] || 'my-project';
+      const globalBinFolder = shellExec(`npm root -g`, { stdout: true, silent: true });
+      const destFolder = `${process.cwd()}/${projectName}`;
+      fs.mkdirSync(destFolder, { recursive: true });
+      fs.copySync(`${globalBinFolder}/underpost`, destFolder);
+      shellCd(`${destFolder}`);
+      shellExec(`npm run install-template`);
+      shellExec(`npm run dev`);
+    }
     break;
   default:
     break;

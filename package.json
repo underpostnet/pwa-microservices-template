@@ -2,7 +2,7 @@
   "type": "module",
   "main": "src/server.js",
   "name": "underpost",
-  "version": "2.5.8",
+  "version": "2.6.0",
   "description": "pwa api rest template",
   "scripts": {
     "start": "env-cmd -f .env.production node --max-old-space-size=8192 src/server",
