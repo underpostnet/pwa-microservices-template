@@ -26,8 +26,8 @@
     "coveralls": "nyc npm run test --reporter=text-lcov | coveralls -v",
     "test": "env-cmd -f .env.test c8 mocha",
     "update": "npm update -g && npm update && npm audit fix --force && npm audit fix --force",
-    "publish-underpost": "npm publish --access public",
-    "unpublish-underpost": "npm unpublish underpost@2.5.x",
+    "underpost-publish": "npm publish --access public",
+    "underpost-unpublish": "npm unpublish underpost@2.5.x",
     "login": "npm adduser",
     "bin": "npm link --force"
   },
