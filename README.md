@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://underpost.net/assets/splash/apple-touch-icon-precomposed.png" alt="underpost engine core server"/>
+  <img src="https://underpost.net/assets/splash/apple-touch-icon-precomposed.png" alt="underpost.net"/>
 </p>
 
 <div align="center">
@@ -90,7 +90,7 @@ Run on `docker`
 
 ```bash
 # build image
-docker build . -t engine
+docker build . -t my-project-name
 # run image
-docker run --name engine-instance -p 41061:3001 -p 41062:3002 engine
+docker run --name my-project-name-instance -p 41061:3001 -p 41062:3002 my-project-name
 ```
