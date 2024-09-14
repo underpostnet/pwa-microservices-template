@@ -441,24 +441,44 @@ try {
         if (!proxyInstance) for (const host of Object.keys(serverConf)) port += Object.keys(serverConf[host]).length;
       }
       break;
+    case 'uml':
+      {
+        shellExec(`node bin/deploy fix-uml ${process.argv.slice(3).join(' ')}`);
+        shellExec(`node bin/deploy build-uml ${process.argv.slice(3).join(' ')}`);
+      }
+      break;
 
+    case 'fix-uml': {
+      // comment:
+      // '--add-opens=java.xml/com.sun.org.apache.xalan.internal.xsltc.trax="ALL-UNNAMED"'
+      // in plantuml.js src
+
+      // const deployId = process.argv[3];
+      // const clientId = process.argv[4];
+      // const folder = `./src/client/public/${clientId ? clientId : 'default'}/docs/plantuml`;
+      // const privateConfFolder = `./engine-private/conf/${deployId}`;
+      // const confData = !deployId
+      //   ? Config.default
+      //   : {
+      //       client: JSON.parse(fs.readFileSync(`${privateConfFolder}/conf.client.json`, 'utf8')),
+      //       ssr: JSON.parse(fs.readFileSync(`${privateConfFolder}/conf.ssr.json`, 'utf8')),
+      //       server: JSON.parse(fs.readFileSync(`${privateConfFolder}/conf.server.json`, 'utf8')),
+      //       cron: JSON.parse(fs.readFileSync(`${privateConfFolder}/conf.cron.json`, 'utf8')),
+      //     };
+
+      fs.writeFileSync(
+        `./node_modules/plantuml/lib/plantuml.js`,
+        fs
+          .readFileSync(`./node_modules/plantuml/lib/plantuml.js`, 'utf8')
+          .replace(`'--add-opens=java.xml/com.sun.org.apache.xalan.internal.xsltc.trax="ALL-UNNAMED"'`, `//`),
+      );
+    }
     case 'build-uml':
       {
-        // comment:
-        // '--add-opens=java.xml/com.sun.org.apache.xalan.internal.xsltc.trax="ALL-UNNAMED"'
-        // in plantuml.js src
-
-        const deployId = process.argv[3];
-        const clientId = process.argv[4];
-        const folder = `./src/client/public/${clientId ? clientId : 'default'}/plantuml`;
-        const confData = !deployId
-          ? Config.default
-          : {
-              client: '',
-              ssr: '',
-              server: '',
-              cron: '',
-            };
+        const host = process.argv[3];
+        const path = process.argv[4];
+        const folder = `./public/${host}${path}/docs/plantuml`;
+        const confData = Config.default;
 
         if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
 
@@ -469,7 +489,7 @@ try {
                 ${JSON.stringify(confData[typeConf])}
               @endjson
             `);
-            fs.writeFileSync(`${folder}/${typeConf}-conf-default.svg`, svg);
+            fs.writeFileSync(`${folder}/${typeConf}-conf.svg`, svg);
           }
           {
             const svg = await plantuml(`
@@ -477,7 +497,7 @@ try {
               ${JSON.stringify(toJsonSchema(confData[typeConf]))}
             @endjson
           `);
-            fs.writeFileSync(`${folder}/${typeConf}-schema-default.svg`, svg);
+            fs.writeFileSync(`${folder}/${typeConf}-schema.svg`, svg);
           }
         }
       }
@@ -547,7 +567,12 @@ try {
         originPackageJson.version = newVersion;
         fs.writeFileSync(`package.json`, JSON.stringify(originPackageJson, null, 4), 'utf8');
 
-        {
+        const originPackageLockJson = JSON.parse(fs.readFileSync(`package-lock.json`, 'utf8'));
+        originPackageLockJson.version = newVersion;
+        originPackageLockJson.packages[''].version = newVersion;
+        fs.writeFileSync(`package-lock.json`, JSON.stringify(originPackageLockJson, null, 4), 'utf8');
+
+        if (fs.existsSync(`./engine-private/conf`)) {
           const files = await fs.readdir(`./engine-private/conf`, { recursive: true });
           for (const relativePath of files) {
             const filePah = `./engine-private/conf/${relativePath.replaceAll(`\\`, '/')}`;
@@ -567,13 +592,14 @@ try {
           'utf8',
         );
 
-        fs.writeFileSync(
-          `./.github/workflows/docker-image.yml`,
-          fs
-            .readFileSync(`./.github/workflows/docker-image.yml`, 'utf8')
-            .replaceAll(`underpost-engine:v${version}`, `underpost-engine:v${newVersion}`),
-          'utf8',
-        );
+        if (fs.existsSync(`./.github/workflows/docker-image.yml`))
+          fs.writeFileSync(
+            `./.github/workflows/docker-image.yml`,
+            fs
+              .readFileSync(`./.github/workflows/docker-image.yml`, 'utf8')
+              .replaceAll(`underpost-engine:v${version}`, `underpost-engine:v${newVersion}`),
+            'utf8',
+          );
 
         fs.writeFileSync(
           `./src/client/components/core/Docs.js`,
