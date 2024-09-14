@@ -52,7 +52,9 @@ After template installation, the server will be running on [http://localhost:400
 
 #### Usage
 
+```bash
 `cd my-project-name`
+```
 
 Build client bundle
 
