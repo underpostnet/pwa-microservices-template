@@ -2,7 +2,7 @@
   "type": "module",
   "main": "src/server.js",
   "name": "underpost",
-  "version": "2.5.7",
+  "version": "2.5.8",
   "description": "pwa api rest template",
   "scripts": {
     "start": "env-cmd -f .env.production node --max-old-space-size=8192 src/server",
@@ -26,8 +26,8 @@
     "coveralls": "nyc npm run test --reporter=text-lcov | coveralls -v",
     "test": "env-cmd -f .env.test c8 mocha",
     "update": "npm update -g && npm update && npm audit fix --force && npm audit fix --force",
-    "publish": "npm publish --access public",
-    "unpublish": "npm unpublish underpost@2.5.x",
+    "publish-underpost": "npm publish --access public",
+    "unpublish-underpost": "npm unpublish underpost@2.5.x",
     "login": "npm adduser",
     "bin": "npm link --force"
   },
