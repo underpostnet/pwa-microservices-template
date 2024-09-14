@@ -11,11 +11,11 @@ const logger = loggerFactory(import.meta);
 
 await logger.setUpInfo();
 
-switch (process.argv[3]) {
+switch (process.argv[2]) {
   case 'new':
     {
-      const projectName = process.argv[4] || 'my-project';
-      const globalBinFolder = shellExec(`npm root -g`, { stdout: true, silent: true });
+      const projectName = process.argv[3] || 'my-project';
+      const globalBinFolder = shellExec(`npm root -g`, { stdout: true, silent: true }).trim();
       const destFolder = `${process.cwd()}/${projectName}`;
       fs.mkdirSync(destFolder, { recursive: true });
       fs.copySync(`${globalBinFolder}/underpost`, destFolder);
