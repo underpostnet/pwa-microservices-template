@@ -19,7 +19,7 @@ const globalBinFolder = `${shellExec(`npm root -g`, {
 
 const program = new Command();
 
-program.name('underpost').description('underpost.net ci/cd cli').version('2.6.3');
+program.name('underpost').description('underpost.net ci/cd cli').version('2.6.5');
 
 program
   .command('new <app-name>')
