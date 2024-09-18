@@ -1,15 +1,11 @@
 #! /usr/bin/env node
 
-import { loggerFactory } from '../src/server/logger.js';
 import dotenv from 'dotenv';
 import { shellCd, shellExec } from '../src/server/process.js';
 import fs from 'fs-extra';
 import { Command } from 'commander';
 
 dotenv.config();
-
-// const logger = loggerFactory(import.meta);
-// await logger.setUpInfo();
 
 const globalBinFolder = `${shellExec(`npm root -g`, {
   stdout: true,
@@ -19,13 +15,17 @@ const globalBinFolder = `${shellExec(`npm root -g`, {
 
 const program = new Command();
 
-program.name('underpost').description('underpost.net ci/cd cli').version('2.6.6');
+const version = '2.6.7';
+
+program.name('underpost').description(`underpost.net ci/cd cli ${version}`).version(version);
 
 program
   .command('new <app-name>')
   .description('Create a new project')
   .action((appName) => {
     const destFolder = `${process.cwd()}/${appName}`;
+    console.log('Note: This process may take several minutes to complete');
+    console.log('build app', { destFolder });
     fs.mkdirSync(destFolder, { recursive: true });
     fs.copySync(globalBinFolder, destFolder);
     shellCd(`${destFolder}`);
