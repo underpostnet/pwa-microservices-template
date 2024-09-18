@@ -45,7 +45,7 @@ npm install -g underpost
 ```
 
 ```bash
-underpost new my-project-name
+underpost new app-name
 ```
 
 After template installation, the server will be running on [http://localhost:4001](http://localhost:4001)
@@ -53,7 +53,7 @@ After template installation, the server will be running on [http://localhost:400
 #### Usage
 
 ```bash
-cd my-project-name
+cd app-name
 ```
 
 Build client bundle
@@ -90,7 +90,7 @@ Run on `docker`
 
 ```bash
 # build image
-docker build . -t my-project-name
+docker build . -t app-name
 # run image
-docker run --name my-project-name-instance -p 41061:3001 -p 41062:3002 my-project-name
+docker run --name app-name-instance -p 41061:3001 -p 41062:3002 app-name
 ```
