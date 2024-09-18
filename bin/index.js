@@ -19,7 +19,7 @@ const globalBinFolder = `${shellExec(`npm root -g`, {
 
 const program = new Command();
 
-program.name('underpost').description('underpost.net ci/cd cli').version('2.6.4');
+program.name('underpost').description('underpost.net ci/cd cli').version('2.6.3');
 
 program
   .command('new <app-name>')
@@ -34,9 +34,8 @@ program
   .command('test')
   .description('Run tests')
   .action(() => {
-    shellCd(`${destFolder}`);
-    shellExec(`npm run install-template`);
-    shellExec(`npm run dev`);
+    shellCd(`${globalBinFolder}`);
+    shellExec(`npm run test`);
   });
 
 program
