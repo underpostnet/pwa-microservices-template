@@ -19,7 +19,7 @@ const globalBinFolder = `${shellExec(`npm root -g`, {
 
 const program = new Command();
 
-program.name('underpost').description('underpost.net ci/cd cli').version('2.6.5');
+program.name('underpost').description('underpost.net ci/cd cli').version('2.6.6');
 
 program
   .command('new <app-name>')
@@ -28,6 +28,9 @@ program
     const destFolder = `${process.cwd()}/${appName}`;
     fs.mkdirSync(destFolder, { recursive: true });
     fs.copySync(globalBinFolder, destFolder);
+    shellCd(`${destFolder}`);
+    shellExec(`npm run install-template`);
+    shellExec(`npm run dev`);
   });
 
 program
