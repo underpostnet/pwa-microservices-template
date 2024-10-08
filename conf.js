@@ -32,7 +32,6 @@ const DefaultConf = {
           'Auth',
           'FullScreen',
           'RichText',
-          'Blog',
           'CalendarCore',
           'D3Chart',
           'Stream',
@@ -48,6 +47,9 @@ const DefaultConf = {
           'ToolTip',
           'Webhook',
           'Recover',
+          'Panel',
+          'PanelForm',
+          'Scroll',
         ],
         default: [
           'MenuDefault',

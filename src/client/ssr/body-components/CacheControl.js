@@ -64,7 +64,8 @@ const CacheControl = function ({ ttiLoadTimeLimit }) {
     }
   };
   setTimeout(() => {
-    document.querySelector('.clean-cache-container').onclick = window.cleanCache;
+    if (document.querySelector('.clean-cache-container'))
+      document.querySelector('.clean-cache-container').onclick = window.cleanCache;
   });
   setTimeout(window.cacheControlCallBack, ttiLoadTimeLimit); // 70s limit);
 };
@@ -108,6 +109,6 @@ SrrComponent = ({ ttiLoadTimeLimit }) => {
       const CacheControl = ${CacheControl};
       CacheControl({ ttiLoadTimeLimit: ${ttiLoadTimeLimit ? ttiLoadTimeLimit : 1000 * 70 * 1} });
     </script>
-    <div class="clean-cache-container">v2.7.1</div>
+    <div class="clean-cache-container">v2.7.2</div>
   `;
 };

@@ -3,19 +3,36 @@ import { LoadingAnimation } from '../core/LoadingAnimation.js';
 import { Validator } from '../core/Validator.js';
 import { Input } from '../core/Input.js';
 import { Responsive } from '../core/Responsive.js';
-import { append, htmls, prepend, s } from './VanillaJs.js';
+import { append, getDataFromInputFile, getQueryParams, htmls, prepend, s } from './VanillaJs.js';
 import { BtnIcon } from './BtnIcon.js';
 import { Translate } from './Translate.js';
 import { DropDown } from './DropDown.js';
-import { dynamicCol } from './Css.js';
+import { dynamicCol, renderCssAttr } from './Css.js';
 import { EventsUI } from './EventsUI.js';
 import { ToggleSwitch } from './ToggleSwitch.js';
 import { Modal } from './Modal.js';
 import { RouterEvents } from './Router.js';
+import { RichText } from './RichText.js';
+import { loggerFactory } from './Logger.js';
+import { Badge } from './Badge.js';
+import { Content } from './Content.js';
+
+const logger = loggerFactory(import.meta);
 
 const Panel = {
   Tokens: {},
-  Render: async function (options = { idPanel: '', scrollClassContainer: '', formData: [], data: [] }) {
+  Render: async function (
+    options = {
+      idPanel: '',
+      parentIdModal: '',
+      scrollClassContainer: '',
+      formData: [],
+      data: [],
+      originData: () => [],
+      filesData: () => [],
+      onClick: () => {},
+    },
+  ) {
     const idPanel = options?.idPanel ? options.idPanel : getId(this.Tokens, `${idPanel}-`);
     if (options.formData)
       options.formData = options.formData.map((formObj) => {
@@ -30,7 +47,33 @@ const Panel = {
     const subTitleObj = formData.find((f) => f.panel && f.panel.type === 'subtitle');
     const subTitleKey = subTitleObj ? subTitleObj.model : '';
 
-    const renderPanel = async (obj) => {
+    const fileNameInputExtDefaultContent = html` <div class="abs center">
+      <i style="font-size: 25px" class="fa-solid fa-cloud"></i>
+    </div>`;
+
+    let editId;
+
+    const openPanelForm = () => {
+      s(`.${idPanel}-form-body`).classList.remove('hide');
+      s(`.btn-${idPanel}-add`).classList.add('hide');
+      s(`.${scrollClassContainer}`).style.overflow = 'hidden';
+      if (options.customButtons) {
+        let customBtnIndex = -1;
+        for (const dataBtn of options.customButtons) {
+          customBtnIndex++;
+          const customBtnIndexFn = customBtnIndex;
+          const btnSelector = `btn-${idPanel}-custom${customBtnIndexFn}`;
+          s(`.${btnSelector}`).classList.add('hide');
+        }
+      }
+      setTimeout(() => {
+        s(`.${idPanel}-form-body`).style.opacity = 1;
+      });
+    };
+
+    const renderPanel = async (payload) => {
+      const obj = payload;
+      if ('_id' in obj) obj.id = obj._id;
       const { id } = obj;
 
       setTimeout(async () => {
@@ -38,51 +81,131 @@ const Panel = {
         if (options && options.callBackPanelRender)
           await options.callBackPanelRender({
             data: obj,
-            imgRender: async ({ imageUrl }) => {
-              htmls(`.${idPanel}-cell-col-a-${id}`, html`<img class="in img-${idPanel}" src="${imageUrl}" />`);
+            fileRender: async (options = { file: '', style: {}, class: '' }) => {
+              await Content.RenderFile({ container: `.${idPanel}-cell-col-a-${id}`, ...options });
+              s(`.${idPanel}-img-spinner-${id}`).classList.add('hide');
             },
             htmlRender: async ({ render }) => {
               htmls(`.${idPanel}-cell-col-a-${id}`, render);
             },
           });
+        EventsUI.onClick(`.${idPanel}-btn-delete-${id}`, async (e) => {
+          logger.warn('delete', obj);
+          const { status } = await options.on.remove({ e, data: obj });
+          if (status === 'error') return;
+          if (s(`.${idPanel}-${id}`)) s(`.${idPanel}-${id}`).remove();
+        });
+        EventsUI.onClick(`.${idPanel}-btn-edit-${id}`, async () => {
+          logger.warn('edit', obj);
+          if (obj._id) editId = obj._id;
+          else if (obj.id) editId = obj.id;
+
+          s(`.btn-${idPanel}-label-edit`).classList.remove('hide');
+          s(`.btn-${idPanel}-label-add`).classList.add('hide');
+
+          openPanelForm();
+          // s(`.btn-${idPanel}-add`).click();
+          s(`.${scrollClassContainer}`).scrollTop = 0;
+          Input.setValues(
+            formData,
+            obj,
+            options.originData().find((d) => d._id === obj._id || d.id === obj.id),
+            options.filesData().find((d) => d._id === obj._id || d.id === obj.id),
+          );
+        });
+        s(`.a-${payload._id}`).onclick = async (e) => {
+          e.preventDefault();
+        };
+        s(`.container-${idPanel}-${id}`).onclick = async (e) => {
+          e.preventDefault();
+          if (options.onClick) await options.onClick({ payload });
+        };
       });
-      return html` <div class="in box-shadow ${idPanel}">
-        <div class="in ${idPanel}-head">
-          <div class="in ${idPanel}-title">
-            ${obj.new ? obj.new : options.titleIcon} &nbsp ${titleKey ? obj[titleKey] : ''}
-          </div>
-          <div class="in ${idPanel}-subtitle">${subTitleKey ? obj[subTitleKey] : ''}</div>
+
+      return html` <div class="in box-shadow ${idPanel} ${idPanel}-${id}">
+        <div class="fl ${idPanel}-tools session-fl-log-in  ${obj.tools ? '' : 'hide'}">
+          ${await BtnIcon.Render({
+            class: `in flr main-btn-menu action-bar-box ${idPanel}-btn-tool ${idPanel}-btn-edit-${id}`,
+            label: html`<div class="abs center"><i class="fas fa-edit"></i></div>`,
+            tooltipHtml: await Badge.Render({
+              id: `tooltip-${idPanel}-${id}`,
+              text: `${Translate.Render(`edit`)}`,
+              classList: '',
+              style: { top: `-22px`, left: '-5px' },
+            }),
+          })}
+          ${await BtnIcon.Render({
+            class: `in flr main-btn-menu action-bar-box ${idPanel}-btn-tool ${idPanel}-btn-delete-${id}`,
+            label: html`<div class="abs center"><i class="fas fa-trash"></i></div>`,
+            tooltipHtml: await Badge.Render({
+              id: `tooltip-${idPanel}-${id}`,
+              text: `${Translate.Render(`delete`)}`,
+              classList: '',
+              style: { top: `-22px`, left: '-13px' },
+            }),
+          })}
         </div>
-        <div class="fl">
-          <div class="in fll ${idPanel}-cell ${idPanel}-cell-col-a ${idPanel}-cell-col-a-${id}">
-            <div class="abs center ${idPanel}-img-spinner-${id}"></div>
+        <div class="in container-${idPanel}-${id}">
+          <div class="in ${idPanel}-head">
+            <div class="in ${idPanel}-title">
+              ${options.titleIcon}
+              <a href="?cid=${payload._id}" class="a-title-${idPanel} a-${payload._id}">
+                ${titleKey ? obj[titleKey] : ''}</a
+              >
+            </div>
+            <div class="in ${idPanel}-subtitle">
+              ${subTitleKey ? obj[subTitleKey] : ''} <span class="tag-render-${id}"></span>
+            </div>
+            <!--  <div class="in ${idPanel}-tags"></div> -->
           </div>
-          <div class="in fll ${idPanel}-cell ${idPanel}-cell-col-b">
-            ${Object.keys(obj)
-              .map((infoKey) => {
-                const formObjData = formData.find((f) => f.model === infoKey);
-                const valueIcon = formObjData?.panel?.icon?.value ? formObjData.panel.icon.value : '';
-                const keyIcon = formObjData?.panel?.icon?.key ? formObjData.panel.icon.key : '';
+          <div class="fl">
+            <div class="in fll ${idPanel}-cell ${idPanel}-cell-col-a ${idPanel}-cell-col-a-${id}">
+              <div class="abs center ${idPanel}-img-spinner-${id}"></div>
+            </div>
+            <div class="in fll ${idPanel}-cell ${idPanel}-cell-col-b">
+              ${Object.keys(obj)
+                .map((infoKey) => {
+                  if (infoKey === 'id') return html``;
+                  const formObjData = formData.find((f) => f.model === infoKey);
+                  const valueIcon = formObjData?.panel?.icon?.value ? formObjData.panel.icon.value : '';
+                  const keyIcon = formObjData?.panel?.icon?.key ? formObjData.panel.icon.key : '';
 
-                const valueNewIcon =
-                  obj.new && formObjData?.panel?.newIcon?.value ? formObjData.panel.newIcon.value : '';
-                const keyNewIcon = obj.new && formObjData?.panel?.newIcon?.key ? formObjData.panel.newIcon.key : '';
+                  if (formData.find((f) => f.model === infoKey && f.panel && f.panel.type === 'tags')) {
+                    setTimeout(async () => {
+                      let tagRender = html``;
+                      for (const tag of obj[infoKey]) {
+                        tagRender += await Badge.Render({
+                          text: tag,
+                          style: { color: 'white' },
+                          classList: 'inl',
+                          style: { margin: '3px', background: `#a2a2a2` },
+                        });
+                      }
+                      if (s(`.tag-render-${id}`)) htmls(`.tag-render-${id}`, tagRender);
+                    });
+                    return html``;
+                  }
 
-                if (formData.find((f) => f.model === infoKey && f.panel && f.panel.type === 'info-row-pin'))
-                  return html`<div class="in ${idPanel}-row">
-                    <span class="${idPanel}-row-pin-key capitalize">${keyNewIcon} ${keyIcon} ${infoKey}:</span>
-                    <span class="${idPanel}-row-pin-value">${valueNewIcon} ${valueIcon} ${obj[infoKey]}</span>
-                  </div> `;
+                  if (formData.find((f) => f.model === infoKey && f.panel && f.panel.type === 'info-row-pin'))
+                    return html`<div class="in ${idPanel}-row">
+                      <span class="${idPanel}-row-pin-key capitalize ${formObjData.label?.disabled ? 'hide' : ''}">
+                        ${keyIcon} ${infoKey}:</span
+                      >
+                      <span class="${idPanel}-row-pin-value">${valueIcon} ${obj[infoKey]}</span>
+                    </div> `;
 
-                if (formData.find((f) => f.model === infoKey && f.panel && f.panel.type === 'info-row'))
-                  return html`<div class="in ${idPanel}-row">
-                    <span class="${idPanel}-row-key capitalize">${keyNewIcon} ${keyIcon} ${infoKey}:</span>
-                    <span class="${idPanel}-row-value">${valueNewIcon} ${valueIcon} ${obj[infoKey]}</span>
-                  </div> `;
+                  if (formData.find((f) => f.model === infoKey && f.panel && f.panel.type === 'info-row'))
+                    return html`<div class="in ${idPanel}-row">
+                      <span class="${idPanel}-row-key capitalize ${formObjData.label?.disabled ? 'hide' : ''}">
+                        ${keyIcon} ${infoKey}:</span
+                      >
+                      <span class="${idPanel}-row-value"> ${valueIcon} ${obj[infoKey]}</span>
+                    </div> `;
 
-                return html``;
-              })
-              .join('')}
+                  return html``;
+                })
+                .join('')}
+            </div>
           </div>
         </div>
       </div>`;
@@ -121,6 +244,12 @@ const Panel = {
             })}
           </div>`;
           break;
+        case 'md': {
+          renderForm += html`<div class="in section-mp">
+            ${await RichText.Render({ id: modelData.id, parentIdModal: options.parentIdModal })}
+          </div>`;
+          break;
+        }
 
         case 'checkbox-on-off':
           {
@@ -156,7 +285,52 @@ const Panel = {
             </div>`;
           }
           break;
-
+        case 'file':
+          setTimeout(() => {
+            s(`.${modelData.id}`).fileNameInputExtDefaultContent = fileNameInputExtDefaultContent;
+            s(`.${modelData.id}`).onchange = async (e) => {
+              if (!Object.keys(e.target.files).length) return;
+              s(`.${modelData.id}`).inputFiles = e.target.files;
+              let htmlFileRender = '';
+              for (const fileKey of Object.keys(e.target.files)) {
+                const file = e.target.files[fileKey];
+                htmlFileRender += html`${await Content.RenderFile({
+                    url: URL.createObjectURL(file),
+                    file: {
+                      mimetype: file.type,
+                      name: file.name,
+                      data: {
+                        data: await getDataFromInputFile(file),
+                      },
+                    },
+                    aHrefOptions: {
+                      disable: true,
+                    },
+                    raw: true,
+                  })}
+                  <div class="in" style="overflow: hidden">${file.name}</div>`;
+              }
+              htmls(`.file-name-render-${modelData.id}`, htmlFileRender);
+            };
+          });
+          renderForm += `${await Input.Render({
+            inputClass: 'hide',
+            id: `${modelData.id}`,
+            type: modelData.inputType,
+            multiple: true,
+            // autocomplete: 'new-password',
+            label: html`<i class="fa-solid fa-file-arrow-up"></i> ${Translate.Render('select')}
+              ${Translate.Render('file')}`,
+            containerClass: 'in section-mp width-mini-box input-container',
+            placeholder: true,
+            extension: () =>
+              html`<div class="file-name-render-${modelData.id}" style="min-height: 50px">
+                ${fileNameInputExtDefaultContent}
+              </div>`,
+            // disabled: true,
+            // disabledEye: true,
+          })}`;
+          break;
         default:
           renderForm += `${await Input.Render({
             id: `${modelData.id}`,
@@ -174,7 +348,8 @@ const Panel = {
     let renderFormBtn = html`
       ${await BtnIcon.Render({
         class: `section-mp btn-custom btn-${idPanel}-submit`,
-        label: html`<i class="fas fa-plus"></i> ${Translate.Render('add')}`,
+        label: html`<span class="btn-${idPanel}-label-add"><i class="fas fa-plus"></i> ${Translate.Render('add')}</span
+          ><span class="btn-${idPanel}-label-edit hide"><i class="fas fa-edit"></i> ${Translate.Render('edit')}</span>`,
         type: 'submit',
       })}
       ${await BtnIcon.Render({
@@ -198,10 +373,7 @@ const Panel = {
           Responsive.Event[`${idPanel}-responsive`] = () => {
             if (s(`.${idPanel}-form-container`))
               s(`.${idPanel}-form-container`).style.maxHeight = `${
-                window.innerHeight -
-                heightTopBar -
-                heightBottomBar -
-                (options.customFormHeightAdjust ? options.customFormHeightAdjust : 0)
+                window.innerHeight - heightTopBar - heightBottomBar
               }px`;
           };
           Responsive.Event[`${idPanel}-responsive`]();
@@ -230,13 +402,20 @@ const Panel = {
         if (errorMessage) return;
         const obj = Input.getValues(formData);
         obj.id = `${data.length}`;
+        let documents;
         if (options && options.on && options.on.add) {
-          const { status } = await options.on.add({ data: obj });
+          const { status, data } = await options.on.add({ data: obj, editId });
           if (status === 'error') return;
+          documents = data;
         }
-        obj.new = html`<span class="bold" style="color: #ff533ecf;"> ${options.titleIcon} NEW ! </span>`;
-        data.push(obj);
-        prepend(`.${idPanel}-render`, await renderPanel(obj));
+        s(`.btn-${idPanel}-clean`).click();
+        if (editId && s(`.${idPanel}-${editId}`)) s(`.${idPanel}-${editId}`).remove();
+        if (Array.isArray(documents)) {
+          htmls(`.${idPanel}-render`, '');
+          for (const doc of documents) {
+            append(`.${idPanel}-render`, await renderPanel(doc));
+          }
+        } else htmls(`.${idPanel}-render`, await renderPanel(obj));
         Input.cleanValues(formData);
         s(`.btn-${idPanel}-close`).click();
         s(`.${scrollClassContainer}`).scrollTop = 0;
@@ -264,25 +443,21 @@ const Panel = {
       };
       s(`.btn-${idPanel}-add`).onclick = (e) => {
         e.preventDefault();
-        s(`.${idPanel}-form-body`).classList.remove('hide');
-        s(`.btn-${idPanel}-add`).classList.add('hide');
-        s(`.${scrollClassContainer}`).style.overflow = 'hidden';
-        if (options.customButtons) {
-          let customBtnIndex = -1;
-          for (const dataBtn of options.customButtons) {
-            customBtnIndex++;
-            const customBtnIndexFn = customBtnIndex;
-            const btnSelector = `btn-${idPanel}-custom${customBtnIndexFn}`;
-            s(`.${btnSelector}`).classList.add('hide');
-          }
-        }
-        setTimeout(() => {
-          s(`.${idPanel}-form-body`).style.opacity = 1;
-        });
+        // s(`.btn-${idPanel}-clean`).click();
+        editId = undefined;
+        s(`.btn-${idPanel}-label-add`).classList.remove('hide');
+        s(`.btn-${idPanel}-label-edit`).classList.add('hide');
+        s(`.${scrollClassContainer}`).scrollTop = 0;
+
+        openPanelForm();
       };
     });
 
-    for (const obj of data) render += await renderPanel(obj);
+    if (data.length > 0) for (const obj of data) render += await renderPanel(obj);
+    else
+      render += html`<div class="in" style="min-height: 200px">
+        <div class="abs center"><i class="fas fa-exclamation-circle"></i> ${Translate.Render(`no-result-found`)}</div>
+      </div>`;
 
     this.Tokens[idPanel] = { idPanel, scrollClassContainer, formData, data, titleKey, subTitleKey, renderPanel };
 
@@ -327,11 +502,16 @@ const Panel = {
         .${idPanel} {
           margin: 10px;
           transition: 0.3s;
-          cursor: default;
           border-radius: 10px;
-          background: white;
+          background: #f6f6f6;
           color: black;
           padding: 10px;
+          cursor: pointer;
+          max-height: 400px;
+          overflow: hidden;
+        }
+        .${idPanel}:hover {
+          background: #ffffff;
         }
         .${idPanel}-head {
           /* background: white; */
@@ -343,7 +523,13 @@ const Panel = {
         .${idPanel}-title {
           color: rgba(109, 104, 255, 1);
           font-size: 24px;
-          padding: 15px;
+          padding: 5px;
+        }
+        .a-title-${idPanel} {
+          color: rgba(109, 104, 255, 1);
+        }
+        .a-title-${idPanel}:hover {
+          color: #e89f4c;
         }
         .${idPanel}-row {
           padding: 5px;
@@ -353,6 +539,11 @@ const Panel = {
         .${idPanel}-subtitle {
           font-size: 17px;
           margin-left: 20px;
+          top: -7px;
+        }
+        .${idPanel}-tags {
+          font-size: 17px;
+          margin-left: 10px;
           top: -7px;
         }
         .${idPanel}-row-key {
@@ -377,6 +568,14 @@ const Panel = {
         .${idPanel}-dropdown {
           min-height: 100px;
         }
+        .${idPanel}-btn-tool {
+          background: none !important;
+          color: #c4c4c4 !important;
+        }
+        .${idPanel}-btn-tool:hover {
+          color: #000000 !important;
+          font-size: 17px !important;
+        }
       </style>
       <div class="${idPanel}-container">
         <div
@@ -388,6 +587,7 @@ const Panel = {
               label: html`<i class="fas fa-plus"></i> ${Translate.Render('add')}`,
               type: 'button',
             })}
+            <!-- pagination component -->
             ${customButtonsRender}
           </div>
           <div class="in ${idPanel}-form-body hide" style="opacity: 0">

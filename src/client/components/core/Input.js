@@ -2,6 +2,7 @@ import { AgGrid } from './AgGrid.js';
 import { BtnIcon } from './BtnIcon.js';
 import { darkTheme } from './Css.js';
 import { loggerFactory } from './Logger.js';
+import { RichText } from './RichText.js';
 import { ToggleSwitch } from './ToggleSwitch.js';
 import { Translate } from './Translate.js';
 import { htmls, s } from './VanillaJs.js';
@@ -19,6 +20,16 @@ const fileFormDataFactory = (e, extensions) => {
   return form;
 };
 
+const getFileFromFileData = (fileData) => {
+  const blob = new Blob([new Uint8Array(fileData.data.data)], { type: fileData.mimetype });
+  return new File([blob], fileData.name, { type: fileData.mimetype });
+};
+
+const getSrcFromFileData = (fileData) => {
+  const file = getFileFromFileData(fileData);
+  return URL.createObjectURL(file);
+};
+
 const Input = {
   Render: async function (options) {
     const { id } = options;
@@ -28,8 +39,9 @@ const Input = {
         : options.placeholder
       : null;
     setTimeout(() => {
+      if (!s(`.${id}`)) return;
       s(`.input-container-${id}`).onclick = () => {
-        ['color'].includes(options.type) ? s(`.${id}`).click() : s(`.${id}`).focus();
+        ['color', 'file'].includes(options.type) ? s(`.${id}`).click() : s(`.${id}`).focus();
         ['datetime-local'].includes(options.type) ? s(`.${id}`).showPicker() : s(`.${id}`).focus();
       };
 
@@ -60,6 +72,7 @@ const Input = {
         ${options?.pattern === undefined && options.type === 'tel' ? `pattern="[0-9]{3}-[0-9]{3}-[0-9]{4}"` : ''}
         ${options?.required ? ` required ` : ''}
         ${options?.accept ? `accept="${options.accept}"` : ''}
+        ${options?.multiple ? `multiple="multiple"` : ''}
       />
       <div class="${id}-input-extension input-info input-extension ${options?.extension ? '' : 'hide'}">
         ${options?.extension ? await options.extension() : ''}
@@ -95,12 +108,18 @@ const Input = {
   getValues: function (formData) {
     const obj = {};
     for (const inputData of formData) {
+      if (inputData.disableRender) continue;
       switch (inputData.inputType) {
+        case 'file':
+          obj[inputData.model] = s(`.${inputData.id}`).inputFiles;
+          continue;
+        case 'md':
+          obj[inputData.model] = RichText.Tokens[inputData.id].easyMDE.value();
+          break;
         case 'checkbox':
         case 'checkbox-on-off':
           obj[inputData.model] = s(`.${inputData.id}-checkbox`).checked;
           continue;
-          break;
 
         default:
           break;
@@ -120,6 +139,18 @@ const Input = {
       if (!s(`.${inputData.id}`)) continue;
 
       switch (inputData.inputType) {
+        case 'file':
+          s(`.${inputData.id}`).inputFiles = undefined;
+          s(`.${inputData.id}`).value = null;
+
+          if (s(`.file-name-render-${inputData.id}`) && s(`.${inputData.id}`).fileNameInputExtDefaultContent)
+            htmls(`.file-name-render-${inputData.id}`, `${s(`.${inputData.id}`).fileNameInputExtDefaultContent}`);
+          continue;
+          break;
+        case 'md':
+          RichText.Tokens[inputData.id].easyMDE.value('');
+          continue;
+          break;
         case 'checkbox':
         case 'checkbox-on-off':
           if (s(`.${inputData.id}-checkbox`).checked) ToggleSwitch.Tokens[inputData.id].click();
@@ -136,6 +167,62 @@ const Input = {
       if (s(`.input-info-${inputData.id}`)) htmls(`.input-info-${inputData.id}`, html`&nbsp`);
     }
     return obj;
+  },
+  setValues: function (formData, obj, originObj, fileObj) {
+    setTimeout(() => {
+      for (const inputData of formData) {
+        if (!s(`.${inputData.id}`)) continue;
+
+        switch (inputData.inputType) {
+          case 'file':
+            if (fileObj[inputData.model] && s(`.${inputData.id}`)) {
+              const dataTransfer = new DataTransfer();
+
+              if (fileObj[inputData.model].fileBlob)
+                dataTransfer.items.add(getFileFromFileData(fileObj[inputData.model].fileBlob));
+
+              if (fileObj[inputData.model].mdBlob)
+                dataTransfer.items.add(getFileFromFileData(fileObj[inputData.model].mdBlob));
+
+              if (dataTransfer.files.length) {
+                s(`.${inputData.id}`).files = dataTransfer.files;
+                s(`.${inputData.id}`).onchange({ target: s(`.${inputData.id}`) });
+              }
+            }
+
+            continue;
+            break;
+          case 'md':
+            RichText.Tokens[inputData.id].easyMDE.value(fileObj[inputData.model].mdPlain);
+            continue;
+            break;
+          case 'checkbox':
+          case 'checkbox-on-off':
+            if (
+              (obj[inputData.model] === true && !s(`.${inputData.id}-checkbox`).checked) ||
+              (!obj[inputData.model] && s(`.${inputData.id}-checkbox`).checked === true)
+            )
+              ToggleSwitch.Tokens[inputData.id].click();
+            continue;
+            break;
+          case 'datetime-local':
+            {
+              const date = new Date(originObj[inputData.model]);
+              date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+              s(`.${inputData.id}`).value = date.toISOString().slice(0, 16);
+            }
+            continue;
+            break;
+          default:
+            break;
+        }
+
+        if ('model' in inputData) {
+          if (!['dropdown'].includes(inputData.inputType)) s(`.${inputData.id}`).value = obj[inputData.model];
+        }
+        if (s(`.input-info-${inputData.id}`)) htmls(`.input-info-${inputData.id}`, html`&nbsp`);
+      }
+    });
   },
 };
 
@@ -256,4 +343,4 @@ const InputFile = {
   },
 };
 
-export { Input, InputFile, fileFormDataFactory };
+export { Input, InputFile, fileFormDataFactory, getSrcFromFileData, getFileFromFileData };

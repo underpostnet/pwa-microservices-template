@@ -10,7 +10,9 @@ const logger = loggerFactory(import.meta);
 
 const buildSSL = async (host) => {
   const sslPath = process.env.CERTBOT_LIVE_PATH;
-
+  host = host.replaceAll(`\\`, '/');
+  const [hostSSL, path] = host.split('/');
+  if (path || !fs.existsSync(sslPath)) return;
   const files = await fs.readdir(sslPath);
 
   for (const folderHost of files)
@@ -49,7 +51,7 @@ const buildSSL = async (host) => {
           fs.writeFileSync(`./engine-private/ssl/${host}/_ca_bundle.crt`, ca, 'utf8');
           fs.writeFileSync(`./engine-private/ssl/${host}/_ca_full_bundle.crt`, caFull, 'utf8');
 
-          fs.removeSync(`${sslPath}/${folderHost}`);
+          // fs.removeSync(`${sslPath}/${folderHost}`);
           return true;
         }
       }

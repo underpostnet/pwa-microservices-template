@@ -92,6 +92,12 @@ const Css = {
           }
 
           .wfa {
+            width: available;
+            width: -webkit-available;
+            width: -moz-available;
+            width: -ms-available;
+            width: -o-available;
+
             width: fill-available;
             width: -webkit-fill-available;
             width: -moz-fill-available;
@@ -230,10 +236,16 @@ const Css = {
             .session-inl-log-out {
               display: inline-table;
             }
+            .session-fl-log-out {
+              display: flow-root;
+            }
             .session-in-log-in {
               display: none;
             }
             .session-inl-log-in {
+              display: none;
+            }
+            .session-fl-log-in {
               display: none;
             }
           </style>
@@ -978,7 +990,7 @@ const cssEffect = async (containerSelector, event) => {
     offsetY = event.offsetY;
   }
   const element = s(containerSelector);
-  element.style.overflow = 'hidden';
+  // element.style.overflow = 'hidden';
   const id = getId(cssTokensEffect, 'btn-effect-');
   cssTokensEffect[id] = { containerSelector, event };
   append(containerSelector, html`<span class="abs ${id} ripple" style="display: none"></span>`);
@@ -992,6 +1004,30 @@ const cssEffect = async (containerSelector, event) => {
     delete cssTokensEffect[id];
   }, 600);
 };
+
+const imageShimmer = () => html`<div
+  class="abs center ssr-shimmer-search-box"
+  style="${renderCssAttr({
+    style: {
+      width: '95%',
+      height: '95%',
+      'border-radius': '10px',
+      overflow: 'hidden',
+    },
+  })}"
+>
+  <div
+    class="abs center"
+    style="${renderCssAttr({
+      style: {
+        'font-size': '70px',
+        color: `#bababa`,
+      },
+    })}"
+  >
+    <i class="fa-solid fa-photo-film"></i>
+  </div>
+</div>`;
 
 export {
   Css,
@@ -1024,4 +1060,5 @@ export {
   scrollBarLightRender,
   renderWave,
   cssEffect,
+  imageShimmer,
 };

@@ -45,6 +45,8 @@ const buildProxy = async () => {
       // preserveHeaderKeyCase: true,
       // secure: true, warn validator
       onProxyReq: (proxyReq, req, res, options) => {
+        // https://wtools.io/check-http-status-code
+        // http://nexodev.org
         sslRedirectMiddleware(req, res, port, proxyRouter);
       },
       pathRewrite: {
@@ -65,6 +67,7 @@ const buildProxy = async () => {
 
       if (!(absoluteHost in options.router)) options.router[absoluteHost] = target;
     });
+    if (Object.keys(options.router).length === 0) continue;
 
     // order router
     const router = {};
@@ -72,10 +75,7 @@ const buildProxy = async () => {
       router[absoluteHostKey] = options.router[absoluteHostKey];
     options.router = router;
 
-    if (Object.keys(options.router).length === 0) continue;
-
     // instance proxy server
-
     const proxyPath = '/';
     const proxyHost = 'localhost';
 

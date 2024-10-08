@@ -29,6 +29,20 @@ const buildRuntime = async () => {
   const collectDefaultMetrics = promClient.collectDefaultMetrics;
   collectDefaultMetrics();
 
+  if (fs.existsSync(`/root/.bashrc`) && !fs.readFileSync(`/root/.bashrc`, 'utf8').match(`underpost-engine`)) {
+    fs.writeFileSync(
+      `/root/.bashrc`,
+      `${fs.readFileSync(`/root/.bashrc`, 'utf8')}
+` +
+        `export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm underpost-engine bash_completion
+
+export PATH=$PATH:/opt/lampp/bin`,
+      'utf8',
+    );
+  }
+
   const promCounterOption = {
     name: `${deployId.replaceAll('-', '_')}_http_requests_total`,
     help: 'Total number of HTTP requests',
@@ -90,8 +104,6 @@ const buildRuntime = async () => {
         redirectTarget = redirect[redirect.length - 1] === '/' ? redirect.slice(0, -1) : redirect;
       }
 
-      logger.info('Build runtime', `${host}${path}`);
-
       switch (runtime) {
         case 'lampp':
           if (!Lampp.enabled()) continue;
@@ -151,6 +163,28 @@ const buildRuntime = async () => {
           //         RedirectMatch 404 ^/custom_50x.html$
           //     </If>
           // </Files>
+
+          // Add www or https with htaccess rewrite
+
+          // Options +FollowSymLinks
+          // RewriteEngine On
+          // RewriteCond %{HTTP_HOST} ^ejemplo.com [NC]
+          // RewriteRule ^(.*)$ http://ejemplo.com/$1 [R=301,L]
+
+          // Redirect http to https with htaccess rewrite
+
+          // RewriteEngine On
+          // RewriteCond %{SERVER_PORT} 80
+          // RewriteRule ^(.*)$ https://www.ejemplo.com/$1 [R,L]
+
+          // Redirect to HTTPS with www subdomain
+
+          // RewriteEngine On
+          // RewriteCond %{HTTPS} off [OR]
+          // RewriteCond %{HTTP_HOST} ^www\. [NC]
+          // RewriteCond %{HTTP_HOST} ^(?:www\.)?(.+)$ [NC]
+          // RewriteRule ^ https://%1%{REQUEST_URI} [L,NE,R=301]
+
           await listenPortController(listenServerFactory(), port, runningData);
           break;
         case 'xampp':
@@ -239,6 +273,17 @@ const buildRuntime = async () => {
             return compression.filter(req, res);
           }
 
+          if (process.argv.includes('static')) {
+            logger.info('Build static server runtime', `${host}${path}`);
+            currentPort += 2;
+            const staticPort = newInstance(currentPort);
+            await network.port.portClean(staticPort);
+            await listenPortController(app, staticPort, runningData);
+            currentPort++;
+            continue;
+          }
+          logger.info('Build api server runtime', `${host}${path}`);
+
           // parse requests of content-type - application/json
           app.use(express.json({ limit: '100MB' }));
 
@@ -261,7 +306,13 @@ const buildRuntime = async () => {
           });
 
           // cors
-          app.use(cors({ origin: origins }));
+          const originPayload = {
+            origin: origins.concat(
+              apis && process.env.NODE_ENV === 'development' ? [`http://localhost:${currentPort + 2}`] : [],
+            ),
+          };
+          logger.info('originPayload', originPayload);
+          app.use(cors(originPayload));
 
           if (redirect) {
             app.use(function (req = express.Request, res = express.Response, next = express.NextFunction) {

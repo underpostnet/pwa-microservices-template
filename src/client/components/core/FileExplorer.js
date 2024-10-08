@@ -1,17 +1,23 @@
+import { getApiBaseUrl } from '../../services/core/core.service.js';
 import { DocumentService } from '../../services/document/document.service.js';
 import { FileService } from '../../services/file/file.service.js';
 import { AgGrid } from './AgGrid.js';
+import { Auth } from './Auth.js';
 import { BtnIcon } from './BtnIcon.js';
-import { getSubpaths, uniqueArray } from './CommonJs.js';
-import { darkTheme } from './Css.js';
+import { getSubpaths, timer, uniqueArray } from './CommonJs.js';
+import { Content } from './Content.js';
+import { darkTheme, renderCssAttr } from './Css.js';
 import { EventsUI } from './EventsUI.js';
 import { fileFormDataFactory, Input, InputFile } from './Input.js';
+import { loggerFactory } from './Logger.js';
 import { Modal } from './Modal.js';
 import { NotificationManager } from './NotificationManager.js';
 import { RouterEvents } from './Router.js';
 import { Translate } from './Translate.js';
 import { Validator } from './Validator.js';
 import { copyData, downloadFile, getProxyPath, getQueryParams, s, setPath } from './VanillaJs.js';
+
+const logger = loggerFactory(import.meta);
 
 class LoadFolderRenderer {
   eGui;
@@ -77,48 +83,68 @@ class FolderHeaderComp {
 }
 
 const FileExplorer = {
-  Render: async function () {
+  Api: {},
+  Render: async function (options = { idModal: '' }) {
+    const { idModal } = options;
+    FileExplorer.Api[idModal] = options;
     const gridFolderId = 'folder-explorer-grid';
     const gridFileId = 'file-explorer-grid';
     const idDropFileInput = 'file-explorer';
     let formBodyFiles;
     const query = getQueryParams();
     let location = query?.location ? this.locationFormat({ f: query }) : '/';
-    let files = [];
-    let folders = [];
-    let documentId = '';
-    let documentInstance = [];
-
-    RouterEvents['file-explorer'] = ({ path, pushPath, route }) => {
-      if (route === 'cloud') {
-        setTimeout(() => {
-          const query = getQueryParams();
-          location = query?.location ? this.locationFormat({ f: query }) : '/';
-          if (!s(`.file-explorer-query-nav`)) return;
-          s(`.file-explorer-query-nav`).value = location;
-          const format = this.documentDataFormat({ document: documentInstance, location });
+    let files, folders, documentId, documentInstance;
+    const cleanData = () => {
+      files = [];
+      folders = [];
+      documentId = '';
+      documentInstance = [];
+    };
+    cleanData();
+    FileExplorer.Api[idModal].displayList = async () => {
+      if (!s(`.${idModal}`)) return;
+      const query = getQueryParams();
+      location = query?.location ? this.locationFormat({ f: query }) : '/';
+      s(`.file-explorer-query-nav`).value = location;
+      const format = this.documentDataFormat({ document: documentInstance, location });
+      files = format.files;
+      folders = format.folders;
+      AgGrid.grids[gridFileId].setGridOption('rowData', files);
+      AgGrid.grids[gridFolderId].setGridOption('rowData', folders);
+    };
+    FileExplorer.Api[idModal].updateData = async (optionsUpdate = { display: false }) => {
+      if (!s(`.${idModal}`)) return;
+      if (Auth.getToken()) {
+        try {
+          const { status, data: document } = await DocumentService.get();
+          const format = this.documentDataFormat({ document, location });
           files = format.files;
+          documentId = format.documentId;
           folders = format.folders;
-          AgGrid.grids[gridFileId].setGridOption('rowData', files);
-          AgGrid.grids[gridFolderId].setGridOption('rowData', folders);
-        });
-      }
+          documentInstance = document;
+        } catch (error) {
+          logger.error(error);
+          NotificationManager.Push({
+            html: error.message,
+            status: 'error',
+          });
+        }
+      } else cleanData();
+      setTimeout(async () => {
+        if (s(`.${idModal}`) && optionsUpdate && optionsUpdate.display) await FileExplorer.Api[idModal].displayList();
+      });
     };
 
-    try {
-      const { status, data: document } = await DocumentService.get();
-      const format = this.documentDataFormat({ document, location });
-      files = format.files;
-      documentId = format.documentId;
-      folders = format.folders;
-      documentInstance = document;
-    } catch (error) {
-      console.error(error);
-    }
-
-    console.log({ location, documentId, folders, files });
+    RouterEvents['file-explorer'] = ({ path, pushPath, route }) => {
+      if (route === 'cloud')
+        setTimeout(async () => {
+          // await this.Api[idModal].updateData();
+          await FileExplorer.Api[idModal].displayList();
+        });
+    };
 
     setTimeout(async () => {
+      FileExplorer.Api[idModal].updateData({ display: true });
       const formData = [
         {
           model: 'location',
@@ -154,6 +180,7 @@ const FileExplorer = {
               body: {
                 fileId: file._id,
                 location,
+                title: file.name,
               },
             });
             if (result.status === 'success') documentInstance.push({ ...result.data, fileId: file });
@@ -182,11 +209,8 @@ const FileExplorer = {
         location = newLocation;
         setPath(`${window.location.pathname}?location=${location}`);
         s(`.file-explorer-query-nav`).value = location;
-        const format = this.documentDataFormat({ document: documentInstance, location });
-        files = format.files;
-        folders = format.folders;
-        AgGrid.grids[gridFileId].setGridOption('rowData', files);
-        AgGrid.grids[gridFolderId].setGridOption('rowData', folders);
+        // const format = this.documentDataFormat({ document: documentInstance, location });
+        await FileExplorer.Api[idModal].updateData({ display: true });
       });
       EventsUI.onClick(`.btn-input-home-directory`, async (e) => {
         e.preventDefault();
@@ -236,35 +260,41 @@ const FileExplorer = {
 
         this.eGui = document.createElement('div');
         this.eGui.innerHTML = html`
-          ${await BtnIcon.Render({
-            class: `in btn-file-download-${params.data._id}`,
-            label: html` <i class="fas fa-download"></i>`,
-            type: 'button',
-          })}
-          ${await BtnIcon.Render({
-            class: `in btn-file-delete-${params.data._id}`,
-            label: html` <i class="fa-solid fa-circle-xmark"></i>`,
-            type: 'button',
-          })}
-          ${await BtnIcon.Render({
-            class: `in btn-file-view-${params.data._id}`,
-            label: html` <i class="fas fa-eye"></i>`,
-            type: 'button',
-          })}
-          ${await BtnIcon.Render({
-            class: `in btn-file-copy-content-link-${params.data._id}`,
-            label: html`<i class="fas fa-copy"></i>`,
-            type: 'button',
-          })}
+          <div class="fl">
+            ${await BtnIcon.Render({
+              class: `in fll management-table-btn-mini btn-file-download-${params.data._id}`,
+              label: html` <i class="fas fa-download"></i>`,
+              type: 'button',
+            })}
+            ${await BtnIcon.Render({
+              class: `in fll management-table-btn-mini btn-file-delete-${params.data._id}`,
+              label: html` <i class="fa-solid fa-circle-xmark"></i>`,
+              type: 'button',
+            })}
+            ${await BtnIcon.Render({
+              class: `in fll management-table-btn-mini btn-file-view-${params.data._id}`,
+              label: html` <i class="fas fa-eye"></i>`,
+              type: 'button',
+            })}
+            ${await BtnIcon.Render({
+              class: `in fll management-table-btn-mini btn-file-copy-content-link-${params.data._id}`,
+              label: html`<i class="fas fa-copy"></i>`,
+              type: 'button',
+            })}
+          </div>
         `;
 
         setTimeout(() => {
-          const uri = `${getProxyPath()}content/?id=${params.data.fileId}`;
+          const uri = `${getProxyPath()}content/?cid=${params.data._id}`;
           const url = `${window.location.origin}${uri}`;
 
-          // ${window.location.origin[window.location.origin.length - 1] === '/' ? '' : '/'}
+          const originObj = documentInstance.find((d) => d._id === params.data._id);
+          const blobUri = originObj ? getApiBaseUrl({ id: originObj.fileId._id, endpoint: 'file/blob' }) : undefined;
 
-          console.log({ url, uri });
+          if (!originObj) {
+            s(`.btn-file-view-${params.data._id}`).classList.add('hide');
+            s(`.btn-file-copy-content-link-${params.data._id}`).classList.add('hide');
+          }
 
           EventsUI.onClick(`.btn-file-view-${params.data._id}`, async (e) => {
             e.preventDefault();
@@ -276,7 +306,7 @@ const FileExplorer = {
 
           EventsUI.onClick(`.btn-file-copy-content-link-${params.data._id}`, async (e) => {
             e.preventDefault();
-            await copyData(url);
+            await copyData(blobUri);
             NotificationManager.Push({
               html: Translate.Render('success-copy-data'),
               status: 'success',
@@ -296,6 +326,20 @@ const FileExplorer = {
           EventsUI.onClick(`.btn-file-delete-${params.data._id}`, async (e) => {
             e.preventDefault();
             {
+              const confirmResult = await Modal.RenderConfirm({
+                html: async () => {
+                  return html`
+                    <div class="in section-mp" style="text-align: center">
+                      ${Translate.Render('confirm-delete-item')}
+                      <br />
+                      "${params.data.title}"
+                    </div>
+                  `;
+                },
+                id: `delete-${params.data._id}`,
+              });
+              if (confirmResult.status !== 'confirm') return;
+
               const { data, status, message } = await FileService.delete({
                 id: params.data.fileId,
               });
@@ -346,15 +390,31 @@ const FileExplorer = {
 
         this.eGui = document.createElement('div');
         this.eGui.innerHTML = html`
-          ${await BtnIcon.Render({
-            class: `in btn-folder-delete-${id}`,
-            label: html` <i class="fa-solid fa-circle-xmark"></i>`,
-            type: 'button',
-          })}
+          <div class="fl">
+            ${await BtnIcon.Render({
+              class: `in fll management-table-btn-mini btn-folder-delete-${id}`,
+              label: html` <i class="fa-solid fa-circle-xmark"></i>`,
+              type: 'button',
+            })}
+          </div>
         `;
 
         setTimeout(() => {
           EventsUI.onClick(`.btn-folder-delete-${id}`, async (e) => {
+            const confirmResult = await Modal.RenderConfirm({
+              html: async () => {
+                return html`
+                  <div class="in section-mp" style="text-align: center">
+                    ${Translate.Render('confirm-delete-item')}
+                    <br />
+                    "${params.data.location}"
+                  </div>
+                `;
+              },
+              id: `delete-${id}`,
+            });
+            if (confirmResult.status !== 'confirm') return;
+
             e.preventDefault();
             const idFilesDelete = [];
             for (const file of documentInstance.filter(
@@ -398,39 +458,39 @@ const FileExplorer = {
 
     return html`
       <form>
-        <div class="in">
+        <div class="fl">
           ${await BtnIcon.Render({
-            class: 'inl tool-btn-file-explorer btn-input-home-directory',
+            class: 'in fll management-table-btn-mini btn-input-home-directory',
             label: html`<i class="fas fa-home"></i>
               <!-- ${Translate.Render('home-directory')} -->`,
             type: 'button',
           })}
           ${await BtnIcon.Render({
-            class: 'inl tool-btn-file-explorer btn-input-back-explorer',
+            class: 'in fll management-table-btn-mini btn-input-back-explorer',
             label: html` <i class="fa-solid fa-circle-left"></i>
               <!-- ${Translate.Render('go')} -->`,
             type: 'button',
           })}
           ${await BtnIcon.Render({
-            class: 'inl tool-btn-file-explorer btn-input-forward-explorer',
+            class: 'in fll management-table-btn-mini btn-input-forward-explorer',
             label: html` <i class="fa-solid fa-circle-right"></i>
               <!-- ${Translate.Render('go')} -->`,
             type: 'button',
           })}
           ${await BtnIcon.Render({
-            class: 'inl tool-btn-file-explorer btn-input-go-explorer',
+            class: 'in fll management-table-btn-mini btn-input-go-explorer',
             label: html`<i class="fas fa-sync-alt"></i>
               <!-- ${Translate.Render('go')} -->`,
             type: 'submit',
           })}
           ${await BtnIcon.Render({
-            class: 'inl tool-btn-file-explorer btn-input-copy-directory',
+            class: 'in fll management-table-btn-mini btn-input-copy-directory',
             label: html`<i class="fas fa-copy"></i>
               <!-- ${Translate.Render('home-directory')} -->`,
             type: 'button',
           })}
           ${await BtnIcon.Render({
-            class: 'inl tool-btn-file-explorer btn-input-upload-file',
+            class: 'in fll management-table-btn-mini btn-input-upload-file',
             label: html`<i class="fa-solid fa-cloud-arrow-up"></i>
               <!-- ${Translate.Render('home-directory')} -->`,
             type: 'button',
@@ -545,7 +605,8 @@ const FileExplorer = {
                     filter: true,
                     autoHeight: true,
                   },
-                  rowData: files,
+                  // rowData: files,
+                  rowData: undefined,
                   columnDefs: [
                     { field: 'name', flex: 2, headerName: 'Name', cellRenderer: LoadFileNameRenderer },
                     { field: 'mimetype', flex: 1, headerName: 'Type' },
@@ -558,13 +619,6 @@ const FileExplorer = {
         </div>
       </div>
       <form class="file-explorer-uploader" style="display: none">
-        <div class="in">
-          ${await BtnIcon.Render({
-            class: 'wfa section-mp btn-input-file-explorer',
-            label: html`<i class="fas fa-upload"></i> ${Translate.Render('upload')}`,
-            type: 'submit',
-          })}
-        </div>
         ${await InputFile.Render(
           {
             id: idDropFileInput,
@@ -581,6 +635,20 @@ const FileExplorer = {
             },
           },
         )}
+        <div class="in">
+          ${await BtnIcon.Render({
+            class: 'wfa section-mp btn-input-file-explorer',
+            style: renderCssAttr({
+              style: {
+                'font-size': '25px',
+                'text-align': 'center',
+                padding: '20px',
+              },
+            }),
+            label: html`<i class="fa-solid fa-cloud-arrow-up"></i> ${Translate.Render('upload')}`,
+            type: 'submit',
+          })}
+        </div>
       </form>
     `;
   },
@@ -591,12 +659,19 @@ const FileExplorer = {
   },
   documentDataFormat: function ({ document, location }) {
     let files = document.map((f) => {
+      if (!f.fileId)
+        f.fileId = {
+          name: f.title + '.md',
+          mimetype: 'text/markdown',
+          _id: f.mdFileId,
+        };
       return {
         location: this.locationFormat({ f }),
         name: f.fileId.name,
         mimetype: f.fileId.mimetype,
         fileId: f.fileId._id,
         _id: f._id,
+        title: f.title,
       };
     });
     let documentId = document._id;

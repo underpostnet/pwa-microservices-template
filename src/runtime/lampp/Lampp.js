@@ -10,6 +10,31 @@ const Lampp = {
     // linux
     fs.writeFileSync(`/opt/lampp/apache2/conf/httpd.conf`, this.router || '', 'utf8');
     cmd = `sudo /opt/lampp/lampp stop`;
+    if (!fs.readFileSync(`/opt/lampp/etc/httpd.conf`, 'utf8').match(`# Listen 80`))
+      fs.writeFileSync(
+        `/opt/lampp/etc/httpd.conf`,
+        fs.readFileSync(`/opt/lampp/etc/httpd.conf`, 'utf8').replace(`Listen 80`, `# Listen 80`),
+        'utf8',
+      );
+    if (!fs.readFileSync(`/opt/lampp/etc/extra/httpd-ssl.conf`, 'utf8').match(`# Listen 443`))
+      fs.writeFileSync(
+        `/opt/lampp/etc/extra/httpd-ssl.conf`,
+        fs.readFileSync(`/opt/lampp/etc/extra/httpd-ssl.conf`, 'utf8').replace(`Listen 443`, `# Listen 443`),
+        'utf8',
+      );
+    if (!fs.readFileSync(`/opt/lampp/lampp`, 'utf8').match(`testport 443 && false`))
+      fs.writeFileSync(
+        `/opt/lampp/lampp`,
+        fs.readFileSync(`/opt/lampp/lampp`, 'utf8').replace(`testport 443`, `testport 443 && false`),
+        'utf8',
+      );
+    if (!fs.readFileSync(`/opt/lampp/lampp`, 'utf8').match(`testport 80 && false`))
+      fs.writeFileSync(
+        `/opt/lampp/lampp`,
+        fs.readFileSync(`/opt/lampp/lampp`, 'utf8').replace(`testport 80`, `testport 80 && false`),
+        'utf8',
+      );
+
     shellExec(cmd);
     await network.port.portClean(3306);
     for (const port of this.ports) await network.port.portClean(port);

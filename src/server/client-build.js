@@ -79,7 +79,7 @@ const fullBuild = async ({
               .replace('test_dbname', db.name),
             'utf8',
           );
-        }
+        } else logger.error('not provided db config');
         break;
 
       default:
@@ -170,7 +170,7 @@ const buildClient = async (options = { liveClientBuildPaths: [], instances: [] }
         continue;
       }
 
-      if (fullBuildEnabled)
+      if (fullBuildEnabled) {
         //  !(confServer[host]['/'] && confServer[host]['/'].liteBuild)
         await fullBuild({
           path,
@@ -184,6 +184,14 @@ const buildClient = async (options = { liveClientBuildPaths: [], instances: [] }
           iconsBuild,
           metadata,
         });
+        if (apis)
+          for (const apiBuildScript of apis) {
+            const scriptPath = `src/api/${apiBuildScript}/${apiBuildScript}.build.js`;
+            if (fs.existsSync(`./${scriptPath}`)) {
+              shellExec(`node ${scriptPath}`);
+            }
+          }
+      }
 
       if (components)
         for (const module of Object.keys(components)) {
@@ -230,7 +238,7 @@ const buildClient = async (options = { liveClientBuildPaths: [], instances: [] }
               'services',
               baseHost,
             );
-            if (module === 'core' && process.env.NODE_ENV === 'production') {
+            if (module === 'core' && (process.env.NODE_ENV === 'production' || process.argv.includes('static'))) {
               if (apiBaseHost)
                 jsSrc = jsSrc.replace(
                   'const getBaseHost = () => location.host;',
@@ -541,15 +549,9 @@ Sitemap: https://${host}${path === '/' ? '' : path}/sitemap.xml`,
       }
 
       if (!enableLiveRebuild && !process.argv.includes('l') && !process.argv.includes('deploy') && docsBuild) {
-        // fullBuildEnabled || process.argv.includes('docs')
-
         // https://www.pullrequest.com/blog/leveraging-jsdoc-for-better-code-documentation-in-javascript/
         // https://jsdoc.app/about-configuring-jsdoc
         // https://jsdoc.app/ Block tags
-
-        // "theme_opts": {
-        //   "default_theme": "dark" // "light", "fallback-dark", "fallback-light"
-        // }
 
         const jsDocsConfig = JSON.parse(fs.readFileSync(`./jsdoc.json`, 'utf8'));
         jsDocsConfig.opts.destination = `./public/${host}${path === '/' ? path : `${path}/`}docs/`;
@@ -657,6 +659,10 @@ Sitemap: https://${host}${path === '/' ? '' : path}/sitemap.xml`,
           },
         };
 
+        // plantuml
+        logger.info('copy plantuml', `${rootClientPath}/docs/plantuml`);
+        fs.copySync(`./src/client/public/default/plantuml`, `${rootClientPath}/docs/plantuml`);
+
         logger.warn('build swagger api docs', doc.info);
 
         const outputFile = `./public/${host}${path === '/' ? path : `${path}/`}swagger-output.json`;
@@ -670,7 +676,7 @@ root file where the route starts, such as index.js, app.js, routes.js, etc ... *
 
         await swaggerAutoGen({ openapi: '3.0.0' })(outputFile, routes, doc);
       }
-      if (!enableLiveRebuild && process.argv[2] === 'build-full-client-zip') {
+      if (!enableLiveRebuild && process.argv.includes('zip')) {
         logger.warn('build zip', rootClientPath);
 
         if (!fs.existsSync('./build')) fs.mkdirSync('./build');

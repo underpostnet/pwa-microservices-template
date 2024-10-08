@@ -1,5 +1,6 @@
 import { AgGrid } from './AgGrid.js';
 import { boxShadow, scrollBarDarkRender, scrollBarLightRender } from './Css.js';
+import { LoadingAnimation } from './LoadingAnimation.js';
 import { append, getProxyPath, s } from './VanillaJs.js';
 
 const CssCommonCore = async () => {
@@ -136,6 +137,35 @@ const CssCommonCore = async () => {
       }
     </style>
     <style>
+      .lds-dual-ring,
+      .lds-dual-ring:after {
+        box-sizing: border-box;
+      }
+      .lds-dual-ring {
+        display: inline-block;
+        width: 80px;
+        height: 80px;
+      }
+      .lds-dual-ring:after {
+        content: ' ';
+        display: block;
+        width: 64px;
+        height: 64px;
+        margin: 8px;
+        border-radius: 50%;
+        border: 6.4px solid currentColor;
+        border-color: currentColor transparent currentColor transparent;
+        animation: lds-dual-ring 1.2s linear infinite;
+      }
+      @keyframes lds-dual-ring {
+        0% {
+          transform: rotate(0);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
       .lds-dual-ring-mini,
       .lds-dual-ring-mini:after {
         box-sizing: border-box;
@@ -163,6 +193,9 @@ const CssCommonCore = async () => {
         100% {
           transform: rotate(360deg);
         }
+      }
+      .bar-default-modal {
+        overflow: hidden;
       }
     </style>
     ${boxShadow({ selector: '.account-profile-image' })}
@@ -321,12 +354,6 @@ const CssCoreDark = {
           background: #191919;
           border: 2px solid #313131;
         }
-        .tool-btn-file-explorer {
-          min-height: 60px;
-          min-width: 60px;
-          font-size: 24px;
-          padding: 10px;
-        }
         .file-explorer-nav {
           padding: 5px;
         }
@@ -455,7 +482,7 @@ const CssCoreDark = {
           color: #b1a7a7;
         }
         a:hover {
-          color: #ffffff;
+          color: #cdcdcd;
         }
         .content-render {
           font-size: 16px;
@@ -628,12 +655,6 @@ const CssCoreLight = {
         .drop-hover-container:hover {
           background: #bcbcbc;
           border: 2px solid #313131;
-        }
-        .tool-btn-file-explorer {
-          min-height: 60px;
-          min-width: 60px;
-          font-size: 24px;
-          padding: 10px;
         }
         .file-explorer-nav {
           padding: 5px;

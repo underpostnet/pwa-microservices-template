@@ -1,14 +1,17 @@
 import fs from 'fs-extra';
 import dotenv from 'dotenv';
-import { cap, capFirst, newInstance, range, timer } from '../client/components/core/CommonJs.js';
+import { cap, capFirst, getCapVariableName, newInstance, range, timer } from '../client/components/core/CommonJs.js';
 import * as dir from 'path';
 import cliProgress from 'cli-progress';
 import cliSpinners from 'cli-spinners';
 import logUpdate from 'log-update';
 import colors from 'colors';
 import { loggerFactory } from './logger.js';
-import { shellExec } from './process.js';
+import { shellExec, shellCd } from './process.js';
 import { DefaultConf } from '../../conf.js';
+import ncp from 'copy-paste';
+import read from 'read';
+import splitFile from 'split-file';
 
 colors.enable();
 dotenv.config();
@@ -74,6 +77,7 @@ const loadConf = (deployId) => {
     ? `./engine-private/replica/${deployId}`
     : `./engine-private/conf/${deployId}`;
   if (!fs.existsSync(`./conf`)) fs.mkdirSync(`./conf`);
+  if (!fs.existsSync(`./tmp`)) fs.mkdirSync(`./tmp`, { recursive: true });
   const isValidDeployId = fs.existsSync(`${folder}`);
   for (const typeConf of Object.keys(Config.default)) {
     let srcConf = isValidDeployId
@@ -115,8 +119,6 @@ const loadReplicas = (confServer) => {
   }
   return confServer;
 };
-
-const getCapVariableName = (value = 'default') => cap(value.replaceAll('-', ' ')).replaceAll(' ', '');
 
 const cloneConf = async (
   { toOptions, fromOptions },
@@ -490,13 +492,16 @@ const cliSpinner = async (time = 5000, message0, message1, color, type = 'dots')
   }
 };
 
-const getDataDeploy = (options = { buildSingleReplica: false, deployGroupId: '' }) => {
-  let dataDeploy = JSON.parse(
-    fs.readFileSync(
-      `./engine-private/deploy/${options?.deployGroupId ? options.deployGroupId : process.argv[3]}.json`,
-      'utf8',
-    ),
-  ).map((deployId) => {
+const buildReplicaId = ({ deployId, replica }) => `${deployId}-${replica.slice(1)}`;
+
+const getDataDeploy = (
+  options = { buildSingleReplica: false, deployGroupId: '', deployId: '', disableSyncEnvPort: false },
+) => {
+  let dataDeploy = JSON.parse(fs.readFileSync(`./engine-private/deploy/${options.deployGroupId}.json`, 'utf8'));
+
+  if (options.deployId) dataDeploy = dataDeploy.filter((d) => d === options.deployId);
+
+  dataDeploy = dataDeploy.map((deployId) => {
     return {
       deployId,
     };
@@ -514,12 +519,11 @@ const getDataDeploy = (options = { buildSingleReplica: false, deployGroupId: '' 
     for (const host of Object.keys(serverConf))
       for (const path of Object.keys(serverConf[host])) {
         if (serverConf[host][path].replicas && serverConf[host][path].singleReplica) {
-          if (options && options.buildSingleReplica)
-            shellExec(`node bin/deploy build-single-replica ${deployObj.deployId} ${host} ${path}`);
+          if (options && options.buildSingleReplica) shellExec(Cmd.replica(deployObj.deployId, host, path));
           replicaDataDeploy = replicaDataDeploy.concat(
             serverConf[host][path].replicas.map((r) => {
               return {
-                deployId: `${deployObj.deployId}-${r.slice(1)}`,
+                deployId: buildReplicaId({ deployId: deployObj.deployId, replica: r }),
                 replicaHost: host,
               };
             }),
@@ -530,7 +534,11 @@ const getDataDeploy = (options = { buildSingleReplica: false, deployGroupId: '' 
     if (replicaDataDeploy.length > 0) buildDataDeploy = buildDataDeploy.concat(replicaDataDeploy);
   }
 
-  logger.info('buildDataDeploy', buildDataDeploy);
+  const enableSyncEnvPort = !options.disableSyncEnvPort && options.buildSingleReplica;
+  if (enableSyncEnvPort) shellExec(Cmd.syncPorts(options.deployGroupId));
+
+  logger.info('buildDataDeploy', { buildDataDeploy, enableSyncEnvPort });
+
   return buildDataDeploy;
 };
 
@@ -590,7 +598,239 @@ const validateTemplatePath = (absolutePath = '') => {
   return true;
 };
 
+const deployTest = async (dataDeploy) => {
+  const failed = [];
+  for (const deploy of dataDeploy) {
+    const deployServerConfPath = fs.existsSync(`./engine-private/replica/${deploy.deployId}/conf.server.json`)
+      ? `./engine-private/replica/${deploy.deployId}/conf.server.json`
+      : `./engine-private/conf/${deploy.deployId}/conf.server.json`;
+    const serverConf = loadReplicas(JSON.parse(fs.readFileSync(deployServerConfPath, 'utf8')));
+    let fail = false;
+    for (const host of Object.keys(serverConf))
+      for (const path of Object.keys(serverConf[host])) {
+        const urlTest = `https://${host}${path}`;
+        try {
+          const result = await axios.get(urlTest);
+          const test = result.data.split('<title>');
+          if (test[1])
+            logger.info('Success deploy', {
+              ...deploy,
+              result: test[1].split('</title>')[0],
+              urlTest,
+            });
+          else {
+            logger.error('Error deploy', {
+              ...deploy,
+              result: result.data,
+              urlTest,
+            });
+            fail = true;
+          }
+        } catch (error) {
+          logger.error('Error deploy', {
+            ...deploy,
+            message: error.message,
+            urlTest,
+          });
+          fail = true;
+        }
+      }
+    if (fail) failed.push(deploy);
+  }
+  return { failed };
+};
+
+const getDeployGroupId = () => {
+  const deployGroupIndexArg = process.argv.findIndex((a) => a.match(`deploy-group:`));
+  if (deployGroupIndexArg > -1) return process.argv[deployGroupIndexArg].split(':')[1].trim();
+  return 'dd';
+};
+
+const getCronBackUpFolder = (host = '', path = '') => {
+  return `${host}${path.replace(/\\/g, '/').replace(`/`, '-')}`;
+};
+
+const execDeploy = async (options = { deployId: 'default' }) => {
+  const { deployId } = options;
+  shellExec(Cmd.delete(deployId));
+  shellExec(Cmd.conf(deployId));
+  shellExec(Cmd.run(deployId));
+  return await new Promise(async (resolve) => {
+    const maxTime = 1000 * 60 * 5;
+    const minTime = 10000 * 2;
+    const intervalTime = 1000;
+    let currentTime = 0;
+    const attempt = () => {
+      if (currentTime >= minTime && !fs.existsSync(`./tmp/await-deploy`)) {
+        clearInterval(processMonitor);
+        return resolve(true);
+      }
+      cliSpinner(
+        intervalTime,
+        `[deploy.js] `,
+        ` Load instance | elapsed time ${currentTime / 1000}s / ${maxTime / 1000}s`,
+        'yellow',
+        'material',
+      );
+      currentTime += intervalTime;
+      if (currentTime >= maxTime) return resolve(false);
+    };
+    const processMonitor = setInterval(attempt, intervalTime);
+  });
+};
+
+const deployRun = async (dataDeploy, reset) => {
+  if (!fs.existsSync(`./tmp`)) fs.mkdirSync(`./tmp`, { recursive: true });
+  if (reset) fs.writeFileSync(`./tmp/runtime-router.json`, '{}', 'utf8');
+  for (const deploy of dataDeploy) await execDeploy(deploy);
+  const { failed } = await deployTest(dataDeploy);
+  if (failed.length > 0) {
+    for (const deploy of failed) logger.error(deploy.deployId, Cmd.run(deploy.deployId));
+    await read({ prompt: 'Press enter to retry failed processes\n' });
+    await deployRun(failed);
+  } else logger.info(`Deploy process successfully`);
+};
+
+const updateSrc = () => {
+  const silent = true;
+  shellExec(`git pull origin master`, { silent });
+  shellCd(`engine-private`);
+  shellExec(`git pull origin master`, { silent });
+  shellCd(`..`);
+  // shellExec(`npm install && npm install --only=dev`);
+};
+
+const restoreMacroDb = async (deployGroupId = '') => {
+  const dataDeploy = await getDataDeploy({ deployGroupId, buildSingleReplica: false });
+  for (const deployGroup of dataDeploy) {
+    if (!deployGroup.replicaHost) {
+      const deployServerConfPath = `./engine-private/conf/${deployGroup.deployId}/conf.server.json`;
+      const serverConf = JSON.parse(fs.readFileSync(deployServerConfPath, 'utf8'));
+
+      for (const host of Object.keys(serverConf)) {
+        for (const path of Object.keys(serverConf[host])) {
+          const { db, singleReplica } = serverConf[host][path];
+          if (db && !singleReplica) {
+            const cmd = `node bin/db ${host}${path} import ${deployGroup.deployId} cron`;
+            shellExec(cmd);
+          }
+        }
+      }
+    }
+  }
+};
+
+const mergeBackUp = async (baseBackJsonPath, outputFilePath) => {
+  const names = JSON.parse(fs.readFileSync(baseBackJsonPath, 'utf8')).map((p) =>
+    p.replaceAll(`\\`, '/').replaceAll('C:/', '/').replaceAll('c:/', '/'),
+  );
+  await new Promise((resolve) => {
+    splitFile
+      .mergeFiles(names, outputFilePath)
+      .then(() => {
+        resolve();
+      })
+      .catch((err) => {
+        console.log('Error: ', err);
+        resolve();
+      });
+  });
+};
+
+const getRestoreCronCmd = async (options = { host: '', path: '', conf: {}, deployId: '' }) => {
+  const { host, path, conf, deployId } = options;
+  const { runtime, db, git, directory } = conf[host][path];
+  const { provider, name, user, password = '', backupPath = '' } = db;
+
+  if (['xampp', 'lampp'].includes(runtime)) {
+    logger.info('Create database', `node bin/db ${host}${path} create ${deployId}`);
+    shellExec(`node bin/db ${host}${path} create ${deployId}`);
+  }
+
+  if (git) {
+    if (directory && !fs.existsSync(directory)) fs.mkdirSync(directory, { recursive: true });
+
+    shellExec(`git clone ${git}`);
+
+    // fs.mkdirSync(`./public/${host}${path}`, { recursive: true });
+
+    if (fs.existsSync(`./${git.split('/').pop()}`))
+      fs.moveSync(`./${git.split('/').pop()}`, directory ? directory : `./public/${host}${path}`, {
+        overwrite: true,
+      });
+  }
+
+  let cmd, currentBackupTimestamp, baseBackUpPath;
+
+  if (process.argv.includes('cron')) {
+    baseBackUpPath = `${process.cwd()}/engine-private/cron-backups/${getCronBackUpFolder(host, path)}`;
+
+    const files = await fs.readdir(baseBackUpPath, { withFileTypes: true });
+
+    currentBackupTimestamp = files
+      .map((fileObj) => parseInt(fileObj.name))
+      .sort((a, b) => a - b)
+      .reverse()[0];
+  }
+
+  switch (provider) {
+    case 'mariadb':
+      {
+        if (process.argv.includes('cron')) {
+          cmd = `mysql -u ${user} -p${password} ${name} < ${baseBackUpPath}/${currentBackupTimestamp}/${name}.sql`;
+          if (fs.existsSync(`${baseBackUpPath}/${currentBackupTimestamp}/${name}-parths.json`))
+            await mergeBackUp(
+              `${baseBackUpPath}/${currentBackupTimestamp}/${name}-parths.json`,
+              `${baseBackUpPath}/${currentBackupTimestamp}/${name}.sql`,
+            );
+        } else {
+          cmd = `mysql -u ${user} -p${password} ${name} < ${
+            backupPath ? backupPath : `./engine-private/sql-backups/${name}.sql`
+          }`;
+          if (
+            fs.existsSync(
+              `${
+                backupPath ? backupPath.split('/').slice(0, -1).join('/') : `./engine-private/sql-backups`
+              }/${name}-parths.json`,
+            )
+          )
+            await mergeBackUp(
+              `${
+                backupPath ? backupPath.split('/').slice(0, -1).join('/') : `./engine-private/sql-backups`
+              }/${name}-parths.json`,
+              `${
+                backupPath ? backupPath.split('/').slice(0, -1).join('/') : `./engine-private/sql-backups`
+              }/${name}.sql`,
+            );
+        }
+      }
+      break;
+
+    case 'mongoose':
+      {
+        if (process.argv.includes('cron')) {
+          cmd = `mongorestore -d ${name} ${baseBackUpPath}/${currentBackupTimestamp}/${name}`;
+        } else cmd = `mongorestore -d ${name} ${backupPath ? backupPath : `./engine-private/mongodb-backup/${name}`}`;
+      }
+      break;
+  }
+
+  // logger.info('Restore', cmd);
+
+  return cmd;
+};
+
+const Cmd = {
+  delete: (deployId) => `pm2 delete ${deployId}`,
+  run: (deployId) => `node bin/deploy run ${deployId}`,
+  build: (deployId) => `node bin/deploy build-full-client ${deployId}${process.argv.includes('l') ? ' l' : ''}`,
+  conf: (deployId, env) => `node bin/deploy conf ${deployId} ${env ? env : 'production'}`,
+  replica: (deployId, host, path) => `node bin/deploy build-single-replica ${deployId} ${host} ${path}`,
+  syncPorts: (deployGroupId) => `node bin/deploy sync-env-port ${deployGroupId}`,
+};
+
 export {
+  Cmd,
   Config,
   loadConf,
   loadReplicas,
@@ -608,4 +848,13 @@ export {
   cliSpinner,
   getDataDeploy,
   validateTemplatePath,
+  buildReplicaId,
+  restoreMacroDb,
+  getDeployGroupId,
+  execDeploy,
+  deployRun,
+  updateSrc,
+  getCronBackUpFolder,
+  getRestoreCronCmd,
+  mergeBackUp,
 };

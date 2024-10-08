@@ -1,7 +1,6 @@
 import fs from 'fs-extra';
 import axios from 'axios';
-import ncp from 'copy-paste';
-import read from 'read';
+
 import dotenv from 'dotenv';
 import plantuml from 'plantuml';
 
@@ -19,8 +18,13 @@ import {
   addWsConf,
   buildWsSrc,
   cloneSrcComponents,
-  cliSpinner,
+  getDeployGroupId,
+  deployRun,
+  updateSrc,
   getDataDeploy,
+  buildReplicaId,
+  Cmd,
+  restoreMacroDb,
 } from '../src/server/conf.js';
 import { buildClient } from '../src/server/client-build.js';
 import { range, setPad, timer, uniqueArray } from '../src/client/components/core/CommonJs.js';
@@ -32,120 +36,6 @@ const logger = loggerFactory(import.meta);
 logger.info('argv', process.argv);
 
 const [exe, dir, operator] = process.argv;
-
-const deployTest = async (dataDeploy) => {
-  const failed = [];
-  for (const deploy of dataDeploy) {
-    const deployServerConfPath = fs.existsSync(`./engine-private/replica/${deploy.deployId}/conf.server.json`)
-      ? `./engine-private/replica/${deploy.deployId}/conf.server.json`
-      : `./engine-private/conf/${deploy.deployId}/conf.server.json`;
-    const serverConf = loadReplicas(JSON.parse(fs.readFileSync(deployServerConfPath, 'utf8')));
-    let fail = false;
-    for (const host of Object.keys(serverConf))
-      for (const path of Object.keys(serverConf[host])) {
-        const urlTest = `https://${host}${path}`;
-        try {
-          const result = await axios.get(urlTest);
-          const test = result.data.split('<title>');
-          if (test[1])
-            logger.info('Success deploy', {
-              ...deploy,
-              result: test[1].split('</title>')[0],
-              urlTest,
-            });
-          else {
-            logger.error('Error deploy', {
-              ...deploy,
-              result: result.data,
-              urlTest,
-            });
-            fail = true;
-          }
-        } catch (error) {
-          logger.error('Error deploy', {
-            ...deploy,
-            message: error.message,
-            urlTest,
-          });
-          fail = true;
-        }
-      }
-    if (fail) failed.push(deploy);
-  }
-  return { failed };
-};
-
-const Cmd = {
-  clientBuild: (deploy) =>
-    `node bin/deploy build-full-client${process.argv[4] === 'zip' ? '-zip' : ''} ${deploy.deployId}${
-      process.argv.includes('docs') ? ' docs' : ''
-    }`,
-  delete: (deploy) => `pm2 delete ${deploy.deployId}`,
-  run: (deploy) => `node bin/deploy run ${deploy.deployId}`,
-  exec: async (cmd, deployId) => {
-    if (process.argv[4] === 'copy') {
-      await ncp.copy(cmd);
-      await read({ prompt: 'Command copy to clipboard, press enter to continue.\n' });
-      if (!fs.existsSync(`./tmp/await-deploy`)) return true;
-      return false;
-    } else {
-      shellExec(cmd);
-      return await new Promise(async (resolve) => {
-        const maxTime = 1000 * 60 * 5;
-        const minTime = 10000 * 2;
-        const intervalTime = 1000;
-        let currentTime = 0;
-        const attempt = () => {
-          if (currentTime >= minTime && !fs.existsSync(`./tmp/await-deploy`)) {
-            clearInterval(processMonitor);
-            return resolve(true);
-          }
-          cliSpinner(
-            intervalTime,
-            `[deploy.js] `,
-            ` Load instance | elapsed time ${currentTime / 1000}s / ${maxTime / 1000}s`,
-            'yellow',
-            'material',
-          );
-          currentTime += intervalTime;
-          if (currentTime === maxTime) return resolve(false);
-        };
-        const processMonitor = setInterval(attempt, intervalTime);
-      });
-    }
-  },
-};
-
-const deployRun = async (dataDeploy, reset) => {
-  if (!fs.existsSync(`./tmp`)) fs.mkdirSync(`./tmp`, { recursive: true });
-  if (reset) fs.writeFileSync(`./tmp/runtime-router.json`, '{}', 'utf8');
-  for (const deploy of dataDeploy) {
-    const deployRunAttempt = async () => {
-      await Cmd.exec(Cmd.delete(deploy));
-      const execResult = await Cmd.exec(Cmd.run(deploy));
-      if (!execResult) {
-        logger.error('Deploy time out deploy restart', { dataDeploy, reset });
-        await deployRunAttempt();
-      }
-    };
-    await deployRunAttempt();
-  }
-  const { failed } = await deployTest(dataDeploy);
-  for (const deploy of failed) logger.error(deploy.deployId, Cmd.run(deploy));
-  if (failed.length > 0) {
-    process.argv[4] = 'copy';
-    await deployRun(failed);
-  }
-};
-
-const updateSrc = () => {
-  const silent = true;
-  shellExec(`git pull origin master`, { silent });
-  shellCd(`engine-private`);
-  shellExec(`git pull origin master`, { silent });
-  shellCd(`..`);
-  // shellExec(`npm install && npm install --only=dev`);
-};
 
 try {
   switch (operator) {
@@ -249,8 +139,20 @@ try {
     }
     case 'run':
       {
-        loadConf(process.argv[3]);
-        shellExec(`npm start ${process.argv[3]}`);
+        if (process.argv.includes('replicas')) {
+          const deployGroupId = getDeployGroupId();
+          const dataDeploy = getDataDeploy({
+            deployId: process.argv[3],
+            buildSingleReplica: true,
+            deployGroupId,
+          });
+          if (fs.existsSync(`./tmp/await-deploy`)) fs.remove(`./tmp/await-deploy`);
+          updateSrc();
+          await deployRun(dataDeploy);
+        } else {
+          loadConf(process.argv[3]);
+          shellExec(`npm start ${process.argv[3]}`);
+        }
       }
       break;
     case 'new-nodejs-app':
@@ -317,15 +219,13 @@ try {
         shellExec(`npm run dev ${deployId}`);
       }
       break;
-    case 'build-full-client-zip':
     case 'build-full-client':
       {
         const { deployId, folder } = loadConf(process.argv[3]);
 
-        await logger.setUpInfo();
-
         let argHost = process.argv[4] ? process.argv[4].split(',') : undefined;
         let argPath = process.argv[5] ? process.argv[5].split(',') : undefined;
+        let deployIdSingleReplicas = [];
         const serverConf = deployId
           ? JSON.parse(fs.readFileSync(`./conf/conf.server.json`, 'utf8'))
           : Config.default.server;
@@ -340,11 +240,27 @@ try {
             } else {
               serverConf[host][path].liteBuild = process.argv.includes('l') ? true : false;
               serverConf[host][path].minifyBuild = process.env.NODE_ENV === 'production' ? true : false;
+              if (process.env.NODE_ENV === 'development' && process.argv.includes('static')) {
+                serverConf[host][path].apiBaseProxyPath = '/';
+                serverConf[host][path].apiBaseHost = `localhost:${parseInt(process.env.PORT) + 1}`;
+              }
+              if (serverConf[host][path].singleReplica && serverConf[host][path].replicas) {
+                deployIdSingleReplicas = deployIdSingleReplicas.concat(
+                  serverConf[host][path].replicas.map((replica) => buildReplicaId({ deployId, replica })),
+                );
+
+                shellExec(Cmd.replica(deployId, host, path));
+              }
             }
           }
         }
         fs.writeFileSync(`./conf/conf.server.json`, JSON.stringify(serverConf, null, 4), 'utf-8');
         await buildClient();
+
+        for (const replicaDeployId of deployIdSingleReplicas) {
+          shellExec(Cmd.conf(replicaDeployId));
+          shellExec(Cmd.build(replicaDeployId));
+        }
       }
       break;
 
@@ -364,8 +280,7 @@ try {
       {
         if (fs.existsSync(`./tmp/await-deploy`)) fs.remove(`./tmp/await-deploy`);
         updateSrc();
-        const dataDeploy = getDataDeploy({ buildSingleReplica: true });
-        shellExec(`node bin/deploy sync-env-port ${process.argv[3]}`);
+        const dataDeploy = getDataDeploy({ deployGroupId: process.argv[3], buildSingleReplica: true });
         await deployRun(dataDeploy, true);
       }
       break;
@@ -374,11 +289,10 @@ try {
       {
         if (fs.existsSync(`./tmp/await-deploy`)) fs.remove(`./tmp/await-deploy`);
         updateSrc();
-        const dataDeploy = getDataDeploy({ buildSingleReplica: true });
-        shellExec(`node bin/deploy sync-env-port ${process.argv[3]}`);
+        const dataDeploy = getDataDeploy({ deployGroupId: process.argv[3], buildSingleReplica: true });
         for (const deploy of dataDeploy) {
-          shellExec(`node bin/deploy conf ${deploy.deployId} production`);
-          shellExec(Cmd.clientBuild(deploy), { silent: true });
+          shellExec(Cmd.conf(deploy.deployId));
+          shellExec(Cmd.build(deploy.deployId));
         }
         await deployRun(dataDeploy, true);
       }
@@ -401,12 +315,12 @@ try {
 
         fs.writeFileSync(promConfigPath, rawConfig, 'utf8');
 
-        await Cmd.exec(`docker-compose -f engine-private/prometheus/prometheus-service.yml up -d`);
+        shellExec(`docker-compose -f engine-private/prometheus/prometheus-service.yml up -d`);
       }
       break;
 
     case 'sync-env-port':
-      const dataDeploy = getDataDeploy();
+      const dataDeploy = getDataDeploy({ deployGroupId: process.argv[3], disableSyncEnvPort: true });
       const dataEnv = [
         { env: 'production', port: 3000 },
         { env: 'development', port: 4000 },
@@ -559,8 +473,7 @@ try {
       break;
     }
     case 'build-macro-replica':
-      getDataDeploy({ buildSingleReplica: true });
-      shellExec(`node bin/deploy sync-env-port ${process.argv[3]}`);
+      getDataDeploy({ deployGroupId: process.argv[3], buildSingleReplica: true });
       break;
     case 'update-version':
       {
@@ -653,6 +566,14 @@ ${uniqueArray(logs.all.map((log) => `- ${log.author_name} ([${log.author_email}]
       // author_name: 'fcoverdugo',
       // author_email: 'fcoverdugoa@underpost.net'
     }
+
+    case 'restore-macro-db':
+      {
+        const deployGroupId = process.argv[3];
+        await restoreMacroDb(deployGroupId);
+      }
+
+      break;
     default:
       break;
   }

@@ -86,6 +86,7 @@ const Modal = {
       onDragEndListener: {},
       onObserverListener: {},
       onClickListener: {},
+      query: options.query ? `${window.location.search}` : undefined,
     };
     if (options && 'mode' in options) {
       this.Data[idModal][options.mode] = {};
@@ -1285,7 +1286,7 @@ const Modal = {
                 }
               }
               // console.warn('SET MODAL URI', newPath);
-              setPath(newPath);
+              setPath(`${newPath}${Modal.homeCid ? `?cid=${Modal.homeCid}` : ''}`);
               return setDocTitle({ ...options.RouterInstance, route: '' });
             }
           })();
@@ -1427,6 +1428,11 @@ const Modal = {
   setTopModalCallback: function (idModal) {
     s(`.${idModal}`).style.zIndex = '4';
     this.currentTopModalId = `${idModal}`;
+    if (
+      this.Data[idModal].query &&
+      `${location.pathname}${window.location.search}` !== `${location.pathname}${this.Data[idModal].query}`
+    )
+      setPath(`${location.pathname}${this.Data[idModal].query}`);
   },
   mobileModal: () => window.innerWidth < 600 || window.innerHeight < 600,
   writeHTML: ({ idModal, html }) => htmls(`.html-${idModal}`, html),
@@ -1543,6 +1549,16 @@ const Modal = {
     // if (!s(`.btn-close-modal-menu`).classList.contains('hide')) return s(`.main-btn-home`).click();
     if (!s(`.btn-close-modal-menu`).classList.contains('hide')) return s(`.btn-close-modal-menu`).click();
     if (!s(`.btn-menu-modal-menu`).classList.contains('hide')) return s(`.btn-menu-modal-menu`).click();
+  },
+  cleanUI: function () {
+    s(`.top-bar`).classList.add('hide');
+    s(`.bottom-bar`).classList.add('hide');
+    s(`.modal-menu`).classList.add('hide');
+  },
+  restoreUI: function () {
+    s(`.top-bar`).classList.remove('hide');
+    s(`.bottom-bar`).classList.remove('hide');
+    s(`.modal-menu`).classList.remove('hide');
   },
 };
 

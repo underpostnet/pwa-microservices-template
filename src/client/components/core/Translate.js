@@ -117,6 +117,7 @@ const TranslateCore = {
     Translate.Data['es'] = { en: 'Spanish', es: 'Español' };
     Translate.Data['theme'] = { en: 'Theme', es: 'Tema' };
     Translate.Data['success-upload-file'] = { en: 'file uploaded successfully', es: 'archivo subido correctamente' };
+    Translate.Data['file'] = { en: 'file', es: 'archivo' };
     Translate.Data['error-upload-file'] = { en: 'error uploading file', es: 'error al subir el archivo' };
     Translate.Data['generate'] = { en: 'generate', es: 'Generar' };
     Translate.Data['download'] = { en: 'download', es: 'Descargar' };
@@ -206,14 +207,18 @@ const TranslateCore = {
       es: 'No se encontraron resultados',
       en: 'No results found',
     };
+    Translate.Data['no-preview-available'] = {
+      en: 'No preview available',
+      es: 'Vista previa no disponible',
+    };
     Translate.Data['recent'] = { es: 'Reciente', en: 'recent' };
 
     Translate.Data = {
       ...Translate.Data,
       ...{
         title: {
-          en: 'New Content Entry',
-          es: 'Nueva entrada de blog',
+          en: 'Title Content Entry',
+          es: 'Titulo de entrada',
         },
         author: {
           en: 'Author',
@@ -398,9 +403,33 @@ const TranslateCore = {
       en: 'Event successfully added to scheduler.',
       es: 'Evento añadido correctamente al calendario.',
     };
+    Translate.Data['success-edit-event-scheduler'] = {
+      en: 'Event successfully updated to scheduler.',
+      es: 'Evento actualizado correctamente al calendario.',
+    };
     Translate.Data['success-get-events-scheduler'] = {
       en: 'Events successfully retrieved from scheduler.',
       es: 'Eventos obtenidos correctamente del calendario.',
+    };
+    Translate.Data['success-add-post'] = {
+      en: 'Post added successfully',
+      es: 'Post añadido con éxito',
+    };
+    Translate.Data['success-get-posts'] = {
+      en: 'Posts successfully retrieved',
+      es: 'Posts obtenidos con éxito',
+    };
+    Translate.Data['confirm-delete-item'] = {
+      en: 'Are you sure you want to delete this item?',
+      es: '¿Estás seguro de que deseas eliminar este elemento?',
+    };
+    Translate.Data['success-edit-post'] = {
+      en: 'Post edited successfully',
+      es: 'Post editado con éxito',
+    };
+    Translate.Data['confirm-delete-all-data'] = {
+      en: 'Are you sure you want to delete all data?',
+      es: 'Estas seguro de eliminar todos los datos?',
     };
   },
 };

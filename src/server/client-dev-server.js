@@ -9,7 +9,9 @@ const createClientDevServer = () => {
   // process.argv.slice(2).join(' ')
   shellExec(`env-cmd -f .env.development node bin/deploy build-full-client ${process.argv.slice(2).join(' ')} l`);
   shellExec(
-    `env-cmd -f .env.development node src/api ${process.argv[2]}${process.argv[5] ? ` ${process.argv[5]}` : ''}`,
+    `env-cmd -f .env.development node src/api ${process.argv[2]}${process.argv[5] ? ` ${process.argv[5]}` : ''}${
+      process.argv.includes('static') ? ' static' : ''
+    }`,
     { async: true },
   );
 
@@ -51,7 +53,7 @@ const createClientDevServer = () => {
       fs.writeFileSync(`./tmp/client.build.json`, JSON.stringify(buildPathScopeBuild, null, 4));
     })
     .on('crash', function (error) {
-      logger.error(error, 'script crashed for some reason');
+      logger.error(error, error.message);
     });
 };
 
