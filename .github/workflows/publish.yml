@@ -1,7 +1,7 @@
 name: publish to npmjs
 on:
   release:
-    types: [published, released]
+    types: [released]
 jobs:
   build-and-publish:
     # prevents this action from running on forks
