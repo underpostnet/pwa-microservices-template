@@ -22,6 +22,16 @@ jobs:
 
       - run: npm ci
 
+      # Publish to npm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '21.x'
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
       # Publish to GitHub Packages
       - name: Setup node to publish to GitHub Packages
         uses: actions/setup-node@v4
@@ -36,15 +46,5 @@ jobs:
           echo "//npm.pkg.github.com/:_authToken=${{ secrets.GIT_AUTH_TOKEN }}" > ~/.npmrc
           echo "@underposnet:registry=https://npm.pkg.github.com" >> ~/.npmrc
           npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      # Publish to npm
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '21.x'
-          registry-url: 'https://registry.npmjs.org'
-
-      - run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
