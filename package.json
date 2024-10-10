@@ -133,6 +133,8 @@
   },
   "publishConfig": {
     "provenance": true,
-    "access": "public"
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "@underpostnet:registry": "https://npm.pkg.github.com"
   }
 }
