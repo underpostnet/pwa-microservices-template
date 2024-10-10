@@ -27,10 +27,12 @@ jobs:
         with:
           node-version: '21.x'
           registry-url: 'https://registry.npmjs.org'
-
-      - run: npm publish --provenance --access public
-        env:
+          # Defaults to the user or organization that owns the workflow file
+          scope: '@underpostnet'
+      - env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        name: Publish to npm
+        run: npm publish --provenance --access public
 
       # Publish to GitHub Packages
       - name: Setup node to publish to GitHub Packages
