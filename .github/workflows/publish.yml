@@ -28,7 +28,7 @@ jobs:
           node-version: '21.x'
           registry-url: 'https://registry.npmjs.org'
           # Defaults to the user or organization that owns the workflow file
-          scope: '@underpostnet'
+          # scope: '@underpostnet'
       - env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         name: Publish to npm
@@ -44,6 +44,7 @@ jobs:
           scope: '@underpostnet'
 
       - run: |
+          node ./bin/deploy rename-package @underpostnet/underpost
           npm config set //npm.pkg.github.com/:_authToken=${{ secrets.GIT_AUTH_TOKEN }}
           echo "//npm.pkg.github.com/:_authToken=${{ secrets.GIT_AUTH_TOKEN }}" > ~/.npmrc
           echo "@underposnet:registry=https://npm.pkg.github.com" >> ~/.npmrc

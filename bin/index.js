@@ -62,6 +62,12 @@ program
   .command('test')
   .description('Run tests')
   .action(() => {
+    console.log(
+      underpostASCI() +
+        `
+    v${version} https://www.nexodev.org/docs
+    `,
+    );
     shellCd(`${globalBinFolder}`);
     shellExec(`npm run test`);
   });
