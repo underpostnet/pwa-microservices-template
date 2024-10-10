@@ -30,6 +30,8 @@ import { buildClient } from '../src/server/client-build.js';
 import { range, setPad, timer, uniqueArray } from '../src/client/components/core/CommonJs.js';
 import toJsonSchema from 'to-json-schema';
 import simpleGit from 'simple-git';
+import { MongooseDB } from '../src/db/mongo/MongooseDB.js';
+import { Lampp } from '../src/runtime/lampp/Lampp.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -250,6 +252,19 @@ try {
                 );
 
                 shellExec(Cmd.replica(deployId, host, path));
+              }
+              if (serverConf[host][path].db) {
+                switch (serverConf[host][path].db.provider) {
+                  case 'mariadb':
+                    {
+                      shellExec(`node bin/db ${host}${path} create ${deployId}`);
+                    }
+
+                    break;
+
+                  default:
+                    break;
+                }
               }
             }
           }
@@ -574,6 +589,16 @@ ${uniqueArray(logs.all.map((log) => `- ${log.author_name} ([${log.author_email}]
       }
 
       break;
+
+    case 'mongo': {
+      await MongooseDB.server();
+      break;
+    }
+
+    case 'lampp': {
+      await Lampp.install();
+    }
+
     default:
       break;
   }
