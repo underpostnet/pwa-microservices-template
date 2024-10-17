@@ -570,7 +570,8 @@ try {
           'utf8',
         );
 
-        shellExec(`node bin/deploy update-package`);
+        // only engine
+        // shellExec(`node bin/deploy update-package`);
       }
       break;
 
