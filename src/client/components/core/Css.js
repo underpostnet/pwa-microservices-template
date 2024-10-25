@@ -607,7 +607,11 @@ const typeWriter = async function ({ id, html, seconds, endHideBlink, container 
   return new Promise((resolve) => {
     // https://developer.mozilla.org/en-US/docs/Web/CSS/animation-timing-function
     // https://www.w3schools.com/cssref/css3_pr_animation-fill-mode.php
-    const typingAnimationTransitionStyle = [`1s linear`, `${seconds}s steps(30, end)`, `1s forwards`];
+    const typingAnimationTransitionStyle = [
+      `1s linear`,
+      `${seconds}s steps(${html.split(' ').length * 6}, end)`,
+      `1s forwards`,
+    ];
     const render = html`
       <style class="style-${id}">
         .tw-${id}-typed-out {

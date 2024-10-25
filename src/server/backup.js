@@ -2,25 +2,17 @@ import fs from 'fs-extra';
 import { loggerFactory } from './logger.js';
 import { shellCd, shellExec } from './process.js';
 import { getCronBackUpFolder, getDataDeploy } from './conf.js';
-import cron from 'node-cron';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const logger = loggerFactory(import.meta);
 
 const BackUpManagement = {
+  repoUrl: `https://${process.env.GITHUB_BACKUP_TOKEN}@github.com/${process.env.GITHUB_BACKUP_USERNAME}/${process.env.GITHUB_BACKUP_REPO}.git`,
   Init: async function () {
-    await BackUpManagement.Callback();
-
-    // Schedule the sending process to run every day at 1 am
-    cron.schedule(
-      '0 1 * * *',
-      async () => {
-        await BackUpManagement.Callback();
-      },
-      {
-        scheduled: true,
-        timezone: process.env.TIME_ZONE || 'America/New_York',
-      },
-    );
+    await this.Callback();
+    return this.Callback;
   },
   Callback: async function () {
     const privateCronConfPath = `./engine-private/conf/${process.argv[2]}/conf.cron.json`;
@@ -54,7 +46,7 @@ const BackUpManagement = {
         for (const host of Object.keys(confServer))
           for (const path of Object.keys(confServer[host])) {
             // retention policy
-            let { db, backupFrequency, maxBackupRetention, singleReplica } = confServer[host][path];
+            let { db, backupFrequency, maxBackupRetention, singleReplica, wp, git, directory } = confServer[host][path];
 
             if (!db || singleReplica) continue;
 
@@ -75,26 +67,41 @@ const BackUpManagement = {
               case 'daily':
 
               default:
-                if (currentBackupsDirs[0] && currentDate - currentBackupsDirs[0] <= 1000 * 60 * 60 * 24) continue;
+                if (currentBackupsDirs[0] && currentDate - currentBackupsDirs[0] < 1000 * 60 * 60 * 24) continue;
                 break;
             }
 
-            for (const retentionPath of currentBackupsDirs.filter((t, i) => i >= maxBackupRetention + 1)) {
+            for (const retentionPath of currentBackupsDirs.filter((t, i) => i >= maxBackupRetention - 1)) {
               const removePathRetention = `${backUpPath}/${retentionPath}`;
+              logger.info('Remove backup folder', removePathRetention);
               fs.removeSync(removePathRetention);
             }
 
             fs.mkdirSync(`${backUpPath}/${currentDate}`, { recursive: true });
 
             shellExec(`node bin/db ${host}${path} export ${deployId} ${backUpPath}/${currentDate}`);
+
+            if (wp) {
+              const repoUrl = `https://${process.env.GITHUB_BACKUP_TOKEN}@github.com/${
+                process.env.GITHUB_BACKUP_USERNAME
+              }/${git.split('/').pop()}.git`;
+
+              shellExec(
+                `cd ${directory}` +
+                  ` && git pull ${repoUrl}` +
+                  ` && git add . && git commit -m "backup ${new Date().toLocaleDateString()}"` +
+                  ` && git push ${repoUrl}`,
+              );
+            }
           }
       }
     }
-    shellCd(`./engine-private`);
-    shellExec(`git pull origin master`);
-    shellExec(`git add . && git commit -m "backup ${new Date().toLocaleDateString()}"`);
-    shellExec(`git push origin master`);
-    shellCd(`..`);
+    shellExec(
+      `cd ./engine-private/cron-backups` +
+        ` && git pull ${BackUpManagement.repoUrl}` +
+        ` && git add . && git commit -m "backup ${new Date().toLocaleDateString()}"` +
+        ` && git push ${BackUpManagement.repoUrl}`,
+    );
   },
 };
 

@@ -136,13 +136,14 @@ const LoadingAnimation = {
       htmls('.ssr-loading-bar', html`<div class="ssr-loading-bar-block ssr-blink-bar"></div>`);
     },
   },
-  removeSplashScreen: function () {
+  removeSplashScreen: function (backgroundContainer) {
     if (s(`.clean-cache-container`)) s(`.clean-cache-container`).style.display = 'none';
-    if (s('.ssr-background'))
+    if (!backgroundContainer) backgroundContainer = '.ssr-background';
+    if (s(backgroundContainer))
       setTimeout(() => {
-        s('.ssr-background').style.opacity = 0;
+        s(backgroundContainer).style.opacity = 0;
         setTimeout(async () => {
-          s('.ssr-background').style.display = 'none';
+          s(backgroundContainer).style.display = 'none';
         }, 300);
       });
   },
@@ -168,9 +169,7 @@ const LoadingAnimation = {
         if (nameSrcLoad)
           htmls(
             `.ssr-loading-info`,
-            html`<span style="color: white">Download </span> <br />
-              <br />
-              ...${nameSrcLoad.slice(-30).replaceAll('file', 'storage')}`,
+            html`<span style="color: white">Loading </span> ...${nameSrcLoad.slice(-30).replaceAll('file', 'storage')}`,
           );
       }
     }

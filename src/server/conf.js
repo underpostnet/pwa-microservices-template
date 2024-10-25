@@ -619,6 +619,8 @@ const deployTest = async (dataDeploy) => {
     let fail = false;
     for (const host of Object.keys(serverConf))
       for (const path of Object.keys(serverConf[host])) {
+        const { singleReplica } = serverConf[host][path];
+        if (singleReplica) continue;
         const urlTest = `https://${host}${path}`;
         try {
           const result = await axios.get(urlTest);
@@ -700,15 +702,6 @@ const deployRun = async (dataDeploy, reset) => {
     await read({ prompt: 'Press enter to retry failed processes\n' });
     await deployRun(failed);
   } else logger.info(`Deploy process successfully`);
-};
-
-const updateSrc = () => {
-  const silent = true;
-  shellExec(`git pull origin master`, { silent });
-  shellCd(`engine-private`);
-  shellExec(`git pull origin master`, { silent });
-  shellCd(`..`);
-  // shellExec(`npm install && npm install --only=dev`);
 };
 
 const restoreMacroDb = async (deployGroupId = '') => {
@@ -881,7 +874,6 @@ export {
   getDeployGroupId,
   execDeploy,
   deployRun,
-  updateSrc,
   getCronBackUpFolder,
   getRestoreCronCmd,
   mergeBackUp,

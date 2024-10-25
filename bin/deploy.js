@@ -20,7 +20,6 @@ import {
   cloneSrcComponents,
   getDeployGroupId,
   deployRun,
-  updateSrc,
   getDataDeploy,
   buildReplicaId,
   Cmd,
@@ -150,7 +149,6 @@ try {
             deployGroupId,
           });
           if (fs.existsSync(`./tmp/await-deploy`)) fs.remove(`./tmp/await-deploy`);
-          updateSrc();
           await deployRun(dataDeploy);
         } else {
           loadConf(process.argv[3]);
@@ -295,7 +293,6 @@ try {
     case 'run-macro':
       {
         if (fs.existsSync(`./tmp/await-deploy`)) fs.remove(`./tmp/await-deploy`);
-        updateSrc();
         const dataDeploy = getDataDeploy({ deployGroupId: process.argv[3], buildSingleReplica: true });
         await deployRun(dataDeploy, true);
       }
@@ -304,7 +301,6 @@ try {
     case 'run-macro-build':
       {
         if (fs.existsSync(`./tmp/await-deploy`)) fs.remove(`./tmp/await-deploy`);
-        updateSrc();
         const dataDeploy = getDataDeploy({ deployGroupId: process.argv[3], buildSingleReplica: true });
         for (const deploy of dataDeploy) {
           shellExec(Cmd.conf(deploy.deployId));
@@ -570,8 +566,8 @@ try {
           'utf8',
         );
 
-        // only engine
-        // shellExec(`node bin/deploy update-package`);
+        shellExec(`node bin/deploy update-package`);
+        shellExec(`auto-changelog`);
       }
       break;
 
