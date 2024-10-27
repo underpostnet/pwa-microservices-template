@@ -34,10 +34,14 @@ jobs:
         #     --[no-]add            add URL
         #     --[no-]delete         delete URLs
 
-      - name: Update github package
+      - name: Install dependencies and set repo configuration
         run: |
+          npm install
           node ./bin/deploy rename-package @underpostnet/underpost
           node ./bin/deploy set-repo underpostnet/pwa-microservices-template-ghpkg
+
+      - name: Push to github package repository
+        run: |
           git status
           git config user.name 'underpostnet'
           git config user.email 'fcoverdugoa@underpost.net'
