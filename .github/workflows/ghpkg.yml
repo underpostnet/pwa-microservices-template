@@ -59,8 +59,10 @@ jobs:
         run: |
           pwd
           git status
-          git remote set-url origin ${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/pwa-microservices-template-ghpkg.git
+          git remote set-url origin git@github.com:underpostnet/pwa-microservices-template-ghpkg.git
           git add package.json
           git add package-lock.json       
           git commit -m "Update github repo package"
-          git push -u origin master
+          git push -u origin https://${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/pwa-microservices-template-ghpkg.git
+
+#          git push -u origin master
