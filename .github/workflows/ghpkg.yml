@@ -45,5 +45,6 @@ jobs:
           git status
           git config --global user.name 'underpostnet'
           git config --global user.email 'fcoverdugoa@underpost.net'
-          git remote add origin https://github.com/underpostnet/pwa-microservices-template-ghpkg.git
+          echo pwd
+          git remote set-url https://github.com/underpostnet/pwa-microservices-template-ghpkg.git
           git push origin https://${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/pwa-microservices-template-ghpkg.git
