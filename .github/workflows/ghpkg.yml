@@ -14,36 +14,29 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.x'
-          registry-url: 'https://npm.pkg.github.com'
-
       - name: Clone repository
         uses: actions/checkout@v3
 
-      # - name: Get npm root
-      #   run: sudo npm root -g
+        # - name: Get npm root
+        #   run: sudo npm root -g
 
-      - name: Install Dependencies
-        run: npm install
+        # - run: npm ci
 
-      # - run: npm ci
+        # - name: Install underpost cli
+        #   run: sudo npm install -g underpost
 
-      # - name: Install underpost cli
-      #   run: sudo npm install -g underpost
+        # usage: git remote set-url [--push] <name> <newurl> [<oldurl>]
+        #    or: git remote set-url --add <name> <newurl>
+        #    or: git remote set-url --delete <name> <url>
+        #     --[no-]push           manipulate push URLs
+        #     --[no-]add            add URL
+        #     --[no-]delete         delete URLs
 
-      # usage: git remote set-url [--push] <name> <newurl> [<oldurl>]
-      #    or: git remote set-url --add <name> <newurl>
-      #    or: git remote set-url --delete <name> <url>
-      #     --[no-]push           manipulate push URLs
-      #     --[no-]add            add URL
-      #     --[no-]delete         delete URLs
-
-      - uses: actions/checkout@v3
-        name: Update github repo package
-      - run: |
+      - name: Update github package
+        run: |
+          curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+          nvm install 22.9.0
+          nvm use 22.9.0
           node ./bin/deploy rename-package @underpostnet/underpost
           node ./bin/deploy set-repo underpostnet/pwa-microservices-template-ghpkg
           git status
