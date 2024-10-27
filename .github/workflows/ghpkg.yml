@@ -14,8 +14,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Clone repository
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
 
         # - name: Get npm root
         #   run: sudo npm root -g
@@ -34,9 +36,6 @@ jobs:
 
       - name: Update github package
         run: |
-          curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
-          nvm install 22.9.0
-          nvm use 22.9.0
           node ./bin/deploy rename-package @underpostnet/underpost
           node ./bin/deploy set-repo underpostnet/pwa-microservices-template-ghpkg
           git status
