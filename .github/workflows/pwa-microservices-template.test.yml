@@ -6,6 +6,7 @@ on:
     branches: ['master']
 jobs:
   test:
+    if: github.repository == 'underpostnet/pwa-microservices-template'
     name: Node ${{ matrix.node }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:

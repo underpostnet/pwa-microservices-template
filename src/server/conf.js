@@ -240,8 +240,8 @@ const buildClientSrc = async (
   }
 
   fs.writeFileSync(
-    `./src/client/ssr/head-components/${toClientVariableName}Scripts.js`,
-    formattedSrc(fs.readFileSync(`./src/client/ssr/head-components/${fromClientVariableName}Scripts.js`, 'utf8')),
+    `./src/client/ssr/components/head/${toClientVariableName}Scripts.js`,
+    formattedSrc(fs.readFileSync(`./src/client/ssr/components/head/${fromClientVariableName}Scripts.js`, 'utf8')),
     'utf8',
   );
 
@@ -560,7 +560,7 @@ const validateTemplatePath = (absolutePath = '') => {
   const confServer = DefaultConf.server[host][path];
   const confClient = DefaultConf.client[client];
   const confSsr = DefaultConf.ssr[ssr];
-  const clients = Object.keys(confClient).concat(['core', 'test']);
+  const clients = Object.keys(confClient).concat(['core', 'test', 'default']);
 
   if (absolutePath.match('src/api') && !confServer.apis.find((p) => absolutePath.match(`src/api/${p}/`))) {
     return false;
@@ -584,14 +584,14 @@ const validateTemplatePath = (absolutePath = '') => {
     return false;
   }
   if (
-    absolutePath.match('src/client/ssr/body-components') &&
-    !confSsr.body.find((p) => absolutePath.match(`src/client/ssr/body-components/${p}.js`))
+    absolutePath.match('src/client/ssr/components/body') &&
+    !confSsr.body.find((p) => absolutePath.match(`src/client/ssr/components/body/${p}.js`))
   ) {
     return false;
   }
   if (
-    absolutePath.match('src/client/ssr/head-components') &&
-    !confSsr.head.find((p) => absolutePath.match(`src/client/ssr/head-components/${p}.js`))
+    absolutePath.match('src/client/ssr/components/head') &&
+    !confSsr.head.find((p) => absolutePath.match(`src/client/ssr/components/head/${p}.js`))
   ) {
     return false;
   }
@@ -599,6 +599,7 @@ const validateTemplatePath = (absolutePath = '') => {
   if (
     absolutePath.match('/client') &&
     absolutePath.match('.index.js') &&
+    !absolutePath.match('/offline') &&
     !clients.find((p) => absolutePath.match(`src/client/${capFirst(p)}.index.js`))
   ) {
     return false;
@@ -695,6 +696,7 @@ const execDeploy = async (options = { deployId: 'default' }) => {
 const deployRun = async (dataDeploy, reset) => {
   if (!fs.existsSync(`./tmp`)) fs.mkdirSync(`./tmp`, { recursive: true });
   if (reset) fs.writeFileSync(`./tmp/runtime-router.json`, '{}', 'utf8');
+  await fixDependencies();
   for (const deploy of dataDeploy) await execDeploy(deploy);
   const { failed } = await deployTest(dataDeploy);
   if (failed.length > 0) {
