@@ -53,8 +53,8 @@ jobs:
           git config --global user.name 'underpostnet'
           git config --global user.email 'fcoverdugoa@underpost.net'
           pwd
-          git remote set-url --add pwa-microservices-template-ghpkg https://github.com/underpostnet/pwa-microservices-template-ghpkg.git
+          git remote set-url origin https://${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/pwa-microservices-template-ghpkg.git
           git add package.json
           git add package-lock.json       
           git commit -m "Update github repo package"
-          git push pwa-microservices-template-ghpkg https://${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/pwa-microservices-template-ghpkg.git
+          git push -u origin master
