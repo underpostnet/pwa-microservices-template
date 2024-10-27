@@ -30,6 +30,11 @@ jobs:
       - name: Get npm root
         run: sudo npm root -g
 
+      - name: Install Dependencies
+        run: npm install
+
+      - run: npm ci
+
       - name: Install underpost cli
         run: sudo npm install -g underpost
 
