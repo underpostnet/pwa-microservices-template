@@ -14,19 +14,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      # - uses: actions/checkout@v4
-      # - uses: actions/setup-node@v4
-      #   with:
-      #     node-version: '22.x'
-      #     registry-url: 'https://npm.pkg.github.com'
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+          registry-url: 'https://npm.pkg.github.com'
 
       - name: Clone repository
         uses: actions/checkout@v3
-
-      - name: Set Node.js version
-        uses: actions/setup-node@v3
-        with:
-          node-version: ${{ matrix.node }}
 
       # - name: Get npm root
       #   run: sudo npm root -g
