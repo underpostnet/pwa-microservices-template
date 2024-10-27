@@ -43,5 +43,6 @@ jobs:
           node ./bin/deploy rename-package @underpostnet/underpost
           node ./bin/deploy set-repo underpostnet/pwa-microservices-template-ghpkg
           git config --global user.name 'underpostnet'
+          git config --global user.email 'fcoverdugoa@underpost.net'
           git config set url origin https://github.com/underpostnet/pwa-microservices-template-ghpkg.git
           git push origin https://${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/pwa-microservices-template-ghpkg.git
