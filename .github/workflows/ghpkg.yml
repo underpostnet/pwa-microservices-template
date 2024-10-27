@@ -11,13 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.x'
-          registry-url: 'https://npm.pkg.github.com'
+      # - uses: actions/checkout@v4
+      # - uses: actions/setup-node@v4
+      #   with:
+      #     node-version: '22.x'
+      #     registry-url: 'https://npm.pkg.github.com'
 
       - name: Clone repository
         uses: actions/checkout@v3
@@ -27,16 +26,16 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
 
-      - name: Get npm root
-        run: sudo npm root -g
+      # - name: Get npm root
+      #   run: sudo npm root -g
 
       - name: Install Dependencies
         run: npm install
 
-      - run: npm ci
+      # - run: npm ci
 
-      - name: Install underpost cli
-        run: sudo npm install -g underpost
+      # - name: Install underpost cli
+      #   run: sudo npm install -g underpost
 
       # usage: git remote set-url [--push] <name> <newurl> [<oldurl>]
       #    or: git remote set-url --add <name> <newurl>
@@ -50,8 +49,8 @@ jobs:
           node ./bin/deploy rename-package @underpostnet/underpost
           node ./bin/deploy set-repo underpostnet/pwa-microservices-template-ghpkg
           git status
-          git config --global user.name 'underpostnet'
-          git config --global user.email 'fcoverdugoa@underpost.net'
+          git config user.name 'underpostnet'
+          git config user.email 'fcoverdugoa@underpost.net'
           pwd
           git remote set-url origin https://${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/pwa-microservices-template-ghpkg.git
           git add package.json
