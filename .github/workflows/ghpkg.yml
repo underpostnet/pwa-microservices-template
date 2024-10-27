@@ -38,6 +38,13 @@ jobs:
       - name: Install underpost cli
         run: sudo npm install -g underpost
 
+      # usage: git remote set-url [--push] <name> <newurl> [<oldurl>]
+      #    or: git remote set-url --add <name> <newurl>
+      #    or: git remote set-url --delete <name> <url>
+      #     --[no-]push           manipulate push URLs
+      #     --[no-]add            add URL
+      #     --[no-]delete         delete URLs
+
       - name: Update github repo package
         run: |
           node ./bin/deploy rename-package @underpostnet/underpost
@@ -45,6 +52,6 @@ jobs:
           git status
           git config --global user.name 'underpostnet'
           git config --global user.email 'fcoverdugoa@underpost.net'
-          echo pwd
-          git remote set-url https://github.com/underpostnet/pwa-microservices-template-ghpkg.git
-          git push origin https://${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/pwa-microservices-template-ghpkg.git
+          pwd
+          git remote set-url --push pwa-microservices-template-ghpkg https://${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/pwa-microservices-template-ghpkg.git https://github.com/underpostnet/pwa-microservices-template.git
+  #         git push origin https://${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/pwa-microservices-template-ghpkg.git
