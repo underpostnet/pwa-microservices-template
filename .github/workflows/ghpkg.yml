@@ -41,8 +41,9 @@ jobs:
       #     --[no-]add            add URL
       #     --[no-]delete         delete URLs
 
-      - name: Update github repo package
-        run: |
+      - uses: actions/checkout@v3
+        name: Update github repo package
+      - run: |
           node ./bin/deploy rename-package @underpostnet/underpost
           node ./bin/deploy set-repo underpostnet/pwa-microservices-template-ghpkg
           git status
