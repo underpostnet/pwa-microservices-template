@@ -44,6 +44,12 @@ jobs:
           node ./bin/deploy rename-package @underpostnet/underpost
           node ./bin/deploy set-repo underpostnet/pwa-microservices-template-ghpkg
 
+      - name: Clone github package repository
+        run: |
+          git clone https://github.com/underpostnet/pwa-microservices-template-ghpkg.git
+          rm -rf ./.git
+          cp -a  ./pwa-microservices-template-ghpkg/.git ./.git
+
       - name: Set git credentials
         run: |
           git config --global credential.helper ""
@@ -63,6 +69,7 @@ jobs:
           git add package.json
           git add package-lock.json       
           git commit -m "Update github repo package"
-          git push -u origin https://${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/pwa-microservices-template-ghpkg.git
+          git push https://${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/pwa-microservices-template-ghpkg.git
 
-#          git push -u origin master
+# git push -u origin https://${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/pwa-microservices-template-ghpkg.git
+# git push -u origin master
