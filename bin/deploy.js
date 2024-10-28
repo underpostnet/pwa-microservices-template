@@ -232,9 +232,9 @@ try {
         const serverConf = deployId
           ? JSON.parse(fs.readFileSync(`./conf/conf.server.json`, 'utf8'))
           : Config.default.server;
-        if (!deployId) {
-          argHost = 'default.net';
-          argPath = '/';
+        if (!deployId && !argHost[0] && !argPath[0]) {
+          argHost = ['default.net'];
+          argPath = ['/'];
         }
         for (const host of Object.keys(serverConf)) {
           for (const path of Object.keys(serverConf[host])) {
