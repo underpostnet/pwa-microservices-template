@@ -39,6 +39,7 @@ jobs:
       - name: Build the site
         run: |
           npm install
+          node bin/depoy update-default-conf
           npm run build
 
       - name: Setup Pages
