@@ -252,7 +252,7 @@ const buildClient = async (options = { liveClientBuildPaths: [], instances: [] }
                 jsSrc = jsSrc.replace('${getProxyPath()}api/', `${apiBaseProxyPath}${process.env.BASE_API}/`);
                 jsSrc = jsSrc.replace(
                   "const getWsBasePath = () => (getProxyPath() !== '/' ? `${getProxyPath()}socket.io/` : undefined);",
-                  `const getWsBasePath = () => '${apiBaseProxyPath}';`,
+                  `const getWsBasePath = () => '${apiBaseProxyPath}socket.io/';`,
                 );
               }
             }
