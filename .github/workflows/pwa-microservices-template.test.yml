@@ -1,9 +1,5 @@
 name: Test
-on:
-  push:
-    branches: ['master']
-  pull_request:
-    branches: ['master']
+on: [push]
 jobs:
   test:
     if: (github.repository == 'underpostnet/pwa-microservices-template') || (github.repository == 'underpostnet/pwa-microservices-template-ghpkg')
