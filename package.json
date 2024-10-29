@@ -30,8 +30,7 @@
     "underpost-publish": "npm publish --provenance --access public",
     "underpost-unpublish": "npm unpublish underpost@2.5.x",
     "login": "npm adduser",
-    "bin": "npm link --force",
-    "s": "node engine-private/s"
+    "bin": "npm link --force"
   },
   "bin": {
     "underpost": "bin/index.js"
