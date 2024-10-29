@@ -235,7 +235,7 @@ try {
           : Config.default.server;
         for (const host of Object.keys(serverConf)) {
           for (const path of Object.keys(serverConf[host])) {
-            if ((argHost.length && argPath.length && !argHost.includes(host)) || !argPath.includes(path)) {
+            if (argHost.length && argPath.length && (!argHost.includes(host) || !argPath.includes(path))) {
               delete serverConf[host][path];
             } else {
               serverConf[host][path].liteBuild = process.argv.includes('l') ? true : false;
