@@ -1,5 +1,5 @@
 import { AgGrid } from './AgGrid.js';
-import { boxShadow, scrollBarDarkRender, scrollBarLightRender } from './Css.js';
+import { borderChar, boxShadow, scrollBarDarkRender, scrollBarLightRender } from './Css.js';
 import { LoadingAnimation } from './LoadingAnimation.js';
 import { append, getProxyPath, s } from './VanillaJs.js';
 
@@ -134,6 +134,21 @@ const CssCommonCore = async () => {
       .plantuml-svg {
         width: 100%;
         height: auto;
+      }
+      .down-arrow-submenu {
+        top: -20px;
+        text-align: right;
+        padding-right: 42px;
+        color: #5f5f5f;
+      }
+      .main-body-btn {
+        width: 50px;
+        height: 50px;
+        font-size: 18px;
+        cursor: pointer;
+      }
+      .main-body-btn:hover {
+        font-size: 21px;
       }
     </style>
     <style>
@@ -484,6 +499,12 @@ const CssCoreDark = {
         a:hover {
           color: #cdcdcd;
         }
+        .ac {
+          color: #b1a7a7 !important;
+        }
+        .ahc {
+          color: #cdcdcd !important;
+        }
         .content-render {
           font-size: 16px;
           font-family: monospace;
@@ -499,7 +520,7 @@ const CssCoreDark = {
         .btn-input-extension:hover {
         }
       </style>
-      ${scrollBarDarkRender()}
+      ${scrollBarDarkRender()} ${borderChar(1, 'black', ['.main-body-btn-container'])}
     `,
 };
 
@@ -795,6 +816,12 @@ const CssCoreLight = {
         a:hover {
           color: #e89f4c;
         }
+        .ac {
+          color: #6d68ff !important;
+        }
+        .ahc {
+          color: #e89f4c !important;
+        }
         .content-render {
           font-size: 16px;
           font-family: monospace;
@@ -810,7 +837,7 @@ const CssCoreLight = {
         .btn-input-extension:hover {
         }
       </style>
-      ${scrollBarLightRender()}
+      ${scrollBarLightRender()} ${borderChar(1, 'white', ['.main-body-btn-container'])}
     `,
 };
 
