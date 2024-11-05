@@ -838,6 +838,8 @@ const Cmd = {
   conf: (deployId, env) => `node bin/deploy conf ${deployId} ${env ? env : 'production'}`,
   replica: (deployId, host, path) => `node bin/deploy build-single-replica ${deployId} ${host} ${path}`,
   syncPorts: (deployGroupId) => `node bin/deploy sync-env-port ${deployGroupId}`,
+  cron: (deployId, job, expression) =>
+    `pm2 delete ${deployId}-${job} && env-cmd -f .env.production pm2 start bin/cron.js --no-autorestart --instances 1 --cron "${expression}" --name ${deployId}-${job} -- ${job} ${deployId}`,
 };
 
 const fixDependencies = async () => {
