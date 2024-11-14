@@ -25,6 +25,7 @@ import {
   Cmd,
   restoreMacroDb,
   fixDependencies,
+  setUpProxyMaintenanceServer,
 } from '../src/server/conf.js';
 import { buildClient } from '../src/server/client-build.js';
 import { range, setPad, timer, uniqueArray } from '../src/client/components/core/CommonJs.js';
@@ -154,23 +155,11 @@ try {
           await deployRun(dataDeploy);
         } else {
           loadConf(process.argv[3]);
-          shellExec(`npm start`);
+          shellExec(`npm start ${process.argv.includes('maintenance') ? 'maintenance' : ''}`);
         }
       }
       break;
 
-    case 'run-cron': {
-      const confCronConfig = JSON.parse(fs.readFileSync(`./engine-private/conf/${process.argv[3]}/conf.cron.json`));
-      if (confCronConfig.jobs && Object.keys(confCronConfig.jobs).length > 0) {
-        shellExec(`node bin/deploy conf ${process.argv[3]} production`);
-        for (const job of Object.keys(confCronConfig.jobs)) {
-          if (confCronConfig.jobs[job].enabled)
-            shellExec(Cmd.cron(process.argv[3], job, confCronConfig.jobs[job].expression));
-        }
-      }
-      if (fs.existsSync(`./tmp/await-deploy`)) fs.remove(`./tmp/await-deploy`);
-      break;
-    }
     case 'remove-await-deploy': {
       if (fs.existsSync(`./tmp/await-deploy`)) fs.remove(`./tmp/await-deploy`);
       break;
@@ -306,10 +295,28 @@ try {
       }
       break;
 
+    case 'run-single-build': {
+      const deployId = process.argv[3];
+      shellExec(Cmd.conf(deployId));
+      shellExec(Cmd.build(deployId));
+      shellExec(Cmd.delete(deployId));
+      shellExec(Cmd.run(deployId));
+      break;
+    }
+
+    case 'run-single': {
+      const deployId = process.argv[3];
+      shellExec(Cmd.delete(deployId));
+      shellExec(Cmd.conf(deployId));
+      shellExec(Cmd.run(deployId));
+      break;
+    }
+
     case 'run-macro':
       {
         if (fs.existsSync(`./tmp/await-deploy`)) fs.remove(`./tmp/await-deploy`);
         const dataDeploy = getDataDeploy({ deployGroupId: process.argv[3], buildSingleReplica: true });
+        await setUpProxyMaintenanceServer({ deployGroupId: process.argv[3] });
         await deployRun(dataDeploy, true);
       }
       break;
@@ -322,6 +329,7 @@ try {
           shellExec(Cmd.conf(deploy.deployId));
           shellExec(Cmd.build(deploy.deployId));
         }
+        await setUpProxyMaintenanceServer({ deployGroupId: process.argv[3] });
         await deployRun(dataDeploy, true);
       }
       break;
@@ -468,7 +476,7 @@ try {
               `./engine-private/replica/${replicaDeployId}/package.json`,
               fs
                 .readFileSync(`./engine-private/replica/${replicaDeployId}/package.json`, 'utf8')
-                .replaceAll(`--name ${deployId}`, `--name ${replicaDeployId}`),
+                .replaceAll(`${deployId}`, `${replicaDeployId}`),
               'utf8',
             );
           }
@@ -833,6 +841,12 @@ ${uniqueArray(logs.all.map((log) => `- ${log.author_name} ([${log.author_email}]
 
       // remove all
       // ssh-add -D
+
+      // sshpass -p ${{ secrets.PSWD }} ssh -o StrictHostKeyChecking=no -p 22 ${{ secrets.USER}}@${{ secrets.VPS_IP }} 'cd /home/adam && ./deploy.sh'
+
+      // copies the public key of your default identity (use -i identity_file for other identities) to the remote host.
+      // ssh-copy-id user@hostname.example.com
+      // ssh-copy-id "user@hostname.example.com -p <port-number>"
 
       break;
     }

@@ -7,7 +7,7 @@ import cliSpinners from 'cli-spinners';
 import logUpdate from 'log-update';
 import colors from 'colors';
 import { loggerFactory } from './logger.js';
-import { shellExec, shellCd } from './process.js';
+import { shellExec, shellCd, getRootDirectory } from './process.js';
 import { DefaultConf } from '../../conf.js';
 import ncp from 'copy-paste';
 import read from 'read';
@@ -44,7 +44,9 @@ const Config = {
       this.default.server = {};
       for (const deployId of process.argv[3].split(',')) {
         let confPath = `./engine-private/conf/${deployId}/conf.server.json`;
-        const privateConfDevPath = `./engine-private/conf/${deployId}/conf.server.dev.${process.argv[4]}.json`;
+        const privateConfDevPath = fs.existsSync(`./engine-private/replica/${deployId}/conf.server.json`)
+          ? `./engine-private/replica/${deployId}/conf.server.json`
+          : `./engine-private/conf/${deployId}/conf.server.dev.${process.argv[4]}.json`;
         const confDevPath = fs.existsSync(privateConfDevPath)
           ? privateConfDevPath
           : `./engine-private/conf/${deployId}/conf.server.dev.json`;
@@ -251,8 +253,8 @@ const buildClientSrc = async (
   );
 
   fs.writeFileSync(
-    `./src/client/${toClientVariableName}.js`,
-    formattedSrc(fs.readFileSync(`./src/client/${fromClientVariableName}.js`, 'utf8')),
+    `./src/client/${toClientVariableName}.index.js`,
+    formattedSrc(fs.readFileSync(`./src/client/${fromClientVariableName}.index.js`, 'utf8')),
     'utf8',
   );
 
@@ -665,6 +667,16 @@ const getDeployGroupId = () => {
   return 'dd';
 };
 
+const getDeployId = () => {
+  const deployIndexArg = process.argv.findIndex((a) => a.match(`deploy-id:`));
+  if (deployIndexArg > -1) return process.argv[deployIndexArg].split(':')[1].trim();
+  for (const deployId of process.argv) {
+    if (fs.existsSync(`./engine-private/conf/${deployId}`)) return deployId;
+    else if (fs.existsSync(`./engine-private/replica/${deployId}`)) return deployId;
+  }
+  return 'default';
+};
+
 const getCronBackUpFolder = (host = '', path = '') => {
   return `${host}${path.replace(/\\/g, '/').replace(`/`, '-')}`;
 };
@@ -676,7 +688,7 @@ const execDeploy = async (options = { deployId: 'default' }) => {
   shellExec(Cmd.run(deployId));
   return await new Promise(async (resolve) => {
     const maxTime = 1000 * 60 * 5;
-    const minTime = 10000 * 2;
+    const minTime = 7 * 1000;
     const intervalTime = 1000;
     let currentTime = 0;
     const attempt = () => {
@@ -861,6 +873,27 @@ const fixDependencies = async () => {
   );
 };
 
+const maintenancePath = `${getRootDirectory()}/public/${process.env.DEFAULT_DEPLOY_HOST}${
+  process.env.DEFAULT_DEPLOY_PATH
+}/maintenance.html`;
+
+const maintenanceMiddleware = (req, res, port, proxyRouter) => {
+  if (process.argv.includes('maintenance') && fs.existsSync(maintenancePath)) {
+    if (req.method.toUpperCase() === 'GET') return res.status(503).sendFile(maintenancePath);
+    return res.status(503).json({
+      status: 'error',
+      message: 'Server is under maintenance',
+    });
+  }
+};
+
+const setUpProxyMaintenanceServer = ({ deployGroupId }) => {
+  shellExec(`pm2 kill`);
+  const proxyDeployId = fs.readFileSync(`./engine-private/deploy/${deployGroupId}.proxy`, 'utf8').trim();
+  shellExec(`node bin/deploy conf ${proxyDeployId} production`);
+  shellExec(`node bin/deploy run ${proxyDeployId} maintenance`);
+};
+
 export {
   Cmd,
   Config,
@@ -889,4 +922,8 @@ export {
   getRestoreCronCmd,
   mergeBackUp,
   fixDependencies,
+  getDeployId,
+  maintenancePath,
+  maintenanceMiddleware,
+  setUpProxyMaintenanceServer,
 };

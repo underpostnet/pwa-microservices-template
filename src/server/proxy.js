@@ -9,7 +9,8 @@ import { loggerFactory, loggerMiddleware } from './logger.js';
 import { listenPortController, network } from './network.js';
 import { orderArrayFromAttrInt } from '../client/components/core/CommonJs.js';
 import { createSslServer, sslRedirectMiddleware } from './ssl.js';
-import { buildProxyRouter } from './conf.js';
+import { buildProxyRouter, maintenanceMiddleware } from './conf.js';
+import { getRootDirectory } from './process.js';
 
 dotenv.config();
 
@@ -25,6 +26,9 @@ const buildProxy = async () => {
   for (let port of Object.keys(proxyRouter)) {
     port = parseInt(port);
     const hosts = proxyRouter[port];
+    const proxyPath = '/';
+    const proxyHost = 'localhost';
+    const runningData = { host: proxyHost, path: proxyPath, client: null, runtime: 'nodejs', meta: import.meta };
     const app = express();
 
     // set logger
@@ -47,6 +51,7 @@ const buildProxy = async () => {
       onProxyReq: (proxyReq, req, res, options) => {
         // https://wtools.io/check-http-status-code
         // http://nexodev.org
+        maintenanceMiddleware(req, res, port, proxyRouter);
         sslRedirectMiddleware(req, res, port, proxyRouter);
       },
       pathRewrite: {
@@ -54,30 +59,27 @@ const buildProxy = async () => {
         // '^/target-path': '/',
       },
     };
+    if (!process.argv.includes('maintenance')) {
+      // build router
+      Object.keys(hosts).map((hostKey) => {
+        let { host, path, target, proxy, peer } = hosts[hostKey];
+        if (process.env.NODE_ENV === 'development') host = `localhost`;
 
-    // build router
-    Object.keys(hosts).map((hostKey) => {
-      let { host, path, target, proxy, peer } = hosts[hostKey];
-      if (process.env.NODE_ENV === 'development') host = `localhost`;
+        if (!proxy.includes(port)) return;
+        const absoluteHost = [80, 443].includes(port)
+          ? `${host}${path === '/' ? '' : path}`
+          : `${host}:${port}${path === '/' ? '' : path}`;
 
-      if (!proxy.includes(port)) return;
-      const absoluteHost = [80, 443].includes(port)
-        ? `${host}${path === '/' ? '' : path}`
-        : `${host}:${port}${path === '/' ? '' : path}`;
+        if (!(absoluteHost in options.router)) options.router[absoluteHost] = target;
+      });
+      if (Object.keys(options.router).length === 0) continue;
 
-      if (!(absoluteHost in options.router)) options.router[absoluteHost] = target;
-    });
-    if (Object.keys(options.router).length === 0) continue;
-
-    // order router
-    const router = {};
-    for (const absoluteHostKey of orderArrayFromAttrInt(Object.keys(options.router), 'length'))
-      router[absoluteHostKey] = options.router[absoluteHostKey];
-    options.router = router;
-
-    // instance proxy server
-    const proxyPath = '/';
-    const proxyHost = 'localhost';
+      // order router
+      const router = {};
+      for (const absoluteHostKey of orderArrayFromAttrInt(Object.keys(options.router), 'length'))
+        router[absoluteHostKey] = options.router[absoluteHostKey];
+      options.router = router;
+    }
 
     const filter = false
       ? (pathname, req) => {
@@ -87,8 +89,6 @@ const buildProxy = async () => {
       : proxyPath;
     app.use(proxyPath, createProxyMiddleware(filter, options));
     await network.port.portClean(port);
-
-    const runningData = { host: proxyHost, path: proxyPath, client: null, runtime: 'nodejs', meta: import.meta };
 
     switch (process.env.NODE_ENV) {
       case 'production':
