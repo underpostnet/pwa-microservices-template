@@ -40,9 +40,21 @@ const fullBuild = async ({
 }) => {
   logger.warn('Full build', rootClientPath);
 
-  fs.removeSync(rootClientPath);
-
   buildAcmeChallengePath(acmeChallengeFullPath);
+
+  if (publicClientId && publicClientId.startsWith('html-website-templates')) {
+    if (!fs.existsSync(`/dd/html-website-templates/`))
+      shellExec(`cd /dd && git clone https://github.com/designmodo/html-website-templates.git`);
+    if (!fs.existsSync(`${rootClientPath}/index.php`)) {
+      fs.copySync(`/dd/html-website-templates/${publicClientId.split('-publicClientId-')[1]}`, rootClientPath);
+      shellExec(`cd ${rootClientPath} && git init && git add . && git commit -m "Base template implementation"`);
+      // git remote add origin git@github.com:<username>/<repo>.git
+      fs.writeFileSync(`${rootClientPath}/.git/.htaccess`, `Deny from all`, 'utf8');
+    }
+    return;
+  }
+
+  fs.removeSync(rootClientPath);
 
   if (fs.existsSync(`./src/client/public/${publicClientId}`)) {
     if (iconsBuild) {
@@ -89,8 +101,15 @@ const fullBuild = async ({
   if (dists)
     for (const dist of dists) {
       if ('folder' in dist) {
-        fs.mkdirSync(`${rootClientPath}${dist.public_folder}`, { recursive: true });
-        fs.copySync(dist.folder, `${rootClientPath}${dist.public_folder}`);
+        if (fs.statSync(dist.folder).isDirectory()) {
+          fs.mkdirSync(`${rootClientPath}${dist.public_folder}`, { recursive: true });
+          fs.copySync(dist.folder, `${rootClientPath}${dist.public_folder}`);
+        } else {
+          const folder = dist.public_folder.split('/');
+          folder.pop();
+          fs.mkdirSync(`${rootClientPath}${folder.join('/')}`, { recursive: true });
+          fs.copyFileSync(dist.folder, `${rootClientPath}${dist.public_folder}`);
+        }
       }
       if ('styles' in dist) {
         fs.mkdirSync(`${rootClientPath}${dist.public_styles_folder}`, { recursive: true });

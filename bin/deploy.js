@@ -283,6 +283,154 @@ try {
       }
       break;
 
+    case 'adminer': {
+      const directory = '/dd/engine/public/adminer';
+      // const host = '127.0.0.1';
+      const host = 'localhost';
+      const port = 80;
+      if (!process.argv.includes('server')) {
+        if (fs.existsSync(directory)) fs.removeSync(directory);
+        fs.mkdirSync(directory, { recursive: true });
+        shellExec(`cd ${directory} && wget https://www.adminer.org/latest.php -O adminer.php`);
+      }
+      Lampp.removeRouter();
+      Lampp.appendRouter(`  Listen ${port} 
+         <VirtualHost *:${port}>
+          DocumentRoot "${directory}"
+          ServerName ${host}:${port}
+
+          <Directory "${directory}">
+            Options Indexes FollowSymLinks MultiViews
+            AllowOverride All
+            Require all granted
+          </Directory>
+
+        </VirtualHost>
+        `);
+      if (Lampp.enabled() && Lampp.router) Lampp.initService({ daemon: true });
+      shellExec(`open /opt/lampp/apache2/conf/httpd.conf`);
+      break;
+    }
+
+    case 'pma':
+      {
+        const directory = '/dd/engine/public/phpmyadmin';
+        // const host = '127.0.0.1';
+        const host = 'localhost';
+        const port = 80;
+        // data config path: /etc/phpmyadmin
+
+        // The config.inc.php file is not required, and only needed for custom configurations
+
+        // phpmyadmin will first refer to ./libraries/config.default.php to retrieve the default values.
+
+        // If for some reason you need to modify the default values, and the ./config.inc.php
+        // file doesn't exist, you will need to create one as per the Installation documentation.
+
+        // You will also need to configure pmadb for some of phpmyadmin's special features such as bookmarks.
+
+        // CREATE USER 'pma'@'localhost' IDENTIFIED VIA mysql_native_password USING 'pmapass';
+        // GRANT SELECT, INSERT, UPDATE, DELETE ON `<pma_db>`.* TO 'pma'@'localhost';
+
+        if (!process.argv.includes('server')) {
+          // if (fs.existsSync(directory)) fs.removeSync(directory);
+          shellExec(`sudo apt install phpmyadmin php-mbstring php-zip php-gd php-json php-curl`);
+          shellExec(`sudo phpenmod mbstring`);
+          shellExec(
+            `cd /usr/share/phpmyadmin && git init && git add . && git commit -m "Base phpMyAdmin implementation"`,
+          );
+        }
+
+        // if (!fs.existsSync(directory)) fs.mkdirSync(directory, { recursive: true });
+        // if (!fs.existsSync('./public/phpmyadmin/phpmyadmin'))
+        //   fs.copySync('/usr/share/phpmyadmin', './public/phpmyadmin/phpmyadmin');
+
+        Lampp.removeRouter();
+        Lampp.appendRouter(`  Listen ${port} `);
+        if (Lampp.enabled() && Lampp.router) Lampp.initService({ daemon: true });
+        // shellExec(`open /opt/lampp/apache2/conf/httpd.conf`);
+
+        // Create a link in /var/www like this:
+
+        // sudo ln -s /usr/share/phpmyadmin /var/www/
+
+        // Note: since 14.04 you may want to use /var/www/html/ instead of /var/www/
+
+        // If that's not working for you, you need to include PHPMyAdmin inside apache configuration.
+
+        // Open apache.conf using your favorite editor, mine is vim :)
+
+        // sudo vim /etc/apache2/apache2.conf
+
+        // Then add the following line:
+
+        // Include /etc/phpmyadmin/apache.conf
+
+        // For Ubuntu 15.04 and 16.04
+
+        // sudo ln -s /etc/phpmyadmin/apache.conf /etc/apache2/conf-available/phpmyadmin.conf
+        // sudo a2enconf phpmyadmin.conf
+        // sudo service apache2 reload
+        break;
+        Lampp.appendRouter(`   Listen ${port}
+
+        <VirtualHost *:${port}>
+            DocumentRoot "${directory}"
+            ServerName ${host}:${port}
+
+            <Directory "${directory}">
+              Options Indexes FollowSymLinks MultiViews
+              AllowOverride All
+              Require all granted
+            </Directory>
+
+          </VirtualHost>`);
+        // phpMyAdmin default Apache configuration:
+        Lampp.appendRouter(`
+
+          Listen ${port}
+
+          Alias /phpmyadmin /usr/share/phpmyadmin
+
+<Directory /usr/share/phpmyadmin>
+    Options Indexes FollowSymLinks
+    DirectoryIndex index.php
+
+    <IfModule mod_php5.c>
+        AddType application/x-httpd-php .php
+
+        php_flag magic_quotes_gpc Off
+        php_flag track_vars On
+        php_flag register_globals Off
+        php_value include_path .
+    </IfModule>
+
+</Directory>
+
+# Authorize for setup
+<Directory /usr/share/phpmyadmin/setup>
+    <IfModule mod_authn_file.c>
+    AuthType Basic
+    AuthName "phpMyAdmin Setup"
+    AuthUserFile /etc/phpmyadmin/htpasswd.setup
+    </IfModule>
+    Require valid-user
+</Directory>
+
+# Disallow web access to directories that don't need it
+<Directory /usr/share/phpmyadmin/libraries>
+    Order Deny,Allow
+    Deny from All
+</Directory>
+<Directory /usr/share/phpmyadmin/setup/lib>
+    Order Deny,Allow
+    Deny from All
+</Directory>
+
+          `);
+      }
+      break;
+
     case 'update-package':
       const files = await fs.readdir(`./engine-private/conf`, { recursive: true });
       const originPackage = JSON.parse(fs.readFileSync(`./package.json`, 'utf8'));
@@ -295,44 +443,41 @@ try {
       }
       break;
 
-    case 'run-single-build': {
-      const deployId = process.argv[3];
-      shellExec(Cmd.conf(deployId));
-      shellExec(Cmd.build(deployId));
-      shellExec(Cmd.delete(deployId));
-      shellExec(Cmd.run(deployId));
-      break;
-    }
-
-    case 'run-single': {
-      const deployId = process.argv[3];
-      shellExec(Cmd.delete(deployId));
-      shellExec(Cmd.conf(deployId));
-      shellExec(Cmd.run(deployId));
-      break;
-    }
-
     case 'run-macro':
       {
         if (fs.existsSync(`./tmp/await-deploy`)) fs.remove(`./tmp/await-deploy`);
         const dataDeploy = getDataDeploy({ deployGroupId: process.argv[3], buildSingleReplica: true });
-        await setUpProxyMaintenanceServer({ deployGroupId: process.argv[3] });
-        await deployRun(dataDeploy, true);
+        if (!process.argv[4]) await setUpProxyMaintenanceServer({ deployGroupId: process.argv[3] });
+        await deployRun(
+          process.argv[4] ? dataDeploy.filter((d) => d.deployId.match(process.argv[4])) : dataDeploy,
+          true,
+        );
       }
       break;
 
-    case 'run-macro-build':
+    case 'build-macro':
       {
-        if (fs.existsSync(`./tmp/await-deploy`)) fs.remove(`./tmp/await-deploy`);
         const dataDeploy = getDataDeploy({ deployGroupId: process.argv[3], buildSingleReplica: true });
         for (const deploy of dataDeploy) {
-          shellExec(Cmd.conf(deploy.deployId));
-          shellExec(Cmd.build(deploy.deployId));
+          if (!process.argv[4] || (process.argv[4] && process.argv[4] === deploy.deployId)) {
+            shellExec(Cmd.conf(deploy.deployId));
+            shellExec(Cmd.build(deploy.deployId));
+          }
         }
-        await setUpProxyMaintenanceServer({ deployGroupId: process.argv[3] });
-        await deployRun(dataDeploy, true);
       }
       break;
+    case 'macro': {
+      shellExec(`git checkout .`);
+      shellExec(`node bin/deploy build-macro ${process.argv.slice(3).join(' ')}`);
+      shellExec(`git checkout .`);
+      shellExec(`node bin/deploy run-macro ${process.argv.slice(3).join(' ')}`);
+      break;
+    }
+
+    case 'keep-server': {
+      await setUpProxyMaintenanceServer({ deployGroupId: process.argv[3] });
+      break;
+    }
     case 'prometheus':
     case 'prom':
       {

@@ -107,7 +107,6 @@ const loadConf = (deployId) => {
     if (typeConf === 'server') srcConf = JSON.stringify(loadReplicas(JSON.parse(srcConf)), null, 4);
     fs.writeFileSync(`./conf/conf.${typeConf}.json`, srcConf, 'utf8');
   }
-  if (!isValidDeployId) return {};
   fs.writeFileSync(`./.env.production`, fs.readFileSync(`${folder}/.env.production`, 'utf8'), 'utf8');
   fs.writeFileSync(`./.env.development`, fs.readFileSync(`${folder}/.env.development`, 'utf8'), 'utf8');
   fs.writeFileSync(`./.env.test`, fs.readFileSync(`${folder}/.env.test`, 'utf8'), 'utf8');
@@ -127,10 +126,16 @@ const loadReplicas = (confServer) => {
   for (const host of Object.keys(confServer)) {
     for (const path of Object.keys(confServer[host])) {
       const { replicas, singleReplica } = confServer[host][path];
-      if (replicas && (process.argv[2] === 'proxy' || !singleReplica))
+      if (
+        replicas &&
+        (process.argv[2] === 'proxy' ||
+          !singleReplica ||
+          (singleReplica && process.env.NODE_ENV === 'development' && !process.argv[3]))
+      )
         for (const replicaPath of replicas) {
           confServer[host][replicaPath] = newInstance(confServer[host][path]);
           delete confServer[host][replicaPath].replicas;
+          delete confServer[host][replicaPath].singleReplica;
         }
     }
   }
@@ -631,7 +636,7 @@ const deployTest = async (dataDeploy) => {
         if (singleReplica) continue;
         const urlTest = `https://${host}${path}`;
         try {
-          const result = await axios.get(urlTest);
+          const result = await axios.get(urlTest, { timeout: 10000 });
           const test = result.data.split('<title>');
           if (test[1])
             logger.info('Success deploy', {
@@ -681,15 +686,15 @@ const getCronBackUpFolder = (host = '', path = '') => {
   return `${host}${path.replace(/\\/g, '/').replace(`/`, '-')}`;
 };
 
-const execDeploy = async (options = { deployId: 'default' }) => {
+const execDeploy = async (options = { deployId: 'default' }, currentAttempt = 1) => {
   const { deployId } = options;
   shellExec(Cmd.delete(deployId));
   shellExec(Cmd.conf(deployId));
   shellExec(Cmd.run(deployId));
+  const maxTime = 1000 * 60;
+  const minTime = 20 * 1000;
+  const intervalTime = 1000;
   return await new Promise(async (resolve) => {
-    const maxTime = 1000 * 60 * 5;
-    const minTime = 7 * 1000;
-    const intervalTime = 1000;
     let currentTime = 0;
     const attempt = () => {
       if (currentTime >= minTime && !fs.existsSync(`./tmp/await-deploy`)) {
@@ -699,27 +704,40 @@ const execDeploy = async (options = { deployId: 'default' }) => {
       cliSpinner(
         intervalTime,
         `[deploy.js] `,
-        ` Load instance | elapsed time ${currentTime / 1000}s / ${maxTime / 1000}s`,
+        ` Load instance | attempt:${currentAttempt} | elapsed time ${currentTime / 1000}s / ${maxTime / 1000}s`,
         'yellow',
         'material',
       );
       currentTime += intervalTime;
-      if (currentTime >= maxTime) return resolve(false);
+      if (currentTime >= maxTime) {
+        clearInterval(processMonitor);
+        return resolve(false);
+      }
     };
     const processMonitor = setInterval(attempt, intervalTime);
   });
 };
 
-const deployRun = async (dataDeploy, reset) => {
+const deployRun = async (dataDeploy, currentAttempt = 1) => {
   if (!fs.existsSync(`./tmp`)) fs.mkdirSync(`./tmp`, { recursive: true });
-  if (reset) fs.writeFileSync(`./tmp/runtime-router.json`, '{}', 'utf8');
   await fixDependencies();
-  for (const deploy of dataDeploy) await execDeploy(deploy);
+  const maxAttempts = 3;
+  for (const deploy of dataDeploy) {
+    let currentAttempt = 1;
+    const attempt = async () => {
+      const success = await execDeploy(deploy, currentAttempt);
+      currentAttempt++;
+      if (!success && currentAttempt <= maxAttempts) await attempt();
+    };
+    await attempt();
+  }
   const { failed } = await deployTest(dataDeploy);
   if (failed.length > 0) {
     for (const deploy of failed) logger.error(deploy.deployId, Cmd.run(deploy.deployId));
-    await read({ prompt: 'Press enter to retry failed processes\n' });
-    await deployRun(failed);
+    if (currentAttempt === maxAttempts) return logger.error(`max deploy attempts exceeded`);
+    if (process.argv.includes('manual')) await read({ prompt: 'Press enter to retry failed processes\n' });
+    currentAttempt++;
+    await deployRun(failed, currentAttempt);
   } else logger.info(`Deploy process successfully`);
 };
 

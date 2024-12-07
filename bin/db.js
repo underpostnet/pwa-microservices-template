@@ -26,14 +26,11 @@ try {
   // logger.info('database', confServer[host][`/${path}`].db);
   switch (provider) {
     case 'mariadb':
-      // https://www.cyberciti.biz/faq/how-to-show-list-users-in-a-mysql-mariadb-database/
-
       // Login:
-      // mysql -u root -p
-      // mysql -u root -h localhost -p mysql
+      // mysql -u root -h localhost -p
 
       // Get Users:
-      // SELECT host, user, password FROM mysql.user;
+      // SELECT user,authentication_string,plugin,host FROM mysql.user;
 
       // Get DB User:
       // SELECT User, Db, Host from mysql.db;
@@ -45,6 +42,27 @@ try {
 
       // Get all user privileges:
       // select * from information_schema.user_privileges;
+
+      // Expose public server:
+      // '/etc/mysql/my.cnf' Change lines:
+      // bind-address = 127.0.0.1 -> bind-address = 0.0.0.0
+      // skip-networking -> #skip-networking
+
+      // Create user:
+      // DROP USER 'username'@'%';
+      // CREATE USER 'username'@'%' IDENTIFIED BY 'password';
+
+      // Set DB user:
+      // FLUSH PRIVILEGES;
+      // ON databasename.*
+      // TO 'username'@'%'
+      // IDENTIFIED BY 'newpassword';
+      // FLUSH PRIVILEGES;
+
+      // Set admin:
+      // FLUSH PRIVILEGES;
+      // GRANT ALL PRIVILEGES ON *.* TO 'username'@'%' IDENTIFIED BY 'password' WITH GRANT OPTION;
+      // FLUSH PRIVILEGES;
 
       switch (operator) {
         case 'show-all':
@@ -60,8 +78,23 @@ try {
           await MariaDB.query({ user, password, query: `DROP DATABASE IF EXISTS ${name}` });
           break;
         case 'select':
-          await MariaDB.query({ user, password, query: `SELECT ${arg0} FROM ${name}.${arg1}` });
+          {
+            const pageSize = 10;
+            const pageNumber = 1;
+            await MariaDB.query({
+              user,
+              password,
+              query: `SELECT ${arg0} FROM ${name}.${arg1} LIMIT ${pageSize} OFFSET ${(pageNumber - 1) * pageSize}`,
+            });
+          }
           break;
+        case 'count': {
+          await MariaDB.query({
+            user,
+            password,
+            query: `SELECT COUNT(*) AS total FROM ${name}.${arg0}`,
+          });
+        }
         case 'export':
           {
             const cmdBackupPath = `${arg0 ? `${arg0}/${name}.sql` : backupPath}`;
@@ -100,6 +133,18 @@ try {
           break;
         case 'init-lampp-service':
           await Lampp.initService();
+          break;
+        case 'remote-client-access':
+          {
+            // https://docs.anaconda.com/miniconda/install/#quick-command-line-install
+            // https://mariadb.com/kb/en/configuring-mariadb-for-remote-client-access/
+            // conf: /opt/lampp/etc
+            // conf: /etc/mysql/my.cnf
+            // conf: /etc/mysql/mariadb.conf.d/50-server.cnf
+            // cli: /opt/lampp/bin/mysql
+            // cli: mysql -h 127.0.0.1
+            // select db: use db0;
+          }
           break;
         default:
           break;
