@@ -1,4 +1,6 @@
-const maintenance = async ({ Translate }) => {
+import { Translate } from './Translate.js';
+
+const maintenance = async () => {
   const icon = html`<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 24 24">
     <path
       fill="none"
@@ -12,11 +14,11 @@ const maintenance = async ({ Translate }) => {
   return html` <div class="abs center" style="top: 45%">
     ${icon}
     <br />
-    <br />${Translate('server-maintenance')}
+    <br />${Translate.Render('server-maintenance')}
   </div>`;
 };
 
-const noInternet = async ({ Translate }) => {
+const noInternet = async () => {
   const icon = html`<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 20 20">
     <path
       fill="currentColor"
@@ -26,11 +28,11 @@ const noInternet = async ({ Translate }) => {
   return html` <div class="abs center" style="top: 45%">
     ${icon}
     <br />
-    <br />${Translate('no-internet-connection')}
+    <br />${Translate.Render('no-internet-connection')}
   </div>`;
 };
 
-const e404 = async ({ Translate }) => {
+const e404 = async () => {
   const icon = html`
     <svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 24 24">
       <path
@@ -45,13 +47,13 @@ const e404 = async ({ Translate }) => {
     <br />
     <span class="bold">404</span>
     <br />
-    <br />${Translate('page-not-found')} <br />
+    <br />${Translate.Render('page-not-found')} <br />
     <br />
-    <a href="${location.origin}">${Translate('back')}</a>
+    <a href="${location.origin}">${Translate.Render('back')}</a>
   </div>`;
 };
 
-const e500 = async ({ Translate }) => {
+const e500 = async () => {
   const icon = html`<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 20 20">
     <path
       fill="currentColor"
@@ -64,12 +66,12 @@ const e500 = async ({ Translate }) => {
     <br />
     <span class="bold">500</span>
     <br />
-    <br />${Translate('page-broken')} <br />
+    <br />${Translate.Render('page-broken')} <br />
     <br />
-    <a href="${location.origin}">${Translate('back')}</a>
+    <a href="${location.origin}">${Translate.Render('back')}</a>
   </div>`;
 };
 
 const Alert = { maintenance, noInternet, e404, e500 };
 
-export { Alert, e404 };
+export { Alert };

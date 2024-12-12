@@ -36,6 +36,8 @@ const RoutesDefault = () => {
       render: () => s(`.main-btn-default-management`).click(),
       translateTitle: true,
     },
+    '/404': { title: '404 Not Found', render: () => s(`.main-btn-404`).click() },
+    '/500': { title: '500 Server Error', render: () => s(`.main-btn-500`).click() },
   };
 };
 

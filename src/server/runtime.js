@@ -11,7 +11,7 @@ import { createServer } from 'http';
 import { getRootDirectory } from './process.js';
 import { network, listenPortController, saveRuntimeRouter, logRuntimeRouter, listenServerFactory } from './network.js';
 import { loggerFactory, loggerMiddleware } from './logger.js';
-import { newInstance } from '../client/components/core/CommonJs.js';
+import { getCapVariableName, newInstance } from '../client/components/core/CommonJs.js';
 import { Xampp } from '../runtime/xampp/Xampp.js';
 import { MailerProvider } from '../mailer/MailerProvider.js';
 import { DataBaseProvider } from '../db/DataBaseProvider.js';
@@ -19,6 +19,7 @@ import { createProxyMiddleware } from 'http-proxy-middleware';
 import { createPeerServer } from './peer.js';
 import { Lampp } from '../runtime/lampp/Lampp.js';
 import { getDeployId } from './conf.js';
+import { ssrFactory } from './client-formatted.js';
 
 dotenv.config();
 
@@ -58,6 +59,7 @@ export PATH=$PATH:/opt/lampp/bin`,
   const initPort = parseInt(process.env.PORT) + 1;
   let currentPort = initPort;
   const confServer = JSON.parse(fs.readFileSync(`./conf/conf.server.json`, 'utf8'));
+  const confSSR = JSON.parse(fs.readFileSync(`./conf/conf.ssr.json`, 'utf8'));
   const singleReplicaHosts = [];
   for (const host of Object.keys(confServer)) {
     if (singleReplicaHosts.length > 0 && !singleReplicaHosts.includes(host)) {
@@ -310,7 +312,7 @@ export PATH=$PATH:/opt/lampp/bin`,
           app.use(fileUpload());
 
           // json formatted response
-          app.set('json spaces', 2);
+          if (process.env.NODE_ENV === 'development') app.set('json spaces', 2);
 
           // lang handling middleware
           app.use(function (req, res, next) {
@@ -365,15 +367,17 @@ export PATH=$PATH:/opt/lampp/bin`,
 
           if (db && apis) await DataBaseProvider.load({ apis, host, path, db });
 
-          if (mailer)
+          if (mailer) {
+            const mailerSsrConf = confSSR[getCapVariableName(client)];
             await MailerProvider.load({
               id: `${host}${path}`,
               meta: `mailer-${host}${path}`,
               host,
               path,
               ...mailer,
+              templates: mailerSsrConf ? mailerSsrConf.mailer : {},
             });
-
+          }
           if (apis) {
             const apiPath = `${path === '/' ? '' : path}/${process.env.BASE_API}`;
             for (const api of apis)
@@ -385,17 +389,41 @@ export PATH=$PATH:/opt/lampp/bin`,
                 app.use(`${apiPath}/${api}`, router);
               })();
           }
+
+          const Render = await ssrFactory();
+          const ssrPath = path === '/' ? path : `${path}/`;
+
+          const defaultHtmlSrc404 = Render({
+            title: '404 Not Found',
+            ssrPath,
+            ssrHeadComponents: '',
+            ssrBodyComponents: (await ssrFactory(`./src/client/ssr/body/404.js`))(),
+          });
+          const path404 = `${directory ? directory : `${getRootDirectory()}${rootHostPath}`}/404/index.html`;
+          const page404 = fs.existsSync(path404) ? `${path === '/' ? '' : path}/404` : undefined;
           app.use(function (req, res, next) {
-            const path404 = `${directory ? directory : `${getRootDirectory()}${rootHostPath}`}/404.html`;
-            if (fs.existsSync(path404)) return res.status(404).sendFile(path404);
-            else res.status(404).send('Sorry cant find that!');
+            if (page404) return res.status(404).redirect(page404);
+            else {
+              res.set('Content-Type', 'text/html');
+              return res.status(404).send(defaultHtmlSrc404);
+            }
           });
 
+          const defaultHtmlSrc500 = Render({
+            title: '500 Server Error',
+            ssrPath,
+            ssrHeadComponents: '',
+            ssrBodyComponents: (await ssrFactory(`./src/client/ssr/body/500.js`))(),
+          });
+          const path500 = `${directory ? directory : `${getRootDirectory()}${rootHostPath}`}/500/index.html`;
+          const page500 = fs.existsSync(path500) ? `${path === '/' ? '' : path}/500` : undefined;
           app.use(function (err, req, res, next) {
             logger.error(err, err.stack);
-            const path500 = `${directory ? directory : `${getRootDirectory()}${rootHostPath}`}/500.html`;
-            if (fs.existsSync(path500)) return res.status(500).sendFile(path500);
-            res.status(500).send('Something broke!');
+            if (page500) return res.status(500).redirect(page500);
+            else {
+              res.set('Content-Type', 'text/html');
+              return res.status(500).send(defaultHtmlSrc500);
+            }
           });
 
           // instance server

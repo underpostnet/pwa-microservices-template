@@ -1,9 +1,16 @@
 'use strict';
 
 import fs from 'fs-extra';
-import { srcFormatted, componentFormatted, viewFormatted, ssrFactory } from './client-formatted.js';
+import { srcFormatted, componentFormatted, viewFormatted, ssrFactory, JSONweb } from './client-formatted.js';
 import { loggerFactory } from './logger.js';
-import { cap, newInstance, orderArrayFromAttrInt, titleFormatted } from '../client/components/core/CommonJs.js';
+import {
+  cap,
+  getCapVariableName,
+  newInstance,
+  orderArrayFromAttrInt,
+  titleFormatted,
+  uniqueArray,
+} from '../client/components/core/CommonJs.js';
 import UglifyJS from 'uglify-js';
 import { minify } from 'html-minifier-terser';
 import dotenv from 'dotenv';
@@ -131,16 +138,6 @@ const buildClient = async (options = { liveClientBuildPaths: [], instances: [] }
   const enableLiveRebuild =
     options && options.liveClientBuildPaths && options.liveClientBuildPaths.length > 0 ? true : false;
 
-  // common ssr components
-  let jsSsrCommonComponents = '';
-  {
-    const files = await fs.readdir(`./src/client/ssr/common`);
-    for (const relativePath of files)
-      jsSsrCommonComponents += await srcFormatted(
-        fs.readFileSync(`./src/client/ssr/common/${relativePath}`, 'utf8').split('export')[0],
-      );
-  }
-
   let currentPort = parseInt(process.env.PORT) + 1;
   for (const host of Object.keys(confServer)) {
     const paths = orderArrayFromAttrInt(Object.keys(confServer[host]), 'length', 'asc');
@@ -167,6 +164,7 @@ const buildClient = async (options = { liveClientBuildPaths: [], instances: [] }
         apiBaseHost,
         ttiLoadTimeLimit,
         singleReplica,
+        offlineBuild,
       } = confServer[host][path];
       if (singleReplica) continue;
       if (!confClient[client]) confClient[client] = {};
@@ -308,57 +306,22 @@ const buildClient = async (options = { liveClientBuildPaths: [], instances: [] }
 
       const buildId = `${client}.index`;
       const siteMapLinks = [];
-      let Render = () => '';
-      eval(await srcFormatted(fs.readFileSync(`./src/client/ssr/Render.js`, 'utf8')));
+      const ssrPath = path === '/' ? path : `${path}/`;
+      const Render = await ssrFactory();
 
       if (views) {
-        const buildJsSrcPage = async (jsSrcPath, jsPublicPath, filter) => {
-          if (!(enableLiveRebuild && !options.liveClientBuildPaths.find((p) => p.srcBuildPath === jsSrcPath))) {
-            let jsSrc = viewFormatted(await srcFormatted(fs.readFileSync(jsSrcPath, 'utf8')), dists, path, baseHost);
-            if (jsSrc.split('/*imports*/')[1]) jsSrc = jsSrc.split('/*imports*/')[1];
-            if (filter) jsSrc = await filter(jsSrc);
-            fs.writeFileSync(
-              jsPublicPath,
-              minifyBuild || process.env.NODE_ENV === 'production' ? UglifyJS.minify(jsSrc).code : jsSrc,
-              'utf8',
-            );
-          }
-        };
+        const jsSrcPath = fs.existsSync(`./src/client/sw/${publicClientId}.sw.js`)
+          ? `./src/client/sw/${publicClientId}.sw.js`
+          : `./src/client/sw/default.sw.js`;
 
-        // service woker
-        await buildJsSrcPage(
-          fs.existsSync(`./src/client/sw/${publicClientId}.sw.js`)
-            ? `./src/client/sw/${publicClientId}.sw.js`
-            : `./src/client/sw/default.sw.js`,
-          `${rootClientPath}/sw.js`,
-          path !== '/'
-            ? (jsSrc) => jsSrc.replaceAll(`const PROXY_PATH = '/';`, `const PROXY_PATH = '${path}/';`)
-            : undefined,
-        );
+        const jsPublicPath = `${rootClientPath}/sw.js`;
 
-        // ssr pages
-        for (const page of await fs.readdir('./src/client/ssr/pages')) {
-          await buildJsSrcPage(`./src/client/ssr/pages/${page}`, `${rootClientPath}/${page}`);
-
-          const htmlSrc = Render({
-            title: metadata?.title ? metadata.title : cap(client),
-            ssrPath: '/',
-            ssrHeadComponents: '',
-            ssrBodyComponents: '',
-            baseSsrLib: jsSsrCommonComponents + fs.readFileSync(`${rootClientPath}/${page}`, 'utf8'),
-          });
+        if (!(enableLiveRebuild && !options.liveClientBuildPaths.find((p) => p.srcBuildPath === jsSrcPath))) {
+          const jsSrc = viewFormatted(await srcFormatted(fs.readFileSync(jsSrcPath, 'utf8')), dists, path, baseHost);
 
           fs.writeFileSync(
-            `${rootClientPath}/${page.slice(0, -3)}.html`,
-            minifyBuild || process.env.NODE_ENV === 'production'
-              ? await minify(htmlSrc, {
-                  minifyCSS: true,
-                  minifyJS: true,
-                  collapseBooleanAttributes: true,
-                  collapseInlineTagWhitespace: true,
-                  collapseWhitespace: true,
-                })
-              : htmlSrc,
+            jsPublicPath,
+            minifyBuild || process.env.NODE_ENV === 'production' ? UglifyJS.minify(jsSrc).code : jsSrc,
             'utf8',
           );
         }
@@ -404,7 +367,6 @@ const buildClient = async (options = { liveClientBuildPaths: [], instances: [] }
             const canonicalURL = `https://${host}${path}${
               view.path === '/' ? (path === '/' ? '' : '/') : path === '/' ? `${view.path.slice(1)}/` : `${view.path}/`
             }`;
-            const ssrPath = path === '/' ? path : `${path}/`;
 
             let ssrHeadComponents = ``;
             let ssrBodyComponents = ``;
@@ -414,10 +376,7 @@ const buildClient = async (options = { liveClientBuildPaths: [], instances: [] }
                 confSSR[view.ssr].head.unshift('Production');
 
               for (const ssrHeadComponent of confSSR[view.ssr].head) {
-                const SrrComponent = await ssrFactory(
-                  `./src/client/ssr/components/head/${ssrHeadComponent}.js`,
-                  jsSsrCommonComponents,
-                );
+                const SrrComponent = await ssrFactory(`./src/client/ssr/head/${ssrHeadComponent}.js`);
 
                 switch (ssrHeadComponent) {
                   case 'Pwa':
@@ -498,10 +457,7 @@ const buildClient = async (options = { liveClientBuildPaths: [], instances: [] }
               }
 
               for (const ssrBodyComponent of confSSR[view.ssr].body) {
-                const SrrComponent = await ssrFactory(
-                  `./src/client/ssr/components/body/${ssrBodyComponent}.js`,
-                  jsSsrCommonComponents,
-                );
+                const SrrComponent = await ssrFactory(`./src/client/ssr/body/${ssrBodyComponent}.js`);
                 switch (ssrBodyComponent) {
                   case 'UnderpostDefaultSplashScreen':
                   case 'CyberiaDefaultSplashScreen':
@@ -544,14 +500,6 @@ const buildClient = async (options = { liveClientBuildPaths: [], instances: [] }
                 }
               }
             }
-            const htmlSrc = Render({
-              title,
-              buildId,
-              ssrPath,
-              ssrHeadComponents,
-              ssrBodyComponents,
-              baseSsrLib: jsSsrCommonComponents,
-            });
 
             /** @type {import('sitemap').SitemapItem} */
             const siteMapLink = {
@@ -560,6 +508,14 @@ const buildClient = async (options = { liveClientBuildPaths: [], instances: [] }
               priority: 0.8,
             };
             siteMapLinks.push(siteMapLink);
+
+            const htmlSrc = Render({
+              title,
+              buildId,
+              ssrPath,
+              ssrHeadComponents,
+              ssrBodyComponents,
+            });
 
             fs.writeFileSync(
               `${buildPath}index.html`,
@@ -765,6 +721,76 @@ root file where the route starts, such as index.js, app.js, routes.js, etc ... *
         logger.warn('write zip', `./build/${buildId}.zip`);
 
         zip.writeZip(`./build/${buildId}.zip`);
+      }
+      if (client) {
+        let PRE_CACHED_RESOURCES = [];
+
+        if (views && offlineBuild && fs.existsSync(`${rootClientPath}/sw.js`)) {
+          PRE_CACHED_RESOURCES = await fs.readdir(rootClientPath, { recursive: true });
+          PRE_CACHED_RESOURCES = views
+            .map((view) => `${path === '/' ? '' : path}${view.path}`)
+            .concat(
+              PRE_CACHED_RESOURCES.map((p) => `/${p}`).filter(
+                (p) => p[1] !== '.' && !fs.statSync(`${rootClientPath}${p}`).isDirectory(),
+              ),
+            );
+        }
+
+        for (const pageType of ['offline', 'pages']) {
+          if (confSSR[getCapVariableName(client)] && confSSR[getCapVariableName(client)][pageType]) {
+            for (const page of confSSR[getCapVariableName(client)][pageType]) {
+              const SsrComponent = await ssrFactory(`./src/client/ssr/${pageType}/${page.client}.js`);
+
+              const htmlSrc = Render({
+                title: page.title,
+                ssrPath,
+                ssrHeadComponents: '',
+                ssrBodyComponents: SsrComponent(),
+              });
+
+              const buildPath = `${
+                rootClientPath[rootClientPath.length - 1] === '/' ? rootClientPath.slice(0, -1) : rootClientPath
+              }${page.path === '/' ? page.path : `${page.path}/`}`;
+
+              PRE_CACHED_RESOURCES.push(`${path === '/' ? '' : path}${page.path === '/' ? '' : page.path}/index.html`);
+
+              if (!fs.existsSync(buildPath)) fs.mkdirSync(buildPath, { recursive: true });
+
+              const buildHtmlPath = `${buildPath}index.html`;
+
+              logger.info('ssr page build', buildHtmlPath);
+
+              fs.writeFileSync(
+                buildHtmlPath,
+                minifyBuild || process.env.NODE_ENV === 'production'
+                  ? await minify(htmlSrc, {
+                      minifyCSS: true,
+                      minifyJS: true,
+                      collapseBooleanAttributes: true,
+                      collapseInlineTagWhitespace: true,
+                      collapseWhitespace: true,
+                    })
+                  : htmlSrc,
+                'utf8',
+              );
+            }
+          }
+        }
+
+        {
+          const PRE_CACHED_JSON = `PRE_CACHED_RESOURCES = ${JSONweb(uniqueArray(PRE_CACHED_RESOURCES))}`;
+          const PROXY_PATH = `PROXY_PATH = '${path}'`;
+          fs.writeFileSync(
+            `${rootClientPath}/sw.js`,
+            fs
+              .readFileSync(`${rootClientPath}/sw.js`, 'utf8')
+              .replaceAll(`PRE_CACHED_RESOURCES = []`, PRE_CACHED_JSON)
+              .replaceAll(`PRE_CACHED_RESOURCES=[]`, PRE_CACHED_JSON)
+              .replaceAll(`PROXY_PATH = '/'`, PROXY_PATH)
+              .replaceAll(`PROXY_PATH='/'`, PROXY_PATH),
+            'utf8',
+          );
+        }
       }
     }
   }

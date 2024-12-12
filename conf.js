@@ -56,6 +56,9 @@ const DefaultConf = {
           'Panel',
           'PanelForm',
           'Scroll',
+          'Alert',
+          '404',
+          '500',
         ],
         default: [
           'MenuDefault',
@@ -124,6 +127,8 @@ const DefaultConf = {
           client: 'Default',
           ssr: 'Default',
         },
+        { client: 'Default', ssr: 'Default', path: '/404', title: '404 Not Found' },
+        { client: 'Default', ssr: 'Default', path: '/500', title: '500 Server Error' },
       ],
       dists: [
         {
@@ -176,6 +181,28 @@ const DefaultConf = {
     Default: {
       head: ['Seo', 'Pwa', 'Css', 'DefaultScripts', 'Production'],
       body: ['CacheControl', 'DefaultSplashScreen'],
+      mailer: {
+        userVerifyEmail: 'DefaultVerifyEmail',
+        userRecoverEmail: 'DefaultRecoverEmail',
+      },
+      offline: [
+        {
+          path: '/offline',
+          title: 'No Network Connection',
+          client: 'NoNetworkConnection',
+          head: [],
+          body: [],
+        },
+      ],
+      pages: [
+        {
+          path: '/test',
+          title: 'Test',
+          client: 'Test',
+          head: [],
+          body: [],
+        },
+      ],
     },
   },
   server: {
@@ -189,6 +216,7 @@ const DefaultConf = {
         iconsBuild: true,
         liteBuild: false,
         docsBuild: false,
+        offlineBuild: false,
         ws: 'core',
         peer: true,
         proxy: [80, 443],
@@ -210,10 +238,6 @@ const DefaultConf = {
               user: 'noreply@default.net',
               pass: '',
             },
-          },
-          templates: {
-            userVerifyEmail: 'DefaultVerifyEmail',
-            userRecoverEmail: 'DefaultRecoverEmail',
           },
         },
       },

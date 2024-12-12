@@ -1,19 +1,20 @@
 import fs from 'fs-extra';
 import dotenv from 'dotenv';
-import { cap, capFirst, getCapVariableName, newInstance, range, timer } from '../client/components/core/CommonJs.js';
+import { capFirst, getCapVariableName, newInstance, range, timer } from '../client/components/core/CommonJs.js';
 import * as dir from 'path';
 import cliProgress from 'cli-progress';
 import cliSpinners from 'cli-spinners';
 import logUpdate from 'log-update';
 import colors from 'colors';
 import { loggerFactory } from './logger.js';
-import { shellExec, shellCd, getRootDirectory } from './process.js';
+import { shellExec } from './process.js';
 import { DefaultConf } from '../../conf.js';
 import ncp from 'copy-paste';
 import read from 'read';
 import splitFile from 'split-file';
 import axios from 'axios';
 import https from 'https';
+import { ssrFactory } from './client-formatted.js';
 
 // axios.defaults.baseURL = BASE_URL;
 
@@ -466,6 +467,16 @@ const buildProxyRouter = () => {
       }
     }
   }
+  if (process.argv.includes('maintenance'))
+    (async () => {
+      globalThis.defaultHtmlSrcMaintenance = (await ssrFactory())({
+        title: 'Site in maintenance',
+        ssrPath: '/',
+        ssrHeadComponents: '',
+        ssrBodyComponents: (await ssrFactory(`./src/client/ssr/body/Maintenance.js`))(),
+      });
+    })();
+
   return proxyRouter;
 };
 
@@ -596,14 +607,32 @@ const validateTemplatePath = (absolutePath = '') => {
     return false;
   }
   if (
-    absolutePath.match('src/client/ssr/components/body') &&
-    !confSsr.body.find((p) => absolutePath.match(`src/client/ssr/components/body/${p}.js`))
+    absolutePath.match('src/client/ssr/body') &&
+    !confSsr.body.find((p) => absolutePath.match(`src/client/ssr/body/${p}.js`))
   ) {
     return false;
   }
   if (
-    absolutePath.match('src/client/ssr/components/head') &&
-    !confSsr.head.find((p) => absolutePath.match(`src/client/ssr/components/head/${p}.js`))
+    absolutePath.match('src/client/ssr/head') &&
+    !confSsr.head.find((p) => absolutePath.match(`src/client/ssr/head/${p}.js`))
+  ) {
+    return false;
+  }
+  if (
+    absolutePath.match('src/client/ssr/mailer') &&
+    !Object.keys(confSsr.mailer).find((p) => absolutePath.match(`src/client/ssr/mailer/${confSsr.mailer[p]}.js`))
+  ) {
+    return false;
+  }
+  if (
+    absolutePath.match('src/client/ssr/offline') &&
+    !confSsr.offline.find((p) => absolutePath.match(`src/client/ssr/offline/${p.client}.js`))
+  ) {
+    return false;
+  }
+  if (
+    absolutePath.match('src/client/ssr/pages') &&
+    !confSsr.pages.find((p) => absolutePath.match(`src/client/ssr/pages/${p.client}.js`))
   ) {
     return false;
   }
@@ -891,13 +920,12 @@ const fixDependencies = async () => {
   );
 };
 
-const maintenancePath = `${getRootDirectory()}/public/${process.env.DEFAULT_DEPLOY_HOST}${
-  process.env.DEFAULT_DEPLOY_PATH
-}/maintenance.html`;
-
 const maintenanceMiddleware = (req, res, port, proxyRouter) => {
-  if (process.argv.includes('maintenance') && fs.existsSync(maintenancePath)) {
-    if (req.method.toUpperCase() === 'GET') return res.status(503).sendFile(maintenancePath);
+  if (process.argv.includes('maintenance') && globalThis.defaultHtmlSrcMaintenance) {
+    if (req.method.toUpperCase() === 'GET') {
+      res.set('Content-Type', 'text/html');
+      return res.status(503).send(globalThis.defaultHtmlSrcMaintenance);
+    }
     return res.status(503).json({
       status: 'error',
       message: 'Server is under maintenance',
@@ -941,7 +969,6 @@ export {
   mergeBackUp,
   fixDependencies,
   getDeployId,
-  maintenancePath,
   maintenanceMiddleware,
   setUpProxyMaintenanceServer,
 };
