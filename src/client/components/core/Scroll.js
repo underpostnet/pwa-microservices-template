@@ -1,4 +1,5 @@
 import { borderChar } from './Css.js';
+import { Modal } from './Modal.js';
 import { append, s } from './VanillaJs.js';
 
 const Scroll = {
@@ -17,7 +18,7 @@ const Scroll = {
   scrollHandler: async function () {
     for (const selector in Scroll.data) await Scroll.data[selector].callback(Scroll.getScrollPosition(selector));
   },
-  addEvent: function (selector = '', callback = () => {}) {
+  addEvent: function (selector = '', callback = (position = 0) => {}) {
     Scroll.data[selector].callback = callback;
   },
   removeEvent: function (selector) {
@@ -29,6 +30,13 @@ const Scroll = {
       left: options.left || 0,
       behavior: options.behavior || 'smooth',
     });
+  },
+  topRefreshEvents: {},
+  addTopRefreshEvent: function (options = { id: '', callback: () => {}, condition: () => {} }) {
+    this.topRefreshEvents[options.id] = options;
+  },
+  removeTopRefreshEvent: function (id = '') {
+    delete this.topRefreshEvents[id];
   },
   pullTopRefresh: function () {
     append(
@@ -68,6 +76,15 @@ const Scroll = {
     });
 
     document.addEventListener('touchmove', (e) => {
+      if (
+        !Object.keys(Scroll.topRefreshEvents).find((event) => Scroll.topRefreshEvents[event].condition()) ||
+        (!s(`.btn-bar-center-icon-close`).classList.contains('hide') &&
+          !s(
+            `.btn-icon-menu-mode-${Modal.Data['modal-menu'].options.mode !== 'slide-menu-right' ? 'left' : 'right'}`,
+          ).classList.contains('hide'))
+      )
+        return;
+
       const touchY = e.touches[0].clientY;
       const touchDiff = touchY - touchstartY;
 
@@ -87,10 +104,25 @@ const Scroll = {
       // console.warn('touchend');
       s(`.pull-refresh-icon-container`).style.top = '-60px';
       if (reload) {
-        location.reload();
-        // console.warn('reload');
+        for (const event of Object.keys(Scroll.topRefreshEvents))
+          if (Scroll.topRefreshEvents[event].condition()) Scroll.topRefreshEvents[event].callback();
       }
       reload = false;
+    });
+    Scroll.addTopRefreshEvent({
+      id: 'main-body',
+      callback: () => {
+        location.reload();
+      },
+      condition: () => {
+        return (
+          s('.main-body') &&
+          s('.main-body').scrollTop === 0 &&
+          !Object.keys(Modal.Data).find(
+            (idModal) => !['modal-menu', 'main-body', 'bottom-bar', 'main-body-top'].includes(idModal),
+          )
+        );
+      },
     });
   },
 };
