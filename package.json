@@ -11,7 +11,7 @@
     "pm2-delete": "pm2 delete engine",
     "build": "node bin/deploy build-full-client",
     "build-production": "env-cmd -f .env.production node bin/deploy build-full-client",
-    "dev": "env-cmd -f .env.development node src/client.dev --no-warnings",
+    "dev": "env-cmd -f .env.development node src/client.dev",
     "dev-api": "env-cmd -f .env.development nodemon --watch src --ignore src/client src/api",
     "docs": "jsdoc -c jsdoc.json",
     "backup": "node bin/db default.net/ export",

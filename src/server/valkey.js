@@ -45,7 +45,10 @@ const valkeyClientFactory = async () => {
 };
 
 const getValkeyObject = async (key = '') => {
-  if (!valkeyEnabled) throw new Error(disableValkeyErrorMessage);
+  if (!valkeyEnabled) {
+    logger.warn(disableValkeyErrorMessage + ' get: ', key);
+    return null;
+  }
   const object = await valkey.get(key);
   try {
     return JSON.parse(object);
