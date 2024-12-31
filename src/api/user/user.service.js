@@ -6,23 +6,12 @@ import { CoreWsEmit } from '../../ws/core/core.ws.emit.js';
 import { CoreWsMailerChannel } from '../../ws/core/channels/core.ws.mailer.js';
 import validator from 'validator';
 import { DataBaseProvider } from '../../db/DataBaseProvider.js';
-import { s4 } from '../../client/components/core/CommonJs.js';
 import { FileFactory } from '../file/file.service.js';
-import fs from 'fs-extra';
-import { svg, png, png3x } from 'font-awesome-assets';
 import { UserDto } from './user.model.js';
-import Jimp from 'jimp';
+import { selectDtoFactory, ValkeyAPI } from '../../server/valkey.js';
+import { getDefaultProfileImageId } from '../../server/client-icons.js';
 
 const logger = loggerFactory(import.meta);
-
-const getDefaultProfileImageId = async (File) => {
-  const faId = 'user';
-  const tmpFilePath = `./tmp/${faId}-${s4() + s4()}.svg`;
-  fs.writeFileSync(tmpFilePath, svg(faId, '#f5f5f5d1'), 'utf8');
-  const file = await new File(FileFactory.svg(fs.readFileSync(tmpFilePath), `${faId}.svg`)).save();
-  fs.removeSync(tmpFilePath);
-  return file._id;
-};
 
 const UserService = {
   post: async (req, res, options) => {
@@ -235,6 +224,15 @@ const UserService = {
           }
         } else throw new Error('invalid email or password');
 
+      case 'guest': {
+        const user = await ValkeyAPI.valkeyObjectFactory('user', options);
+        await ValkeyAPI.setValkeyObject(user.email, user);
+        return {
+          token: hashJWT({ user: UserDto.auth.payload(user) }),
+          user: selectDtoFactory(user, UserDto.select.get()),
+        };
+      }
+
       default: {
         const validatePassword = validatePasswordMiddleware(req.body.password);
         if (validatePassword.status === 'error') throw new Error(validatePassword.message);
@@ -327,13 +325,15 @@ const UserService = {
         return await User.find().select(UserDto.select.getAll());
 
       case 'auth': {
-        const user = await User.findOne({
-          _id: req.auth.user._id,
-        });
+        const user = (await ValkeyAPI.getValkeyObject(req.auth.user.email))
+          ? await ValkeyAPI.getValkeyObject(req.auth.user.email)
+          : await User.findOne({
+              _id: req.auth.user._id,
+            });
 
         const file = await File.findOne({ _id: user.profileImageId });
 
-        if (!file) {
+        if (!file && !(await ValkeyAPI.getValkeyObject(req.auth.user.email))) {
           await User.findByIdAndUpdate(
             user._id,
             { profileImageId: await getDefaultProfileImageId(File) },
@@ -342,10 +342,11 @@ const UserService = {
             },
           );
         }
-
-        return await User.findOne({
-          _id: req.auth.user._id,
-        }).select(UserDto.select.get());
+        return (await ValkeyAPI.getValkeyObject(req.auth.user.email))
+          ? selectDtoFactory(await ValkeyAPI.getValkeyObject(req.auth.user.email), UserDto.select.get())
+          : await User.findOne({
+              _id: req.auth.user._id,
+            }).select(UserDto.select.get());
       }
 
       default: {

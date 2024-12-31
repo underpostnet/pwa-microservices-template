@@ -35,6 +35,7 @@ import { Lampp } from '../src/runtime/lampp/Lampp.js';
 import { DefaultConf } from '../conf.js';
 import { JSONweb } from '../src/server/client-formatted.js';
 import ejs from 'easy-json-schema';
+import { Xampp } from '../src/runtime/xampp/Xampp.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -282,6 +283,28 @@ try {
         }
       }
       break;
+
+    case 'xampp': {
+      const directory = 'c:/xampp/htdocs';
+      const host = 'localhost';
+      const port = 80;
+      Xampp.removeRouter();
+      Xampp.appendRouter(`  Listen ${port} 
+               <VirtualHost *:${port}>
+                DocumentRoot "${directory}"
+                ServerName ${host}:${port}
+      
+                <Directory "${directory}">
+                  Options Indexes FollowSymLinks MultiViews
+                  AllowOverride All
+                  Require all granted
+                </Directory>
+      
+              </VirtualHost>
+              `);
+      if (Xampp.enabled() && Xampp.router) Xampp.initService({ daemon: true });
+      break;
+    }
 
     case 'adminer': {
       const directory = '/dd/engine/public/adminer';
@@ -995,6 +1018,22 @@ ${uniqueArray(logs.all.map((log) => `- ${log.author_name} ([${log.author_email}]
       // ssh-copy-id user@hostname.example.com
       // ssh-copy-id "user@hostname.example.com -p <port-number>"
 
+      break;
+    }
+
+    case 'valkey': {
+      if (!process.argv.includes('server')) {
+        shellExec(`cd /dd && git clone https://github.com/valkey-io/valkey.git`);
+        shellExec(`cd /dd/valkey && make`);
+        shellExec(`apt install valkey-tools`); // valkey-cli
+      }
+      shellExec(`cd /dd/valkey && ./src/valkey-server`);
+
+      break;
+    }
+
+    case 'valkey-service': {
+      shellExec(`pm2 start bin/deploy.js --node-args=\"--max-old-space-size=8192\" --name valkey -- valkey server`);
       break;
     }
 
