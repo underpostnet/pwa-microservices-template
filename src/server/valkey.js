@@ -25,7 +25,7 @@ const valkeyClientFactory = async () => {
       if (attempt === 1) {
         valkey.disconnect();
         valkeyEnabled = false;
-        logger.error('Valkey service not enabled', { valkeyEnabled });
+        logger.warn('Valkey service not enabled', { valkeyEnabled });
         return;
       }
       return 1000; // 1 second interval attempt
