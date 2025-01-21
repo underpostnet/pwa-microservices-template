@@ -3,7 +3,7 @@ const DefaultConf = {
     default: {
       metadata: {
         title: 'Demo App',
-        backgroundImage: './src/client/public/default/assets/background/white0-min.jpg',
+        backgroundImage: 'assets/background/white0-min.jpg',
         description: 'Web application',
         keywords: ['web', 'app', 'spa', 'demo', 'github-pages'],
         author: 'https://github.com/underpostnet',
@@ -190,6 +190,13 @@ const DefaultConf = {
           path: '/offline',
           title: 'No Network Connection',
           client: 'NoNetworkConnection',
+          head: [],
+          body: [],
+        },
+        {
+          path: '/maintenance',
+          title: 'Server Maintenance',
+          client: 'Maintenance',
           head: [],
           body: [],
         },
