@@ -45,7 +45,7 @@ npm install -g underpost
 ```
 
 ```bash
-underpost new app-name
+underpost new app-name dev
 ```
 
 After template installation, the server will be running on [http://localhost:4001](http://localhost:4001)
