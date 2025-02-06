@@ -90,16 +90,7 @@ const PanelForm = {
         },
       },
     ];
-    const dateFormat = (date) =>
-      html`<span
-        style="${renderCssAttr({
-          style: {
-            'font-size': '14px',
-            color: '#888',
-          },
-        })}"
-        >${new Date(date).toLocaleString().replaceAll(',', '')}</span
-      >`;
+
     const titleIcon = html`<i class="fa-solid fa-quote-left"></i>`;
     const panelRender = async ({ data }) =>
       await Panel.Render({
@@ -271,7 +262,7 @@ const PanelForm = {
                 fileId: file ? URL.createObjectURL(file) : undefined,
                 _id: documentData._id,
                 id: documentData._id,
-                createdAt: dateFormat(documentData.createdAt),
+                createdAt: documentData.createdAt,
               };
 
               if (documentStatus === 'error') status = 'error';
@@ -376,7 +367,7 @@ const PanelForm = {
           PanelForm.Data[idPanel].data.push({
             id: documentObject._id,
             title: documentObject.title,
-            createdAt: dateFormat(documentObject.createdAt),
+            createdAt: documentObject.createdAt,
             tags: documentObject.tags.filter((t) => !prefixTags.includes(t)),
             mdFileId: marked.parse(mdFileId),
             userId: documentObject.userId._id,
@@ -431,14 +422,9 @@ const PanelForm = {
         })),
       });
 
-    let lastCid;
-    let lasUserId;
     this.Data[idPanel].updatePanel = async () => {
       const cid = getQueryParams().cid ? getQueryParams().cid : '';
-      if (lastCid === cid && lasUserId === Elements.Data.user.main.model.user._id) return;
       if (options.route === 'home') Modal.homeCid = newInstance(cid);
-      lastCid = cid;
-      lasUserId = newInstance(Elements.Data.user.main.model.user._id);
       htmls(`.${options.parentIdModal ? 'html-' + options.parentIdModal : 'main-body'}`, await renderSrrPanelData());
       await getPanelData();
       htmls(
@@ -451,7 +437,7 @@ const PanelForm = {
         id: options.parentIdModal ? 'html-' + options.parentIdModal : 'main-body',
         routeId: options.route,
         event: async (path) => {
-          await this.Data[idPanel].updatePanel();
+          if (!PanelForm.Data[idPanel].sessionIn) await this.Data[idPanel].updatePanel();
         },
       });
 

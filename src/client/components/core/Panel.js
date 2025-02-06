@@ -1,4 +1,4 @@
-import { getId } from './CommonJs.js';
+import { getId, isValidDate, newInstance } from './CommonJs.js';
 import { LoadingAnimation } from '../core/LoadingAnimation.js';
 import { Validator } from '../core/Validator.js';
 import { Input } from '../core/Input.js';
@@ -51,8 +51,6 @@ const Panel = {
       <i style="font-size: 25px" class="fa-solid fa-cloud"></i>
     </div>`;
 
-    let editId;
-
     const openPanelForm = () => {
       s(`.${idPanel}-form-body`).classList.remove('hide');
       s(`.btn-${idPanel}-add`).classList.add('hide');
@@ -72,7 +70,7 @@ const Panel = {
     };
 
     const renderPanel = async (payload) => {
-      const obj = payload;
+      const obj = newInstance(payload);
       if ('_id' in obj) obj.id = obj._id;
       const { id } = obj;
 
@@ -98,8 +96,8 @@ const Panel = {
         });
         EventsUI.onClick(`.${idPanel}-btn-edit-${id}`, async () => {
           logger.warn('edit', obj);
-          if (obj._id) editId = obj._id;
-          else if (obj.id) editId = obj.id;
+          if (obj._id) Panel.Tokens[idPanel].editId = obj._id;
+          else if (obj.id) Panel.Tokens[idPanel].editId = obj.id;
 
           s(`.btn-${idPanel}-label-edit`).classList.remove('hide');
           s(`.btn-${idPanel}-label-add`).classList.add('hide');
@@ -171,6 +169,10 @@ const Panel = {
                   const valueIcon = formObjData?.panel?.icon?.value ? formObjData.panel.icon.value : '';
                   const keyIcon = formObjData?.panel?.icon?.key ? formObjData.panel.icon.key : '';
 
+                  if (formObjData && ['datetime-local'].includes(formObjData.inputType) && isValidDate(obj[infoKey])) {
+                    obj[infoKey] = `${obj[infoKey]}`.replace('T', ' ').replace('.000Z', '');
+                  }
+
                   if (formData.find((f) => f.model === infoKey && f.panel && f.panel.type === 'tags')) {
                     setTimeout(async () => {
                       let tagRender = html``;
@@ -186,22 +188,50 @@ const Panel = {
                     });
                     return html``;
                   }
+                  {
+                    const formDataObj = formData.find((f) => f.model === infoKey && f.panel && f.panel.type === 'list');
+                    if (obj[infoKey] && obj[infoKey].length > 0 && formDataObj)
+                      return html`<div class="in ${idPanel}-row">
+                        <span class="${idPanel}-row-key capitalize ${formObjData.label?.disabled ? 'hide' : ''}">
+                          ${keyIcon} ${Translate.Render(infoKey)}:</span
+                        >
+                        <span class="${idPanel}-row-value"
+                          >${valueIcon} ${obj[infoKey].map((k) => Translate.Render(k)).join(', ')}</span
+                        >
+                      </div> `;
+                  }
 
-                  if (formData.find((f) => f.model === infoKey && f.panel && f.panel.type === 'info-row-pin'))
-                    return html`<div class="in ${idPanel}-row">
-                      <span class="${idPanel}-row-pin-key capitalize ${formObjData.label?.disabled ? 'hide' : ''}">
-                        ${keyIcon} ${infoKey}:</span
-                      >
-                      <span class="${idPanel}-row-pin-value">${valueIcon} ${obj[infoKey]}</span>
-                    </div> `;
+                  {
+                    const formDataObj = formData.find(
+                      (f) => f.model === infoKey && f.panel && f.panel.type === 'info-row-pin',
+                    );
+                    if (obj[infoKey] && formDataObj)
+                      return html`<div class="in ${idPanel}-row">
+                        <span class="${idPanel}-row-pin-key capitalize ${formObjData.label?.disabled ? 'hide' : ''}">
+                          ${keyIcon}
+                          ${formDataObj.translateCode
+                            ? Translate.Render(formDataObj.translateCode)
+                            : Translate.Render(infoKey)}:</span
+                        >
+                        <span class="${idPanel}-row-pin-value">${valueIcon} ${obj[infoKey]}</span>
+                      </div> `;
+                  }
 
-                  if (formData.find((f) => f.model === infoKey && f.panel && f.panel.type === 'info-row'))
-                    return html`<div class="in ${idPanel}-row">
-                      <span class="${idPanel}-row-key capitalize ${formObjData.label?.disabled ? 'hide' : ''}">
-                        ${keyIcon} ${infoKey}:</span
-                      >
-                      <span class="${idPanel}-row-value"> ${valueIcon} ${obj[infoKey]}</span>
-                    </div> `;
+                  {
+                    const formDataObj = formData.find(
+                      (f) => f.model === infoKey && f.panel && f.panel.type === 'info-row',
+                    );
+                    if (obj[infoKey] && formDataObj)
+                      return html`<div class="in ${idPanel}-row">
+                        <span class="${idPanel}-row-key capitalize ${formObjData.label?.disabled ? 'hide' : ''}">
+                          ${keyIcon}
+                          ${formDataObj.translateCode
+                            ? Translate.Render(formDataObj.translateCode)
+                            : Translate.Render(infoKey)}:</span
+                        >
+                        <span class="${idPanel}-row-value"> ${valueIcon} ${obj[infoKey]}</span>
+                      </div> `;
+                  }
 
                   return html``;
                 })
@@ -224,6 +254,30 @@ const Panel = {
     for (const modelData of formData) {
       if (modelData.disableRender) continue;
       switch (modelData.inputType) {
+        case 'dropdown-checkbox': {
+          renderForm += html`<div class="in section-mp">
+            ${await DropDown.Render({
+              id: `${modelData.id}`,
+              label: html`${Translate.Render(modelData.model)}`,
+              type: 'checkbox',
+              value: modelData.dropdown.options[0],
+              resetOption: true,
+              containerClass: `${idPanel}-dropdown-checkbox`,
+              data: modelData.dropdown.options.map((dKey) => {
+                return {
+                  value: dKey,
+                  data: dKey,
+                  checked: false,
+                  display: html`${Translate.Render(dKey)}`,
+                  onClick: function () {
+                    logger.info('DropDown onClick', this.checked);
+                  },
+                };
+              }),
+            })}
+          </div>`;
+          break;
+        }
         case 'dropdown':
           renderForm += html` <div class="in section-mp">
             ${await DropDown.Render({
@@ -418,21 +472,23 @@ const Panel = {
         obj.id = `${data.length}`;
         let documents;
         if (options && options.on && options.on.add) {
-          const { status, data } = await options.on.add({ data: obj, editId });
+          const { status, data } = await options.on.add({ data: obj, editId: Panel.Tokens[idPanel].editId });
           if (status === 'error') return;
           documents = data;
         }
         s(`.btn-${idPanel}-clean`).click();
-        if (editId && s(`.${idPanel}-${editId}`)) s(`.${idPanel}-${editId}`).remove();
+        if (Panel.Tokens[idPanel].editId && s(`.${idPanel}-${Panel.Tokens[idPanel].editId}`))
+          s(`.${idPanel}-${Panel.Tokens[idPanel].editId}`).remove();
         if (Array.isArray(documents)) {
           htmls(`.${idPanel}-render`, '');
           for (const doc of documents) {
             append(`.${idPanel}-render`, await renderPanel(doc));
           }
-        } else htmls(`.${idPanel}-render`, await renderPanel(obj));
+        } else htmls(`.${idPanel}-render`, await renderPanel({ ...obj, ...documents }));
         Input.cleanValues(formData);
         s(`.btn-${idPanel}-close`).click();
         s(`.${scrollClassContainer}`).scrollTop = 0;
+        if (s(`.${scrollClassContainer}`)) s(`.${scrollClassContainer}`).style.overflow = 'auto';
       });
       s(`.btn-${idPanel}-clean`).onclick = () => {
         Input.cleanValues(formData);
@@ -458,13 +514,14 @@ const Panel = {
       s(`.btn-${idPanel}-add`).onclick = (e) => {
         e.preventDefault();
         // s(`.btn-${idPanel}-clean`).click();
-        editId = undefined;
+        Panel.Tokens[idPanel].editId = undefined;
         s(`.btn-${idPanel}-label-add`).classList.remove('hide');
         s(`.btn-${idPanel}-label-edit`).classList.add('hide');
         s(`.${scrollClassContainer}`).scrollTop = 0;
 
         openPanelForm();
       };
+      if (s(`.${scrollClassContainer}`)) s(`.${scrollClassContainer}`).style.overflow = 'auto';
     });
 
     if (data.length > 0) for (const obj of data) render += await renderPanel(obj);

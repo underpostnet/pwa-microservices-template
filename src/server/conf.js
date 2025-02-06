@@ -9,7 +9,6 @@ import colors from 'colors';
 import { loggerFactory } from './logger.js';
 import { shellExec } from './process.js';
 import { DefaultConf } from '../../conf.js';
-import ncp from 'copy-paste';
 import read from 'read';
 import splitFile from 'split-file';
 import axios from 'axios';
@@ -770,9 +769,10 @@ const deployRun = async (dataDeploy, currentAttempt = 1) => {
   } else logger.info(`Deploy process successfully`);
 };
 
-const restoreMacroDb = async (deployGroupId = '') => {
+const restoreMacroDb = async (deployGroupId = '', deployId = null) => {
   const dataDeploy = await getDataDeploy({ deployGroupId, buildSingleReplica: false });
   for (const deployGroup of dataDeploy) {
+    if (deployId && deployGroup.deployId !== deployId) continue;
     if (!deployGroup.replicaHost) {
       const deployServerConfPath = `./engine-private/conf/${deployGroup.deployId}/conf.server.json`;
       const serverConf = JSON.parse(fs.readFileSync(deployServerConfPath, 'utf8'));

@@ -1,9 +1,7 @@
 import fs from 'fs';
 import read from 'read';
-import ncp from 'copy-paste';
 import dotenv from 'dotenv';
-
-import { getRootDirectory, shellExec } from '../src/server/process.js';
+import { getRootDirectory, pbcopy, shellExec } from '../src/server/process.js';
 import { loggerFactory } from '../src/server/logger.js';
 import { Cmd, loadConf } from '../src/server/conf.js';
 import { buildSSL } from '../src/server/ssl.js';
@@ -24,9 +22,9 @@ try {
   for (const host of hosts.split(',')) {
     if (host in confServer) {
       const directory = confServer[host]['/']?.['directory'] ? confServer[host]['/']['directory'] : undefined;
-      cmd = `certbot certonly --webroot --webroot-path ${
+      cmd = `sudo certbot certonly --webroot --webroot-path ${
         directory ? directory : `${getRootDirectory()}/public/${host}`
-      } -d ${host}`;
+      } --cert-name ${host} -d ${host}`;
       // directory ? directory : `${getRootDirectory()}/public/${host}`
       // directory ? directory : `${getRootDirectory()}/public/www.${host.split('.').slice(-2).join('.')}`
 
@@ -38,16 +36,26 @@ try {
       // certbot delete --cert-name <domain>
 
       logger.info(`Run the following command`, cmd);
-      await ncp.copy(cmd);
-      await read({ prompt: 'Command copy to clipboard, press enter to continue.\n' });
+      try {
+        await pbcopy(cmd);
+        await read({ prompt: 'Command copy to clipboard, press enter to continue.\n' });
+      } catch (error) {
+        logger.error(error);
+      }
       // Certificate
-      await buildSSL(host);
+      if (process.argv.includes('build')) await buildSSL(host);
       logger.info('Certificate saved', host);
     } else throw new Error(`host not found: ${host}`);
   }
-
-  cmd = `certbot renew --dry-run`;
-  await ncp.copy(cmd);
+  // check for renewal conf:
+  // /etc/letsencrypt/renewal
+  // /etc/letsencrypt/live
+  cmd = `sudo certbot renew --dry-run`;
+  try {
+    await pbcopy(cmd);
+  } catch (error) {
+    logger.error(error);
+  }
   logger.info(`run the following command for renewal. Command copy to clipboard`, cmd);
   logger.info(`success install SLL`, hosts);
 } catch (error) {

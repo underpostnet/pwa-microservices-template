@@ -1,7 +1,7 @@
 import { EventSchedulerService } from '../../services/event-scheduler/event-scheduler.service.js';
 import { Auth } from './Auth.js';
 import { BtnIcon } from './BtnIcon.js';
-import { newInstance, range, s4 } from './CommonJs.js';
+import { isValidDate, newInstance, range, s4 } from './CommonJs.js';
 import { renderCssAttr } from './Css.js';
 import { Modal } from './Modal.js';
 import { NotificationManager } from './NotificationManager.js';
@@ -13,15 +13,27 @@ import { append, getQueryParams, getTimeZone, htmls, s, sa } from './VanillaJs.j
 
 // https://fullcalendar.io/docs/event-object
 
+const daysOfWeekOptions = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+const eventDateFactory = (event) =>
+  newInstance({
+    event: { ...event.extendedProps, title: event._def.title },
+    start: event.start,
+    end: event.end,
+  });
+
 const CalendarCore = {
   RenderStyle: async function () {},
   Data: {},
-  Render: async function (options = { idModal: '', Elements: {}, heightTopBar: 50, heightBottomBar: 50 }) {
+  Render: async function (
+    options = { idModal: '', Elements: {}, heightTopBar: 50, heightBottomBar: 50, hiddenDates: [] },
+  ) {
     this.Data[options.idModal] = {
       data: [],
       originData: [],
       filesData: [],
       calendar: {},
+      hiddenDates: options.hiddenDates ? options.hiddenDates : [],
     };
 
     const { heightTopBar, heightBottomBar } = options;
@@ -40,55 +52,86 @@ const CalendarCore = {
     };
     getSrrData();
 
-    const dateFormat = (date) =>
-      html`<span
-        style="${renderCssAttr({
-          style: {
-            'font-size': '14px',
-            color: '#888',
-          },
-        })}"
-        >${new Date(date).toLocaleString().replaceAll(',', '')}</span
-      >`;
-
     const getPanelData = async () => {
       const result = await EventSchedulerService.get({
-        id: `${getQueryParams().cid ? getQueryParams().cid : 'creatorUser'}`,
+        id: `${getQueryParams().cid ? getQueryParams().cid : Auth.getToken() ? 'creatorUser' : ''}`,
       });
       NotificationManager.Push({
         html: result.status === 'success' ? Translate.Render('success-get-events-scheduler') : result.message,
         status: result.status,
       });
       if (result.status === 'success') {
-        const resultData = Array.isArray(result.data) ? result.data : [result.data];
+        const resultData = Array.isArray(result.data) ? result.data : result.data ? [result.data] : [];
         this.Data[options.idModal].filesData = [];
         this.Data[options.idModal].originData = newInstance(resultData);
         this.Data[options.idModal].data = resultData.map((o) => {
           if (o.creatorUserId && options.Elements.Data.user.main.model.user._id === o.creatorUserId) o.tools = true;
           o.id = o._id;
-          o.start = dateFormat(o.start);
-          o.end = dateFormat(o.end);
+
           this.Data[options.idModal].filesData.push({});
           return o;
+        });
+        setTimeout(() => {
+          renderCalendar(
+            resultData.map((o) => {
+              // FREQ=WEEKLY;
+              // if (o.daysOfWeek && o.daysOfWeek.length > 0) {
+              //   o.rrule = `RRULE:BYDAY=${o.daysOfWeek.map((d) => `${d[0]}${d[1]}`.toUpperCase()).join(',')}`;
+              // }
+              // o.rrule = 'FREQ=WEEKLY;BYDAY=SU;BYHOUR=10,11;COUNT=10';
+              if (o.daysOfWeek && o.daysOfWeek.length > 0)
+                o.daysOfWeek = o.daysOfWeek.map((v, i) => daysOfWeekOptions.indexOf(v));
+              else delete o.daysOfWeek;
+              // o.exdate = ['2024-04-02'];
+              // delete o.end;
+              // delete o.start;
+
+              return o;
+            }),
+          );
         });
       }
     };
 
-    const renderCalendar = () => {
+    const renderCalendar = (events) => {
       const calendarEl = s(`.calendar-${idPanel}`);
       this.Data[options.idModal].calendar = new FullCalendar.Calendar(calendarEl, {
-        plugins: [FullCalendar.DayGrid.default, FullCalendar.TimeGrid.default, FullCalendar.List.default],
+        plugins: [
+          FullCalendar.DayGrid.default,
+          FullCalendar.TimeGrid.default,
+          FullCalendar.List.default,
+          // https://fullcalendar.io/docs/rrule-plugin
+          FullCalendar.RRule.default,
+        ],
         // initialView: 'dayGridWeek',
         timeZone: getTimeZone(),
         dateClick: function (arg) {
           console.error('calendar dateClick', arg.date.toString());
         },
-        events: [{ title: 'Meeting', start: new Date() }],
+        events: events ?? [{ title: 'Meeting', start: new Date() }],
         initialView: 'dayGridMonth',
         headerToolbar: {
           left: 'prev,next today',
           center: 'title',
           right: 'dayGridMonth,timeGridWeek,listWeek',
+        },
+        eventClick: async function (args) {
+          const dateData = eventDateFactory(args.event);
+          // element -> args.el
+          // remove all events associated ->  args.event.remove();
+          // console.error('eventClick', JSON.stringify(dateData, null, 4));
+          if (options.eventClick) await options.eventClick(dateData, args);
+        },
+        eventClassNames: function (args) {
+          // console.error('eventClassNames', JSON.stringify(dateData, null, 4));
+          if (!args.event.extendedProps._id) return args.event.remove();
+          const dateData = eventDateFactory(args.event);
+          if (
+            CalendarCore.Data[options.idModal].hiddenDates.find(
+              (d) => d.eventSchedulerId === dateData.event._id && d.date === dateData.start,
+            )
+          )
+            return ['hide'];
         },
       });
 
@@ -139,29 +182,52 @@ const CalendarCore = {
         rules: [{ type: 'isEmpty' }],
       },
       {
-        id: 'description',
-        model: 'description',
+        id: 'title',
+        model: 'title',
         inputType: 'text',
         rules: [{ type: 'isEmpty' }],
         panel: { type: 'title' },
       },
       {
-        id: 'allDay',
-        model: 'allDay',
-        inputType: 'checkbox-on-off',
-        rules: [],
-        panel: { type: 'info-row', icon: html`<i class="fa-solid fa-infinity"></i>` },
+        id: 'description',
+        model: 'description',
+        inputType: 'text',
+        rules: [{ type: 'isEmpty' }],
+        panel: { type: 'info-row' },
       },
       {
         id: 'start',
         model: 'start',
         inputType: 'datetime-local',
-        panel: { type: 'subtitle' },
+        translateCode: 'startTime',
+        panel: { type: 'info-row' },
       },
       {
         id: 'end',
         model: 'end',
         inputType: 'datetime-local',
+        translateCode: 'endTime',
+        panel: { type: 'info-row' },
+      },
+      {
+        id: 'daysOfWeek',
+        model: 'daysOfWeek',
+        inputType: 'dropdown-checkbox',
+        dropdown: {
+          options: daysOfWeekOptions,
+        },
+        panel: { type: 'list' },
+      },
+      {
+        id: 'startTime',
+        model: 'startTime',
+        inputType: 'time',
+        panel: { type: 'info-row' },
+      },
+      {
+        id: 'endTime',
+        model: 'endTime',
+        inputType: 'time',
         panel: { type: 'info-row' },
       },
     ];
@@ -215,8 +281,7 @@ const CalendarCore = {
             if (options.route) {
               setQueryPath({ path: options.route, queryPath: payload._id });
               if (options.parentIdModal) Modal.Data[options.parentIdModal].query = `${window.location.search}`;
-              if (CalendarCore.Data[options.idModal].updatePanel)
-                await CalendarCore.Data[options.idModal].updatePanel();
+              await CalendarCore.Data[options.idModal].updatePanel();
             }
           },
           titleIcon,
@@ -250,12 +315,19 @@ const CalendarCore = {
           ],
           on: {
             add: async function ({ data, editId }) {
+              if (data.daysOfWeek && data.daysOfWeek.length > 0 && daysOfWeekOptions[data.daysOfWeek[0]]) {
+                data.daysOfWeek = data.daysOfWeek.map((d) => daysOfWeekOptions[d]);
+              }
+              data.timeZoneClient = getTimeZone();
               const {
                 status,
                 message,
                 data: documentData,
               } = editId
-                ? await EventSchedulerService.put({ id: editId, body: { ...data, _id: undefined } })
+                ? await EventSchedulerService.put({
+                    id: editId,
+                    body: { ...data, _id: undefined },
+                  })
                 : await EventSchedulerService.post({ body: data });
               NotificationManager.Push({
                 html:
@@ -268,10 +340,9 @@ const CalendarCore = {
               });
 
               if (status === 'success') {
-                data.start = dateFormat(data.start);
-                data.end = dateFormat(data.end);
-                data.tools = true;
-                data._id = documentData._id;
+                documentData.tools = true;
+                // data._id = documentData._id;
+                data = documentData;
 
                 let originObj, indexOriginObj;
                 let filesData = {};
@@ -291,8 +362,7 @@ const CalendarCore = {
 
                 setQueryPath({ path: options.route, queryPath: documentData._id });
                 if (options.parentIdModal) Modal.Data[options.parentIdModal].query = `${window.location.search}`;
-                if (CalendarCore.Data[options.idModal].updatePanel)
-                  await CalendarCore.Data[options.idModal].updatePanel();
+                await CalendarCore.Data[options.idModal].updatePanel();
               }
               return { data, status, message };
             },
@@ -319,11 +389,8 @@ const CalendarCore = {
                   status,
                 });
 
-                if (getQueryParams().cid === data.id) {
-                  setQueryPath({ path: options.route, queryPath: '' });
-                  if (CalendarCore.Data[options.idModal].updatePanel)
-                    await CalendarCore.Data[options.idModal].updatePanel();
-                }
+                setQueryPath({ path: options.route, queryPath: '' });
+                await CalendarCore.Data[options.idModal].updatePanel();
 
                 return { status };
               }
@@ -334,17 +401,13 @@ const CalendarCore = {
         <div class="in" style="margin-bottom: 100px"></div>`;
     };
 
-    let lastCid;
-    let lasUserId;
     this.Data[options.idModal].updatePanel = async () => {
       const cid = getQueryParams().cid ? getQueryParams().cid : '';
-      if (lastCid === cid && lasUserId === options.Elements.Data.user.main.model.user._id) return;
       if (options.route === 'home') Modal.homeCid = newInstance(cid);
-      lasUserId = newInstance(options.Elements.Data.user.main.model.user._id);
-      lastCid = cid;
       if (s(`.main-body-calendar-${options.idModal}`)) {
-        if (Auth.getToken()) await getPanelData();
-        else getSrrData();
+        // if (Auth.getToken())
+        // else getSrrData();
+        await getPanelData();
         htmls(`.main-body-calendar-${options.idModal}`, await panelRender());
       }
     };

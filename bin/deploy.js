@@ -454,14 +454,16 @@ try {
       }
       break;
 
-    case 'update-package':
+    case 'update-dependencies':
       const files = await fs.readdir(`./engine-private/conf`, { recursive: true });
       const originPackage = JSON.parse(fs.readFileSync(`./package.json`, 'utf8'));
       for (const relativePath of files) {
         const filePah = `./engine-private/conf/${relativePath.replaceAll(`\\`, '/')}`;
         if (filePah.split('/').pop() === 'package.json') {
-          originPackage.scripts.start = JSON.parse(fs.readFileSync(filePah), 'utf8').scripts.start;
-          fs.writeFileSync(filePah, JSON.stringify(originPackage, null, 4), 'utf8');
+          const deployPackage = JSON.parse(fs.readFileSync(filePah), 'utf8');
+          deployPackage.dependencies = originPackage.dependencies;
+          deployPackage.devDependencies = originPackage.devDependencies;
+          fs.writeFileSync(filePah, JSON.stringify(deployPackage, null, 4), 'utf8');
         }
       }
       break;
@@ -752,12 +754,20 @@ try {
           );
 
         fs.writeFileSync(
+          `./manifests/test/underpost-engine-pod.yaml`,
+          fs
+            .readFileSync(`./manifests/test/underpost-engine-pod.yaml`, 'utf8')
+            .replaceAll(`underpost-engine:v${version}`, `underpost-engine:v${newVersion}`),
+          'utf8',
+        );
+
+        fs.writeFileSync(
           `./src/index.js`,
           fs.readFileSync(`./src/index.js`, 'utf8').replaceAll(`${version}`, `${newVersion}`),
           'utf8',
         );
 
-        shellExec(`node bin/deploy update-package`);
+        shellExec(`node bin/deploy update-dependencies`);
         shellExec(`auto-changelog`);
       }
       break;
@@ -791,7 +801,8 @@ ${uniqueArray(logs.all.map((log) => `- ${log.author_name} ([${log.author_email}]
     case 'restore-macro-db':
       {
         const deployGroupId = process.argv[3];
-        await restoreMacroDb(deployGroupId);
+        const deployId = process.argv[4];
+        await restoreMacroDb(deployGroupId, deployId);
       }
 
       break;
@@ -879,7 +890,11 @@ ${uniqueArray(logs.all.map((log) => `- ${log.author_name} ([${log.author_email}]
     }
     case 'ssh-import-client-keys': {
       const host = process.argv[3];
-      shellExec(`node bin/deploy set-ssh-keys ./engine-private/deploy/ssh_host_rsa_key${host ? ` ${host}` : ``} clean`);
+      shellExec(
+        `node bin/deploy set-ssh-keys ./engine-private/deploy/ssh_host_rsa_key ${host ? ` ${host}` : ``} ${
+          process.argv.includes('clean') ? 'clean' : ''
+        }`,
+      );
       break;
     }
     case 'ssh-keys': {
@@ -944,14 +959,24 @@ ${uniqueArray(logs.all.map((log) => `- ${log.author_name} ([${log.author_email}]
     }
 
     case 'ssh': {
-      if (!process.argv.includes('server')) {
-        shellExec(`sudo apt update`);
-        shellExec(`sudo apt install openssh-server -y`);
-        shellExec(`sudo apt install ssh-askpass`);
+      if (process.argv.includes('rocky')) {
+        shellExec(`sudo systemctl enable sshd`);
+
+        shellExec(`sudo systemctl start sshd`);
+
+        shellExec(`sudo systemctl status sshd`);
+
+        shellExec(`sudo ss -lt`);
+      } else {
+        if (!process.argv.includes('server')) {
+          shellExec(`sudo apt update`);
+          shellExec(`sudo apt install openssh-server -y`);
+          shellExec(`sudo apt install ssh-askpass`);
+        }
+        shellExec(`sudo systemctl enable ssh`);
+        shellExec(`sudo systemctl restart ssh`);
+        shellExec(`sudo systemctl status ssh`);
       }
-      shellExec(`sudo systemctl enable ssh`);
-      shellExec(`sudo systemctl restart ssh`);
-      shellExec(`sudo systemctl status ssh`);
       // sudo service ssh restart
       shellExec(`ip a`);
 
@@ -1009,11 +1034,26 @@ ${uniqueArray(logs.all.map((log) => `- ${log.author_name} ([${log.author_email}]
 
     case 'valkey': {
       if (!process.argv.includes('server')) {
-        shellExec(`cd /dd && git clone https://github.com/valkey-io/valkey.git`);
-        shellExec(`cd /dd/valkey && make`);
-        shellExec(`apt install valkey-tools`); // valkey-cli
+        if (process.argv.includes('rocky')) {
+          // shellExec(`yum install -y https://repo.percona.com/yum/percona-release-latest.noarch.rpm`);
+          // shellExec(`sudo percona-release enable valkey experimental`);
+          shellExec(`sudo dnf install valkey`);
+          shellExec(`chown -R valkey:valkey /etc/valkey`);
+          shellExec(`chown -R valkey:valkey /var/lib/valkey`);
+          shellExec(`chown -R valkey:valkey /var/log/valkey`);
+          shellExec(`sudo systemctl enable valkey.service`);
+          shellExec(`sudo systemctl start valkey`);
+          shellExec(`valkey-cli ping`);
+        } else {
+          shellExec(`cd /dd && git clone https://github.com/valkey-io/valkey.git`);
+          shellExec(`cd /dd/valkey && make`);
+          shellExec(`apt install valkey-tools`); // valkey-cli
+        }
       }
-      shellExec(`cd /dd/valkey && ./src/valkey-server`);
+      if (process.argv.includes('rocky')) {
+        shellExec(`sudo systemctl stop valkey`);
+        shellExec(`sudo systemctl start valkey`);
+      } else shellExec(`cd /dd/valkey && ./src/valkey-server`);
 
       break;
     }

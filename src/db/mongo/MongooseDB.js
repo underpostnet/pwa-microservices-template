@@ -9,7 +9,12 @@ const MongooseDB = {
   connect: async (host, name) => {
     const uri = `${host}/${name}`;
     // logger.info('MongooseDB connect', { host, name, uri });
-    return await mongoose.createConnection(uri).asPromise();
+    return await mongoose
+      .createConnection(uri, {
+        // useNewUrlParser: true,
+        // useUnifiedTopology: true,
+      })
+      .asPromise();
     return new Promise((resolve, reject) =>
       mongoose
         .connect(
@@ -67,8 +72,15 @@ const MongooseDB = {
             shellExec(`sudo rm -r /var/lib/mongodb`);
             // restore lib
             // shellExec(`sudo chown -R mongodb:mongodb /var/lib/mongodb/*`);
+            // mongod --repair
 
             if (process.argv.includes('legacy')) {
+              // TODO:
+              if (process.argv.includes('rocky')) {
+                // https://github.com/mongodb/mongodb-selinux
+                // https://www.mongodb.com/docs/v7.0/tutorial/install-mongodb-enterprise-on-red-hat/
+                shellExec(`sudo chown -R mongod:mongod /var/lib/mongo`);
+              }
               logger.info('install legacy 4.4');
               shellExec(`wget -qO - https://www.mongodb.org/static/pgp/server-4.4.asc | sudo apt-key add -`);
 

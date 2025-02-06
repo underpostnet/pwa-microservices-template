@@ -1,6 +1,8 @@
 import { AgGrid } from './AgGrid.js';
 import { BtnIcon } from './BtnIcon.js';
+import { isValidDate } from './CommonJs.js';
 import { darkTheme } from './Css.js';
+import { DropDown } from './DropDown.js';
 import { loggerFactory } from './Logger.js';
 import { RichText } from './RichText.js';
 import { ToggleSwitch } from './ToggleSwitch.js';
@@ -147,6 +149,10 @@ const Input = {
             htmls(`.file-name-render-${inputData.id}`, `${s(`.${inputData.id}`).fileNameInputExtDefaultContent}`);
           continue;
           break;
+        case 'dropdown-checkbox': {
+          s(`.dropdown-option-${inputData.id}-reset`).click();
+          break;
+        }
         case 'md':
           RichText.Tokens[inputData.id].easyMDE.value('');
           continue;
@@ -196,6 +202,12 @@ const Input = {
             RichText.Tokens[inputData.id].easyMDE.value(fileObj[inputData.model].mdPlain);
             continue;
             break;
+
+          case 'dropdown-checkbox': {
+            s(`.dropdown-option-${inputData.id}-reset`).click();
+            for (const opt of originObj[inputData.model]) s(`.dropdown-option-${inputData.id}-${opt}`).click();
+            break;
+          }
           case 'checkbox':
           case 'checkbox-on-off':
             if (
@@ -207,9 +219,11 @@ const Input = {
             break;
           case 'datetime-local':
             {
-              const date = new Date(originObj[inputData.model]);
-              date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
-              s(`.${inputData.id}`).value = date.toISOString().slice(0, 16);
+              if (isValidDate(originObj[inputData.model])) {
+                const date = new Date(originObj[inputData.model]);
+                // date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
+                s(`.${inputData.id}`).value = date.toISOString().slice(0, 16);
+              } else s(`.${inputData.id}`).value = null;
             }
             continue;
             break;
