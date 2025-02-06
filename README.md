@@ -45,7 +45,7 @@ npm install -g underpost
 ```
 
 ```bash
-underpost new app-name dev
+underpost new app-name
 ```
 
 After template installation, the server will be running on [http://localhost:4001](http://localhost:4001)
@@ -66,31 +66,4 @@ Run dev client server
 
 ```bash
 npm run dev
-```
-
-Run dev api server
-
-```bash
-npm run dev-api
-```
-
-Run on `pm2`
-
-```bash
-npm run pm2
-```
-
-Run on `docker-compose`
-
-```bash
-npm run start:docker
-```
-
-Run on `docker`
-
-```bash
-# build image
-docker build . -t app-name
-# run image
-docker run --name app-name-instance -p 41061:3001 -p 41062:3002 app-name
 ```
