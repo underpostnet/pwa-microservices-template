@@ -1,9 +1,8 @@
 import { Schema, model } from 'mongoose';
 import validator from 'validator';
+import { userRoleEnum } from '../../client/components/core/CommonJs.js';
 
 // https://mongoosejs.com/docs/2.7.x/docs/schematypes.html
-
-const userRoleEnum = ['admin', 'moderator', 'user', 'guest'];
 
 const UserSchema = new Schema(
   {
@@ -42,6 +41,12 @@ const UserSchema = new Schema(
       ],
       default: [],
     },
+    associatedCompanies: [
+      {
+        company: { type: Schema.Types.ObjectId, ref: 'Company', required: true },
+        context: [{ type: String, enum: ['client', 'supplier', 'employee', 'owner'] }],
+      },
+    ],
   },
   {
     timestamps: true,

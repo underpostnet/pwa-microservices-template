@@ -11,19 +11,20 @@ const Translate = {
   Data: {},
   Token: {},
   Event: {},
+  Options: {},
   Parse: function (lang) {
     s('html').lang = lang;
     Object.keys(this.Token).map((translateHash) => {
       if (translateHash in this.Token && lang in this.Token[translateHash]) {
-        if (!('placeholder' in this.Token[translateHash]) && s(`.${translateHash}`))
+        if (!('placeholder' in this.Options[translateHash]) && s(`.${translateHash}`))
           htmls(
             `.${translateHash}`,
-            this.Token[translateHash].options?.disableTextFormat
+            this.Options[translateHash]?.disableTextFormat
               ? this.Token[translateHash][lang]
               : textFormatted(this.Token[translateHash][lang]),
           );
         else if ('placeholder' in this.Token[translateHash] && s(this.Token[translateHash].placeholder))
-          s(this.Token[translateHash].placeholder).placeholder = this.Token[translateHash].options?.disableTextFormat
+          s(this.Token[translateHash].placeholder).placeholder = this.Options[translateHash]?.disableTextFormat
             ? this.Token[translateHash][lang]
             : textFormatted(this.Token[translateHash][lang]);
       }
@@ -36,10 +37,10 @@ const Translate = {
       logger.warn('translate key lang does not exist: ', keyLang);
       return options.disableTextFormat ? keyLang : textFormatted(keyLang);
     }
-    this.Data[keyLang].options = options;
     if (placeholder) this.Data[keyLang].placeholder = placeholder;
     keyLang = this.Data[keyLang];
     const translateHash = getId(this.Token, 'trans');
+    this.Options[translateHash] = options;
     this.Token[translateHash] = newInstance(keyLang);
     if ('placeholder' in keyLang) {
       if (s('html').lang in keyLang)
@@ -495,6 +496,17 @@ const TranslateCore = {
     Translate.Data['appointment-scheduled'] = {
       en: 'Your appointment has been scheduled',
       es: 'Tu cita ha sido programada',
+    };
+    Translate.Data['info'] = { es: 'Información', en: 'Info' };
+    Translate.Data['complete-name'] = { es: 'Nombre completo', en: 'Complete name' };
+    Translate.Data['identityDocument'] = { es: 'Rut', en: 'Identity document' };
+    Translate.Data['day'] = { es: 'Día', en: 'Day' };
+    Translate.Data['month'] = { es: 'Mes', en: 'Month' };
+    Translate.Data['year'] = { es: 'Año', en: 'Year' };
+    Translate.Data['phone'] = { es: 'Teléfono', en: 'Phone' };
+    Translate.Data['invalid-identity-document'] = {
+      en: 'Invalid identity document',
+      es: 'Documento de identidad inválido',
     };
   },
 };

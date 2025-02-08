@@ -542,12 +542,12 @@ const Modal = {
                         if (routerId) {
                           if (
                             s(`.main-btn-${routerId}`) &&
-                            (routerId.toLocaleLowerCase().match(s(`.${id}`).value.toLocaleLowerCase()) ||
+                            (routerId.toLowerCase().match(s(`.${id}`).value.toLowerCase()) ||
                               (Translate.Data[routerId] &&
                                 Object.keys(Translate.Data[routerId]).filter((keyLang) =>
                                   Translate.Data[routerId][keyLang]
-                                    .toLocaleLowerCase()
-                                    .match(s(`.${id}`).value.toLocaleLowerCase()),
+                                    .toLowerCase()
+                                    .match(s(`.${id}`).value.toLowerCase()),
                                 ).length > 0))
                           ) {
                             const fontAwesomeIcon = getAllChildNodes(s(`.main-btn-${routerId}`)).find((e) => {
@@ -1696,7 +1696,7 @@ const Modal = {
       const htmlRender = html`
         <br />
         <div class="in section-mp" style="font-size: 40px; text-align: center">
-          <i class="fas fa-question-circle"></i>
+          ${options.icon ? options.icon : html` <i class="fas fa-question-circle"></i>`}
         </div>
         ${await options.html()}
         <div class="in section-mp">
@@ -1707,7 +1707,7 @@ const Modal = {
             style: `margin: auto`,
           })}
         </div>
-        <div class="in section-mp">
+        <div class="in section-mp ${options.disableBtnCancel ? 'hide' : ''}">
           ${await BtnIcon.Render({
             class: `in section-mp form-button btn-cancel-${id}`,
             label: Translate.Render('cancel'),

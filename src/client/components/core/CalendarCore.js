@@ -96,6 +96,7 @@ const CalendarCore = {
     const renderCalendar = (events) => {
       const calendarEl = s(`.calendar-${idPanel}`);
       this.Data[options.idModal].calendar = new FullCalendar.Calendar(calendarEl, {
+        allDaySlot: false,
         plugins: [
           FullCalendar.DayGrid.default,
           FullCalendar.TimeGrid.default,
@@ -127,6 +128,7 @@ const CalendarCore = {
           if (!args.event.extendedProps._id) return args.event.remove();
           const dateData = eventDateFactory(args.event);
           if (
+            new Date(dateData.start).getTime() <= new Date().getTime() ||
             CalendarCore.Data[options.idModal].hiddenDates.find(
               (d) => d.eventSchedulerId === dateData.event._id && d.date === dateData.start,
             )
@@ -275,6 +277,7 @@ const CalendarCore = {
           data: this.Data[options.idModal].data,
           formContainerClass: '',
           scrollClassContainer: `main-body-calendar-${options.idModal}`,
+          role: options.role,
           originData: () => this.Data[options.idModal].originData,
           filesData: () => this.Data[options.idModal].filesData,
           onClick: async function ({ payload }) {
