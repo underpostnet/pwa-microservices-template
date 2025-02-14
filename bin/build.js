@@ -3,7 +3,7 @@ import { loggerFactory } from '../src/server/logger.js';
 import { shellExec } from '../src/server/process.js';
 import dotenv from 'dotenv';
 import { getCapVariableName } from '../src/client/components/core/CommonJs.js';
-import { getPathsSSR } from '../src/server/conf.js';
+import { buildProxyRouter, buildPortProxyRouter, Config, getPathsSSR, buildKindPorts } from '../src/server/conf.js';
 
 const baseConfPath = './engine-private/conf/dd-cron/.env.production';
 if (fs.existsSync(baseConfPath)) dotenv.config({ path: baseConfPath });
@@ -34,6 +34,94 @@ logger.info('', {
 
 if (process.argv.includes('info')) process.exit(0);
 
+if (process.argv.includes('proxy')) {
+  const env = process.argv.includes('development') ? 'development' : 'production';
+  process.env.NODE_ENV = env;
+  process.env.PORT = process.env.NODE_ENV === 'development' ? 4000 : 3000;
+  process.argv[2] = 'proxy';
+  process.argv[3] = fs.readFileSync('./engine-private/deploy/dd-router', 'utf8').trim();
+
+  await Config.build();
+  process.env.NODE_ENV = 'production';
+  const router = buildPortProxyRouter(443, buildProxyRouter());
+  const confServer = JSON.parse(fs.readFileSync(`./engine-private/conf/${confName}/conf.server.json`, 'utf8'));
+  const confHosts = Object.keys(confServer);
+
+  for (const host of Object.keys(router)) {
+    if (!confHosts.find((_host) => host.match(_host))) {
+      delete router[host];
+    }
+  }
+
+  const ports = Object.values(router).map((p) => p.split(':')[2]);
+
+  const fromPort = ports[0];
+  const toPort = ports[ports.length - 1];
+
+  logger.info('port range', { fromPort, toPort, router });
+
+  const deploymentYamlFilePath = `./engine-private/conf/${confName}/build/${env}/deployment.yaml`;
+
+  const deploymentYamlParts = fs.readFileSync(deploymentYamlFilePath, 'utf8').split('ports:');
+  deploymentYamlParts[1] =
+    buildKindPorts(fromPort, toPort) +
+    `  type: LoadBalancer
+`;
+
+  fs.writeFileSync(
+    deploymentYamlFilePath,
+    deploymentYamlParts.join(`ports:
+`),
+  );
+
+  let proxyYaml = '';
+
+  for (const host of Object.keys(confServer)) {
+    const pathPortConditions = [];
+    for (const path of Object.keys(confServer[host])) {
+      const { peer } = confServer[host][path];
+      const port = parseInt(router[`${host}${path === '/' ? '' : path}`].split(':')[2]);
+      // logger.info('', { host, port, path });
+      pathPortConditions.push({
+        port,
+        path,
+      });
+
+      if (peer) {
+        //  logger.info('', { host, port: port + 1, path: '/peer' });
+        pathPortConditions.push({
+          port: port + 1,
+          path: '/peer',
+        });
+      }
+    }
+    // logger.info('', { host, pathPortConditions });
+    proxyYaml += `
+---
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: ${host}
+spec:
+  virtualhost:
+    fqdn: ${host}
+  routes:`;
+    for (const conditionObj of pathPortConditions) {
+      const { path, port } = conditionObj;
+      proxyYaml += `
+    - conditions:
+        - prefix: ${path}
+      enableWebsockets: true
+      services:
+        - name: ${confName}-${env}-service
+          port: ${port}`;
+    }
+  }
+  const yamlPath = `./engine-private/conf/${confName}/build/${env}/proxy.yaml`;
+  fs.writeFileSync(yamlPath, proxyYaml, 'utf8');
+
+  process.exit(0);
+}
 if (process.argv.includes('conf')) {
   if (!fs.existsSync(`../${repoName}`)) {
     shellExec(`cd .. && git clone ${gitUrl}`, { silent: true });
