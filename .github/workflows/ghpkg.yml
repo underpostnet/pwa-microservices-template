@@ -88,7 +88,7 @@ jobs:
 
       - name: Clone github package repository
         run: |
-          git clone https://github.com/underpostnet/pwa-microservices-template-ghpkg.git
+          git clone --bare https://github.com/underpostnet/pwa-microservices-template-ghpkg.git
           rm -rf ./.git
           cp -a  ./pwa-microservices-template-ghpkg/.git ./.git
           rm -rf ./pwa-microservices-template-ghpkg
