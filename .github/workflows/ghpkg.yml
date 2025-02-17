@@ -90,8 +90,8 @@ jobs:
         run: |
           git clone --bare https://github.com/underpostnet/pwa-microservices-template-ghpkg.git
           rm -rf ./.git
-          cp -a  ./pwa-microservices-template-ghpkg.git ./.git
-          rm -rf ./pwa-microservices-template-ghpkg
+          cp -rf -a ./pwa-microservices-template-ghpkg.git ./.git
+          rm -rf ./pwa-microservices-template-ghpkg.git
 
       - name: Set git credentials
         run: |
@@ -107,6 +107,7 @@ jobs:
       - name: Push to github package repository
         run: |
           pwd
+          git init
           git status
           git remote set-url origin git@github.com:underpostnet/pwa-microservices-template-ghpkg.git
           git add .       
