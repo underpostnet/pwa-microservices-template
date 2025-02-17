@@ -90,7 +90,7 @@ jobs:
         run: |
           git clone --bare https://github.com/underpostnet/pwa-microservices-template-ghpkg.git
           rm -rf ./.git
-          cp -a  ./pwa-microservices-template-ghpkg/.git ./.git
+          cp -a  ./pwa-microservices-template-ghpkg.git ./.git
           rm -rf ./pwa-microservices-template-ghpkg
 
       - name: Set git credentials
