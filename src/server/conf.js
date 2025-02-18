@@ -13,8 +13,8 @@ import cliProgress from 'cli-progress';
 import cliSpinners from 'cli-spinners';
 import logUpdate from 'log-update';
 import colors from 'colors';
-import { loggerFactory } from './logger.js';
-import { shellExec } from './process.js';
+import { actionInitLog, loggerFactory } from './logger.js';
+import { pbcopy, shellExec } from './process.js';
 import { DefaultConf } from '../../conf.js';
 import read from 'read';
 import splitFile from 'split-file';
@@ -969,6 +969,7 @@ const Cmd = {
 };
 
 const fixDependencies = async () => {
+  return;
   // sed -i "$line_number s,.*,$new_text," "$file"
   // sed -i "$line_number c \\$new_text" "$file"
   const dep = fs.readFileSync(`./node_modules/peer/dist/module.mjs`, 'utf8');
@@ -1052,6 +1053,142 @@ const repoClone = (gitUri = 'underpostnet/pwa-microservices-template') => {
   }
 };
 
+const repoPull = (repoPath = './', gitUri = 'underpostnet/pwa-microservices-template') => {
+  shellExec(`cd ${repoPath} && git pull https://${process.env.GITHUB_TOKEN}@github.com/${gitUri}.git`, {
+    disableLog: true,
+  });
+};
+
+const commitData = {
+  feat: {
+    description: 'A new feature',
+    title: 'Features',
+    emoji: '✨',
+  },
+  fix: {
+    description: 'A bug fix',
+    title: 'Bug Fixes',
+    emoji: '🐛',
+  },
+  docs: {
+    description: 'Documentation only changes',
+    title: 'Documentation',
+    emoji: '📚',
+  },
+  style: {
+    description:
+      'Changes that do not affect the meaning of the code (white-space, formatting, missing semi-colons, etc)',
+    title: 'Styles',
+    emoji: '💎',
+  },
+  refactor: {
+    description: 'A code change that neither fixes a bug nor adds a feature',
+    title: 'Code Refactoring',
+    emoji: '📦',
+  },
+  perf: {
+    description: 'A code change that improves performance',
+    title: 'Performance Improvements',
+    emoji: '⚡️',
+  },
+  cd: {
+    description:
+      'Changes to our Continuous Delivery configuration files and scripts (example scopes: Jenkins, Spinnaker, ArgoCD)',
+    title: 'Continuous Delivery',
+    emoji: '🚀',
+  },
+  test: {
+    description: 'Adding missing tests or correcting existing tests',
+    title: 'Tests',
+    emoji: '🚨',
+  },
+  build: {
+    description: 'Changes that affect the build system or external dependencies (example scopes: gulp, broccoli, npm)',
+    title: 'Builds',
+    emoji: '🛠',
+  },
+  ci: {
+    description:
+      'Changes to our CI configuration files and scripts (example scopes: Travis, Circle, BrowserStack, SauceLabs)',
+    title: 'Continuous Integrations',
+    emoji: '⚙️',
+  },
+  chore: {
+    description: "Other changes that don't modify src or test files",
+    title: 'Chores',
+    emoji: '♻️',
+  },
+  revert: {
+    description: 'Reverts a previous commit',
+    title: 'Reverts',
+    emoji: '🗑',
+  },
+  backup: {
+    description: 'Changes related to backups, including creation, restoration, and maintenance.',
+    title: 'Backups',
+    emoji: '💾',
+  },
+};
+
+const repoCommit = (
+  repoPath = './',
+  commitType = 'feat',
+  subModule = '',
+  message = '',
+  options = {
+    copy: false,
+    info: false,
+    empty: false,
+  },
+) => {
+  if (options.info) return logger.info('', commitData);
+  const _message = `${commitType}${subModule ? `(${subModule})` : ''}${process.argv.includes('!') ? '!' : ''}: ${
+    commitData[commitType].emoji
+  } ${message ? message : commitData[commitType].description}`;
+  if (options.copy) return pbcopy(_message);
+  shellExec(`cd ${repoPath} && git commit ${options?.empty ? `--allow-empty ` : ''}-m "${_message}"`);
+};
+
+const repoPush = (repoPath = './', gitUri = 'underpostnet/pwa-microservices-template') => {
+  shellExec(`cd ${repoPath} && git push https://${process.env.GITHUB_TOKEN}@github.com/${gitUri}.git`, {
+    disableLog: true,
+  });
+  logger.info(
+    'commit url',
+    `http://github.com/${gitUri}/commit/${shellExec(`cd ${repoPath} && git rev-parse --verify HEAD`, {
+      stdout: true,
+    }).trim()}`,
+  );
+};
+
+const newProject = (repositoryName, version) => {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const exeRootPath = `${shellExec(`npm root -g`, {
+        stdout: true,
+      }).trim()}/underpost`;
+      // const exeRootPath = '/home/dd/pwa-microservices-template'; // process.argv[0];
+      actionInitLog(version);
+      await logger.setUpInfo();
+      const destFolder = `${process.cwd()}/${repositoryName}`;
+      logger.info('Note: This process may take several minutes to complete');
+      logger.info('build app', { destFolder });
+      fs.mkdirSync(destFolder, { recursive: true });
+      fs.copySync(exeRootPath, destFolder);
+      if (fs.existsSync(`${destFolder}/node_modules`)) fs.removeSync(`${destFolder}/node_modules`);
+      fs.writeFileSync(`${destFolder}/.gitignore`, fs.readFileSync(`${exeRootPath}/.dockerignore`, 'utf8'), 'utf8');
+      shellExec(`cd ${destFolder} && git init && git add . && git commit -m "Base template implementation"`);
+      shellExec(`cd ${destFolder} && npm install`);
+      shellExec(`cd ${destFolder} && npm run build`);
+      shellExec(`cd ${destFolder} && npm run dev`);
+      return resolve();
+    } catch (error) {
+      logger.error(error, error.stack);
+      return reject(error.message);
+    }
+  });
+};
+
 export {
   Cmd,
   Config,
@@ -1088,4 +1225,8 @@ export {
   buildPortProxyRouter,
   splitFileFactory,
   repoClone,
+  repoPull,
+  repoCommit,
+  repoPush,
+  newProject,
 };

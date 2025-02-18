@@ -6,7 +6,7 @@ import { getCapVariableName } from '../src/client/components/core/CommonJs.js';
 import { buildProxyRouter, buildPortProxyRouter, Config, getPathsSSR, buildKindPorts } from '../src/server/conf.js';
 
 const baseConfPath = './engine-private/conf/dd-cron/.env.production';
-if (fs.existsSync(baseConfPath)) dotenv.config({ path: baseConfPath });
+if (fs.existsSync(baseConfPath)) dotenv.config({ path: baseConfPath, override: true });
 
 const logger = loggerFactory(import.meta);
 
@@ -271,4 +271,8 @@ const { DefaultConf } = await import(`../conf.${confName}.js`);
     `./.github/workflows/engine.${confName.split('dd-')[1]}.ci.yml`,
     `${basePath}/.github/workflows/engine.${confName.split('dd-')[1]}.ci.yml`,
   );
+
+  const packageJson = JSON.parse(fs.readFileSync(`${basePath}/package.json`, 'utf8'));
+  packageJson.name = repoName;
+  fs.writeFileSync(`${basePath}/package.json`, JSON.stringify(packageJson, null, 4), 'utf8');
 }
