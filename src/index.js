@@ -4,10 +4,12 @@
  * @namespace Underpost
  */
 
-import { runTest } from './server/conf.js';
-import { loggerFactory, setUpInfo } from './server/logger.js';
-
-const logger = loggerFactory(import.meta);
+import UnderpostCluster from './cli/cluster.js';
+import UnderpostRootEnv from './cli/env.js';
+import UnderpostImage from './cli/image.js';
+import UnderpostRepository from './cli/repository.js';
+import UnderpostSecret from './cli/secrets.js';
+import UnderpostTest from './cli/test.js';
 
 /**
  * Underpost main module methods
@@ -22,29 +24,48 @@ class Underpost {
    * @memberof Underpost
    */
   static version = 'v2.8.44';
-
-  constructor() {}
-
   /**
-   * Logs information about the current process environment to the console.
-   *
-   * This function is used to log details about
-   * the execution context, such as command-line arguments,
-   * environment variables, the process's administrative privileges,
-   * and the maximum available heap space size.
-   *
+   * Repository cli API
    * @static
-   * @method setUpInfo
-   * @returns {Promise<void>}
+   * @type {UnderpostRepository.API}
    * @memberof Underpost
    */
-  static async setUpInfo() {
-    return await setUpInfo(logger);
-  }
-
-  static runTest() {
-    return runTest(Underpost.version);
-  }
+  static repo = UnderpostRepository.API;
+  /**
+   * Root Env cli API
+   * @static
+   * @type {UnderpostRootEnv.API}
+   * @memberof Underpost
+   */
+  static env = UnderpostRootEnv.API;
+  /**
+   * Test cli API
+   * @static
+   * @type {UnderpostTest.API}
+   * @memberof Underpost
+   */
+  static test = UnderpostTest.API;
+  /**
+   * Cluster cli API
+   * @static
+   * @type {UnderpostCluster.API}
+   * @memberof Underpost
+   */
+  static cluster = UnderpostCluster.API;
+  /**
+   * Image cli API
+   * @static
+   * @type {UnderpostImage.API}
+   * @memberof Underpost
+   */
+  static image = UnderpostImage.API;
+  /**
+   * Secrets cli API
+   * @static
+   * @type {UnderpostSecret.API}
+   * @memberof Underpost
+   */
+  static secret = UnderpostSecret.API;
 }
 
 const up = Underpost;
