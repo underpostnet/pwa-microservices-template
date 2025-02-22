@@ -280,4 +280,27 @@ const { DefaultConf } = await import(`../conf.${confName}.js`);
     JSON.stringify(packageJson, null, 4).replaceAll('pwa-microservices-template', repoName),
     'utf8',
   );
+
+  fs.copySync(`./src/cli`, `${basePath}/src/cli`);
+
+  const env = process.argv.includes('development') ? 'development' : 'production';
+
+  // remove engine-private of .dockerignore for local testing
+
+  {
+    fs.removeSync(`${basePath}/manifests/deployment`);
+
+    if (!fs.existsSync(`./manifests/deployment/${confName}-${env}`))
+      fs.mkdirSync(`./manifests/deployment/${confName}-${env}`);
+
+    for (const file of ['Dockerfile', 'proxy.yaml', 'deployment.yaml', 'secret.yaml']) {
+      if (fs.existsSync(`./engine-private/conf/${confName}/build/${env}/${file}`)) {
+        fs.copyFileSync(`./engine-private/conf/${confName}/build/${env}/${file}`, `${basePath}/${file}`);
+        fs.copyFileSync(
+          `./engine-private/conf/${confName}/build/${env}/${file}`,
+          `./manifests/deployment/${confName}-${env}/${file}`,
+        );
+      }
+    }
+  }
 }
