@@ -35,6 +35,13 @@ logger.info('', {
 
 if (process.argv.includes('info')) process.exit(0);
 
+if (process.argv.includes('clean')) {
+  if (fs.existsSync(`${basePath}/images`)) fs.copySync(`${basePath}/images`, `./images`);
+  shellExec(`cd ${basePath} && git checkout .`);
+  shellExec(`cd ${basePath} && git clean -f -d`);
+  process.exit(0);
+}
+
 if (process.argv.includes('proxy')) {
   const env = process.argv.includes('development') ? 'development' : 'production';
   process.env.NODE_ENV = env;
@@ -282,6 +289,7 @@ const { DefaultConf } = await import(`../conf.${confName}.js`);
   );
 
   fs.copySync(`./src/cli`, `${basePath}/src/cli`);
+  fs.mkdirSync(`${basePath}/images`);
 
   const env = process.argv.includes('development') ? 'development' : 'production';
 

@@ -7,6 +7,7 @@ import Underpost from '../src/index.js';
 import { getNpmRootPath, loadConf } from '../src/server/conf.js';
 import fs from 'fs-extra';
 import { commitData } from '../src/client/components/core/CommonJs.js';
+import UnderpostScript from '../src/cli/script.js';
 
 const npmRoot = getNpmRootPath();
 const underpostRoot = `${npmRoot}/underpost/.env`;
@@ -83,7 +84,9 @@ program
   .option('--mongodb', 'Init with mongodb statefulset')
   .option('--valkey', 'Init with valkey service')
   .option('--contour', 'Init with project contour base HTTPProxy and envoy')
+  .option('--info', 'Get all kinds objects deployed')
   .option('--full', 'Init with all statefulsets and services available')
+  .option('--ns-use <ns-name>', 'Switches current context to namespace')
   .action((...args) => {
     if (args[0].reset) return Underpost.cluster.reset();
     return Underpost.cluster.init(args[0]);
@@ -124,6 +127,16 @@ program
   .command('dockerfile-pull-base-images')
   .description('Pull underpost dockerfile images requirements')
   .action(Underpost.image.dockerfile.pullBaseImages);
+
+program
+  .command('script')
+  .argument('operator', `Options: ${Object.keys(UnderpostScript.API)}`)
+  .argument('<script-name>', 'Script name')
+  .argument('[script-value]', 'Literal command')
+  .description(
+    'Supports a number of built-in underpost global scripts and their preset life cycle events as well as arbitrary scripts',
+  )
+  .action((...args) => Underpost.script[args[0]](args[1], args[2]));
 
 program.command('test').description('Run tests').action(Underpost.test.run);
 
