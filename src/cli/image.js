@@ -2,6 +2,10 @@ import fs from 'fs-extra';
 import Underpost from '../index.js';
 import { shellExec } from '../server/process.js';
 import { MariaDB } from '../db/mariadb/MariaDB.js';
+import dotenv from 'dotenv';
+import { getNpmRootPath } from '../server/conf.js';
+
+dotenv.config();
 
 class UnderpostImage {
   static API = {
@@ -14,8 +18,24 @@ class UnderpostImage {
         const podManImg = `localhost/${imgName}`;
         const imagesStoragePath = `./images`;
         const tarFile = `${imagesStoragePath}/${imgName.replace(':', '_')}.tar`;
+
+        let secrets = '';
+        let secretDockerInput = '';
+
+        const envObj = dotenv.parse(fs.readFileSync(`${getNpmRootPath()}/underpost/.env`, 'utf8'));
+
+        for (const key of Object.keys(envObj)) {
+          continue;
+          secrets += ` && export ${key}="${envObj[key]}" `; // $(cat gitlab-token.txt)
+          secretDockerInput += ` --secret id=${key},env=${key} \ `;
+        }
+        // --rm --no-cache
         if (imageArchive !== true) {
-          shellExec(`cd ${path} && sudo podman build -f ./Dockerfile -t ${imgName} --pull=never`);
+          fs.copyFile(`${getNpmRootPath()}/underpost/.env`, `${path}/.env.underpost`);
+          shellExec(
+            `cd ${path}${secrets}&& sudo podman build -f ./Dockerfile -t ${imgName} --pull=never --cap-add=CAP_AUDIT_WRITE${secretDockerInput}`,
+          );
+          fs.removeSync(`${path}/.env.underpost`);
           shellExec(`cd ${path} && podman save -o ${tarFile} ${podManImg}`);
         }
         shellExec(`cd ${path} && sudo kind load image-archive ${tarFile}`);
@@ -46,10 +66,9 @@ class UnderpostImage {
                 shellExec(`cd ${lamppPublicPath} && sudo ${process.env.DD_LAMPP_SCRIPT_0}`);
 
                 shellExec(
-                  `sudo sed -i -e "s@define( 'DB_HOST', 'localhost' );@define( 'DB_HOST', '${MARIADB_HOST}' );@g" ${lamppPublicPath}/${process.env.DD_LAMPP_REPO_0_FOLDER}/wp-config.php`,
+                  `sudo sed -i -e "s@define( 'DB_HOST', 'localhost' );@define( 'DB_HOST', '${process.env.MARIADB_HOST}' );@g" ${lamppPublicPath}/${process.env.DD_LAMPP_REPO_0_FOLDER}/wp-config.php`,
                 );
               }
-
               {
                 shellExec(
                   `cd ${lamppPublicPath} && git clone https://${process.env.GITHUB_TOKEN}@github.com/${process.env.DD_LAMPP_REPO_1}`,
