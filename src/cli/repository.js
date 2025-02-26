@@ -60,7 +60,7 @@ class UnderpostRepository {
       shellExec(`cd ${repoPath} && git commit ${options?.empty ? `--allow-empty ` : ''}-m "${_message}"`);
     },
 
-    push(repoPath = './', gitUri = 'underpostnet/pwa-microservices-template', options = { force: false }) {
+    push(repoPath = './', gitUri = 'underpostnet/pwa-microservices-template', options = { f: false }) {
       shellExec(
         `cd ${repoPath} && git push https://${process.env.GITHUB_TOKEN}@github.com/${gitUri}.git${
           options?.f === true ? ' --force' : ''
