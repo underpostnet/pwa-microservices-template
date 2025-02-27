@@ -32,6 +32,10 @@
         "url": "git+https://github.com/underpostnet/pwa-microservices-template.git"
     },
     "keywords": [
+        "pwa",
+        "microservices",
+        "template",
+        "builder",
         "engine",
         "server",
         "proxy",
