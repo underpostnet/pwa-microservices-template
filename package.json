@@ -2,7 +2,7 @@
     "type": "module",
     "main": "src/index.js",
     "name": "underpost",
-    "version": "2.8.451",
+    "version": "2.8.452",
     "description": "pwa api rest template",
     "scripts": {
         "start": "env-cmd -f .env.production node --max-old-space-size=8192 src/server",
@@ -16,6 +16,7 @@
         "docs": "jsdoc -c jsdoc.json",
         "install-global": "npm install -g pm2 && npm install -g jsdoc && npm install -g prettier && npm install -g env-cmd && npm install -g yarn && npm install -g auto-changelog",
         "install-test": "npm install -g mocha && npm install -g c8 && npm install -g nyc && npm install -g coveralls",
+        "install-underpost": "cp -a $(npm root -g)/underpost/node_modules ./node_modules && npm install --only=dev --ignore-scripts",
         "install": "npm run install-global && npm run install-test",
         "docker:start": "docker-compose up",
         "prettier": "prettier --write .",
