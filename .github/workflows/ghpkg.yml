@@ -22,7 +22,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.x'
+          node-version: '23.x'
 
       - name: Install dependencies
         run: |
@@ -63,7 +63,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.x'
+          node-version: '23.x'
 
         # - name: Get npm root
         #   run: sudo npm root -g
@@ -113,6 +113,15 @@ jobs:
           git add .       
           git commit -m "ci(package-pwa-microservices-template-ghpkg): ⚙️ Update github repo package"
           git push https://${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/pwa-microservices-template-ghpkg.git
+          git clone --bare https://github.com/underpostnet/engine.git
+          mkdir engine
+          mv ./engine.git ./engine/.git
+          cd engine
+          git init
+          git commit --allow-empty -m "ci(engine-core-repo-build): ⚙️ Update engine core repository"
+          git commit --allow-empty -m "ci(engine-cyberia-repo-build): ⚙️ Update engine cyberia repository"
+          git commit --allow-empty -m "ci(engine-lampp-repo-build): ⚙️ Update engine lampp repository"
+          git push https://${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/engine.git
 
 # git push -u origin https://${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/pwa-microservices-template-ghpkg.git
 # git push -u origin master
