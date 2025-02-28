@@ -6,6 +6,7 @@
 
 import UnderpostCluster from './cli/cluster.js';
 import UnderpostDB from './cli/db.js';
+import UnderpostDeploy from './cli/deploy.js';
 import UnderpostRootEnv from './cli/env.js';
 import UnderpostImage from './cli/image.js';
 import UnderpostRepository from './cli/repository.js';
@@ -25,7 +26,7 @@ class Underpost {
    * @type {String}
    * @memberof Underpost
    */
-  static version = 'v2.8.46';
+  static version = 'v2.8.47';
   /**
    * Repository cli API
    * @static
@@ -82,6 +83,13 @@ class Underpost {
    * @memberof Underpost
    */
   static db = UnderpostDB.API;
+  /**
+   * Deployment cli API
+   * @static
+   * @type {UnderpostDeploy.API}
+   * @memberof Underpost
+   */
+  static deploy = UnderpostDeploy.API;
 }
 
 const up = Underpost;

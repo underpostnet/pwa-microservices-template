@@ -98,6 +98,14 @@ program
   .description('Manage cluster, for default initialization base kind cluster');
 
 program
+  .command('deploy')
+  .argument('<deploy-list>', 'Deploy id list, e.g. default-a, default-b')
+  .argument('[env]', 'Optional environment, for default is development')
+  .option('--remove', 'Delete deployments and services')
+  .description('Manage deployment, for default deploy development pods')
+  .action(Underpost.deploy.callback);
+
+program
   .command('secret')
   .argument('<platform>', `Options: ${Object.keys(Underpost.secret)}`)
   .option('--init', 'Init secrets platform environment')
@@ -142,11 +150,11 @@ program
 
 program
   .command('db')
-  .option('--import <deploy-id-list>', 'Import databases to containers from deploy id list, e.g. default-a, default-b')
+  .argument('<deploy-list>', 'Deploy id list, e.g. default-a, default-b')
+  .option('--import', 'Import container backups from repositories')
+  .option('--export', 'Export container backups to repositories')
   .description('Manage databases')
-  .action((...args) => {
-    if (args && args[0].import) return UnderpostDB.API.import(...args);
-  });
+  .action(UnderpostDB.API.callback);
 
 program
   .command('script')
@@ -158,6 +166,12 @@ program
   )
   .action((...args) => Underpost.script[args[0]](args[1], args[2]));
 
-program.command('test').description('Run tests').action(Underpost.test.run);
+program
+  .command('test')
+  .argument('[deploy-list]', 'Deploy id list, e.g. default-a, default-b')
+  .description('Manage Test, for default run current underpost default test')
+  .option('--inside-container', 'Inside container execution context')
+  .option('--sh', 'Copy to clipboard, container entrypoint shell command')
+  .action(Underpost.test.callback);
 
 program.parse();
