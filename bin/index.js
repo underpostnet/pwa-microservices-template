@@ -99,7 +99,7 @@ program
 
 program
   .command('deploy')
-  .argument('<deploy-list>', 'Deploy id list, e.g. default-a, default-b')
+  .argument('<deploy-list>', 'Deploy id list, e.g. default-a,default-b')
   .argument('[env]', 'Optional environment, for default is development')
   .option('--remove', 'Delete deployments and services')
   .option('--sync', 'Sync deployments env, ports, and replicas')
@@ -127,6 +127,7 @@ program
   .command('dockerfile-node-script')
   .argument('<deploy-id>', 'Deploy configuration id')
   .argument('[env]', 'Optional environment, for default is development')
+  .option('--run', 'Run custom entry point script')
   .description('Dockerfile custom node build script')
   .action(Underpost.image.dockerfile.script);
 
@@ -153,7 +154,7 @@ program
 
 program
   .command('db')
-  .argument('<deploy-list>', 'Deploy id list, e.g. default-a, default-b')
+  .argument('<deploy-list>', 'Deploy id list, e.g. default-a,default-b')
   .option('--import', 'Import container backups from repositories')
   .option('--export', 'Export container backups to repositories')
   .description('Manage databases')
@@ -171,10 +172,11 @@ program
 
 program
   .command('test')
-  .argument('[deploy-list]', 'Deploy id list, e.g. default-a, default-b')
+  .argument('[deploy-list]', 'Deploy id list, e.g. default-a,default-b')
   .description('Manage Test, for default run current underpost default test')
   .option('--inside-container', 'Inside container execution context')
   .option('--sh', 'Copy to clipboard, container entrypoint shell command')
+  .option('--logs', 'Display container logs')
   .action(Underpost.test.callback);
 
 program.parse();
