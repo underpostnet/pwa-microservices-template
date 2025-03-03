@@ -98,6 +98,14 @@ const Config = {
 };
 
 const loadConf = (deployId, envInput, subConf) => {
+  if (deployId === 'clean') {
+    shellExec(`git checkout package.json`);
+    shellExec(`git checkout .env.production`);
+    shellExec(`git checkout .env.development`);
+    shellExec(`git checkout .env.test`);
+    shellExec(`git checkout jsdoc.json`);
+    return;
+  }
   const folder = fs.existsSync(`./engine-private/replica/${deployId}`)
     ? `./engine-private/replica/${deployId}`
     : `./engine-private/conf/${deployId}`;
@@ -592,7 +600,9 @@ const buildReplicaId = ({ deployId, replica }) => `${deployId}-${replica.slice(1
 const getDataDeploy = (
   options = { buildSingleReplica: false, deployGroupId: '', deployId: '', disableSyncEnvPort: false },
 ) => {
-  let dataDeploy = JSON.parse(fs.readFileSync(`./engine-private/deploy/${options.deployGroupId}.json`, 'utf8'));
+  let dataDeploy = fs.existsSync(`./engine-private/deploy/${options.deployGroupId}`)
+    ? fs.readFileSync(`./engine-private/deploy/${options.deployGroupId}`)
+    : fs.readFileSync(`./engine-private/deploy/${options.deployGroupId}.router`, 'utf8').split(',');
 
   if (options.deployId) dataDeploy = dataDeploy.filter((d) => d === options.deployId);
 
@@ -978,10 +988,10 @@ const Cmd = {
   conf: (deployId, env) => `node bin/deploy conf ${deployId} ${env ? env : 'production'}`,
   replica: (deployId, host, path) => `node bin/deploy build-single-replica ${deployId} ${host} ${path}`,
   syncPorts: (deployGroupId) => `node bin/deploy sync-env-port ${deployGroupId}`,
-  cron: (deployId, job, expression) => {
-    shellExec(Cmd.delete(`${deployId}-${job}`));
-    return `env-cmd -f .env.production pm2 start bin/cron.js --no-autorestart --instances 1 --cron "${expression}" --name ${deployId}-${job} -- ${job} ${deployId}`;
-  },
+  cron: (deployList, jobList, name, expression, options) =>
+    `pm2 start ./bin/index.js --no-autorestart --instances 1 --cron "${expression}" --name ${name} -- cron ${
+      options?.disableKindCluster ? `--disable-kind-cluster ` : ''
+    }${deployList} ${jobList}`,
 };
 
 const fixDependencies = async () => {

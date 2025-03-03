@@ -17,8 +17,8 @@ const logger = loggerFactory(import.meta);
 class UnderpostDeploy {
   static API = {
     sync(deployList) {
-      const deployGroupId = '_dd';
-      fs.writeFileSync(`./engine-private/deploy/${deployGroupId}.json`, JSON.stringify(deployList.split(',')), 'utf8');
+      const deployGroupId = 'dd.tmp';
+      fs.writeFileSync(`./engine-private/deploy/${deployGroupId}`, JSON.stringify(deployList.split(',')), 'utf8');
       return getDataDeploy({
         buildSingleReplica: true,
         deployGroupId,
@@ -182,8 +182,8 @@ spec:
       env = 'development',
       options = { remove: false, infoRouter: false, sync: false, buildManifest: false },
     ) {
-      if (deployList === 'dd' && fs.existsSync(`./engine-private/deploy/dd-router`))
-        deployList = fs.readFileSync(`./engine-private/deploy/dd-router`, 'utf8');
+      if (deployList === 'dd' && fs.existsSync(`./engine-private/deploy/dd.router`))
+        deployList = fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8');
       if (options.sync) UnderpostDeploy.API.sync(deployList);
       if (options.buildManifest === true) await UnderpostDeploy.API.buildManifest(deployList, env);
       if (options.infoRouter === true)
