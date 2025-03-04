@@ -241,16 +241,17 @@ spec:
           default:
             break;
         }
-        logger.info(
-          `
+        if (renderHosts)
+          logger.info(
+            `
 ` + renderHosts,
-        );
+          );
       }
     },
     getPods(deployId) {
       const raw = shellExec(`sudo kubectl get pods --all-namespaces -o wide`, {
         stdout: true,
-        disableLog: false,
+        disableLog: true,
         silent: true,
       });
 
