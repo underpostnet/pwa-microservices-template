@@ -88,6 +88,7 @@ program
   .option('--mongodb', 'Init with mongodb statefulset')
   .option('--valkey', 'Init with valkey service')
   .option('--contour', 'Init with project contour base HTTPProxy and envoy')
+  .option('--cert-manager', 'Init with letsencrypt-prod ClusterIssuer')
   .option('--info', 'Get all kinds objects deployed')
   .option('--full', 'Init with all statefulsets and services available')
   .option('--ns-use <ns-name>', 'Switches current context to namespace')
@@ -136,7 +137,8 @@ program
   .argument('<deploy-id>', 'Deploy configuration id')
   .argument('[env]', 'Optional environment, for default is development')
   .argument('[path]', 'Absolute or relative directory, for default is current')
-  .option('--image-archive', 'Only load tar image from /images')
+  .option('--image-archive', 'Only load tar image from ./images')
+  .option('--podman-save', 'Save image from podman to ./images')
   .description('Build image from Dockerfile')
   .action(Underpost.image.dockerfile.build);
 
