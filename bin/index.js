@@ -85,12 +85,14 @@ program
   .option('--reset', `Delete all clusters and prune all data and caches`)
   .option('--mariadb', 'Init with mariadb statefulset')
   .option('--mongodb', 'Init with mongodb statefulset')
+  .option('--mongodb4', 'Init with mongodb 4.4 service')
   .option('--valkey', 'Init with valkey service')
   .option('--contour', 'Init with project contour base HTTPProxy and envoy')
   .option('--cert-manager', 'Init with letsencrypt-prod ClusterIssuer')
   .option('--info', 'Get all kinds objects deployed')
   .option('--full', 'Init with all statefulsets and services available')
   .option('--ns-use <ns-name>', 'Switches current context to namespace')
+  .option('--dev', 'init with dev cluster')
   .option('--list-pods', 'Display list pods information')
   .action(Underpost.cluster.init)
   .description('Manage cluster, for default initialization base kind cluster');
@@ -158,6 +160,8 @@ program
   .argument('<deploy-list>', 'Deploy id list, e.g. default-a,default-b')
   .option('--import', 'Import container backups from repositories')
   .option('--export', 'Export container backups to repositories')
+  .option('--pod-name <pod-name>', 'Optional pod context')
+  .option('--ns <ns-name>', 'Optional name space context')
   .description('Manage databases')
   .action(UnderpostDB.API.callback);
 
@@ -185,6 +189,17 @@ program
   .action(Underpost.cron.callback);
 
 program
+  .command('fs')
+  .argument('[path]', 'Absolute or relative directory')
+  .option('--rm', 'Remove file')
+  .option('--recursive', 'Upload files recursively')
+  .option('--deploy-id <deploy-id>', 'Deploy configuration id')
+  .option('--pull', 'Download file')
+  .option('--force', 'Force action')
+  .description('File storage management, for default upload file')
+  .action(Underpost.fs.callback);
+
+program
   .command('test')
   .argument('[deploy-list]', 'Deploy id list, e.g. default-a,default-b')
   .description('Manage Test, for default run current underpost default test')
@@ -193,6 +208,7 @@ program
   .option('--logs', 'Display container logs')
   .option('--pod-name <pod-name>')
   .option('--pod-status <pod-status>')
+  .option('--kind-type <kind-type>')
   .action(Underpost.test.callback);
 
 program.parse();
