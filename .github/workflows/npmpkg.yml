@@ -28,8 +28,8 @@ jobs:
         run: |
           npm install -g underpost
           underpost config set GITHUB_TOKEN ${{ secrets.GIT_AUTH_TOKEN }}
-          underpost install
-
+          npm install
+      # underpost install
       - name: Set git credentials
         run: |
           git config --global credential.helper ""
