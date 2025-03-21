@@ -29,6 +29,8 @@ const PanelForm = {
       Elements: {},
       parentIdModal: undefined,
       route: 'home',
+      htmlFormHeader: async () => '',
+      firsUpdateEvent: async () => {},
     },
   ) {
     const { idPanel, heightTopBar, heightBottomBar, defaultUrlImage, Elements } = options;
@@ -99,6 +101,7 @@ const PanelForm = {
         heightTopBar,
         heightBottomBar,
         data,
+        htmlFormHeader: options.htmlFormHeader,
         parentIdModal: options.parentIdModal,
         originData: () => PanelForm.Data[idPanel].originData,
         filesData: () => PanelForm.Data[idPanel].filesData,
@@ -421,8 +424,16 @@ const PanelForm = {
           ssr: true,
         })),
       });
-
+    let delayBlock = false;
+    let firsUpdateEvent = false;
     this.Data[idPanel].updatePanel = async () => {
+      if (delayBlock) return;
+      else {
+        delayBlock = true;
+        setTimeout(() => {
+          delayBlock = false;
+        }, 500);
+      }
       const cid = getQueryParams().cid ? getQueryParams().cid : '';
       if (options.route === 'home') Modal.homeCid = newInstance(cid);
       htmls(`.${options.parentIdModal ? 'html-' + options.parentIdModal : 'main-body'}`, await renderSrrPanelData());
@@ -431,23 +442,28 @@ const PanelForm = {
         `.${options.parentIdModal ? 'html-' + options.parentIdModal : 'main-body'}`,
         await panelRender({ data: this.Data[idPanel].data }),
       );
+      if (!firsUpdateEvent && options.firsUpdateEvent) {
+        firsUpdateEvent = true;
+        await options.firsUpdateEvent();
+      }
     };
     if (options.route)
       listenQueryPathInstance({
         id: options.parentIdModal ? 'html-' + options.parentIdModal : 'main-body',
         routeId: options.route,
         event: async (path) => {
-          if (!PanelForm.Data[idPanel].sessionIn) await this.Data[idPanel].updatePanel();
+          // if (!PanelForm.Data[idPanel].sessionIn)
+          await this.Data[idPanel].updatePanel();
         },
       });
 
     // if (options.route === 'home') setTimeout(this.Data[idPanel].updatePanel);
     setTimeout(() => {
-      if (
-        options.route !== 'home' &&
-        (!PanelForm.Data[idPanel].originData || PanelForm.Data[idPanel].originData.length === 0)
-      )
-        this.Data[idPanel].updatePanel();
+      // if (
+      //   options.route !== 'home' &&
+      //   (!PanelForm.Data[idPanel].originData || PanelForm.Data[idPanel].originData.length === 0)
+      // )
+      this.Data[idPanel].updatePanel();
     });
 
     if (options.parentIdModal) {
