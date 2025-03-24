@@ -32,7 +32,7 @@ class UnderpostDeploy {
       await Config.build(undefined, 'proxy', deployList);
       return buildPortProxyRouter(env === 'development' ? 80 : 443, buildProxyRouter());
     },
-    async buildManifest(deployList, env) {
+    async buildManifest(deployList, env, version) {
       for (const _deployId of deployList.split(',')) {
         const deployId = _deployId.trim();
         if (!deployId) continue;
@@ -69,7 +69,18 @@ spec:
     spec:
       containers:
         - name: ${deployId}-${env}
-          image: localhost/${deployId}-${env}:${Underpost.version}
+          image: localhost/underpost-engine:${version && typeof version === 'string' ? version : Underpost.version}
+          lifecycle:
+            postStart:
+              exec:
+                command:
+                  - /bin/sh
+                  - -c
+                  - >
+                    sleep 60 &&
+                    underpost config set deploy-id ${deployId} &&
+                    underpost config set deploy-env ${env}
+# image: localhost/${deployId}-${env}:${version && typeof version === 'string' ? version : Underpost.version}
 ---
 apiVersion: v1
 kind: Service
@@ -180,7 +191,16 @@ spec:
     async callback(
       deployList = 'default',
       env = 'development',
-      options = { remove: false, infoRouter: false, sync: false, buildManifest: false, infoUtil: false, expose: false },
+      options = {
+        remove: false,
+        infoRouter: false,
+        sync: false,
+        buildManifest: false,
+        infoUtil: false,
+        expose: false,
+        cert: false,
+        version: '',
+      },
     ) {
       if (options.infoUtil === true)
         return logger.info(`
@@ -191,7 +211,7 @@ kubectl scale statefulsets <stateful-set-name> --replicas=<new-replicas>
       if (deployList === 'dd' && fs.existsSync(`./engine-private/deploy/dd.router`))
         deployList = fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8');
       if (options.sync) UnderpostDeploy.API.sync(deployList);
-      if (options.buildManifest === true) await UnderpostDeploy.API.buildManifest(deployList, env);
+      if (options.buildManifest === true) await UnderpostDeploy.API.buildManifest(deployList, env, options.version);
       if (options.infoRouter === true)
         return logger.info('router', await UnderpostDeploy.API.routerFactory(deployList, env));
       const etcHost = (
@@ -219,7 +239,7 @@ kubectl scale statefulsets <stateful-set-name> --replicas=<new-replicas>
         const confServer = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8'));
         for (const host of Object.keys(confServer)) {
           shellExec(`sudo kubectl delete HTTPProxy ${host}`);
-          if (env === 'production') shellExec(`sudo kubectl delete Certificate ${host}`);
+          if (env === 'production' && options.cert === true) shellExec(`sudo kubectl delete Certificate ${host}`);
           if (!options.remove === true && env === 'development') concatHots += ` ${host}`;
         }
 
@@ -231,7 +251,8 @@ kubectl scale statefulsets <stateful-set-name> --replicas=<new-replicas>
         if (!options.remove === true) {
           shellExec(`sudo kubectl apply -f ./${manifestsPath}/deployment.yaml`);
           shellExec(`sudo kubectl apply -f ./${manifestsPath}/proxy.yaml`);
-          if (env === 'production') shellExec(`sudo kubectl apply -f ./${manifestsPath}/secret.yaml`);
+          if (env === 'production' && options.cert === true)
+            shellExec(`sudo kubectl apply -f ./${manifestsPath}/secret.yaml`);
         }
       }
       let renderHosts;

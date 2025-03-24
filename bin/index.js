@@ -103,7 +103,9 @@ program
   .option('--info-router', 'Display router structure')
   .option('--expose', 'Expose service match deploy-list')
   .option('--info-util', 'Display kubectl util management commands')
+  .option('--cert', 'Reset tls/ssl certificate secrets')
   .option('--build-manifest', 'Build kind yaml manifests: deployments, services, proxy and secrets')
+  .option('--version', 'Set custom version')
   .description('Manage deployment, for default deploy development pods')
   .action(Underpost.deploy.callback);
 
@@ -137,6 +139,8 @@ program
   .argument('[path]', 'Absolute or relative directory, for default is current')
   .option('--image-archive', 'Only load tar image from ./images')
   .option('--podman-save', 'Save image from podman to ./images')
+  .option('--image-name <image-name>', 'Set custom image name')
+  .option('--image-version <image-version>', 'Set custom image version')
   .description('Build image from Dockerfile')
   .action(Underpost.image.dockerfile.build);
 
@@ -158,6 +162,11 @@ program
   .option('--import', 'Import container backups from repositories')
   .option('--export', 'Export container backups to repositories')
   .option('--pod-name <pod-name>', 'Optional pod context')
+  .option('--collection <collection>', 'Collection')
+  .option('--out-path <out-path>', 'Custom out path backup')
+  .option('--drop', 'Drop databases')
+  .option('--preserveUUID', 'Preserve Ids')
+  .option('--git', 'Upload to github')
   .option('--ns <ns-name>', 'Optional name space context')
   .description('Manage databases')
   .action(Underpost.db.callback);
@@ -182,6 +191,7 @@ program
   .argument('[job-list]', `Deploy id list, e.g. ${Object.keys(Underpost.cron)}, for default all available jobs`)
   .option('--itc', 'Inside container execution context')
   .option('--init', 'Init cron jobs for cron job default deploy id')
+  .option('--git', 'Upload to github')
   .description('Cron jobs management')
   .action(Underpost.cron.callback);
 
