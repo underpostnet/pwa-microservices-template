@@ -29,7 +29,7 @@ class Underpost {
    * @type {String}
    * @memberof Underpost
    */
-  static version = 'v2.8.637';
+  static version = 'v2.8.64';
   /**
    * Repository cli API
    * @static
@@ -93,6 +93,13 @@ class Underpost {
    * @memberof Underpost
    */
   static deploy = UnderpostDeploy.API;
+  /**
+   * Deployment cli NETWORK
+   * @static
+   * @type {UnderpostDeploy.NETWORK}
+   * @memberof Underpost
+   */
+  static deployNetwork = UnderpostDeploy.NETWORK;
   /**
    * Cron cli API
    * @static

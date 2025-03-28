@@ -1,9 +1,7 @@
 import fs from 'fs-extra';
-import Underpost from '../index.js';
 import { shellCd, shellExec } from '../server/process.js';
 import dotenv from 'dotenv';
 import { awaitDeployMonitor, getNpmRootPath } from '../server/conf.js';
-import { timer } from '../client/components/core/CommonJs.js';
 import { loggerFactory } from '../server/logger.js';
 import UnderpostMonitor from './monitor.js';
 
@@ -71,7 +69,8 @@ class UnderpostImage {
           shellExec(`cd ${buildBasePath}/engine && underpost clone underpostnet/${repoName}-private`);
           shellExec(`cd ${buildBasePath}/engine && sudo mv ./${repoName}-private ./engine-private`);
           shellCd(`${buildBasePath}/engine`);
-          shellExec(`underpost install`);
+          shellExec(`npm install`);
+          shellExec(`node bin/deploy conf ${deployId} ${env}`);
           if (fs.existsSync('./engine-private/itc-scripts')) {
             const itcScripts = await fs.readdir('./engine-private/itc-scripts');
             for (const itcScript of itcScripts)
@@ -110,7 +109,6 @@ class UnderpostImage {
               }
               break;
           }
-          shellExec(`node bin/deploy conf ${deployId} ${env}`);
           shellExec(`node bin/deploy build-full-client ${deployId}`);
         }
         if (options.run === true) {
