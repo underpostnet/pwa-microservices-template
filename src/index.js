@@ -16,6 +16,7 @@ import UnderpostRepository from './cli/repository.js';
 import UnderpostScript from './cli/script.js';
 import UnderpostSecret from './cli/secrets.js';
 import UnderpostTest from './cli/test.js';
+import UnderpostStartUp from './server/start.js';
 
 /**
  * Underpost main module methods
@@ -29,7 +30,7 @@ class Underpost {
    * @type {String}
    * @memberof Underpost
    */
-  static version = 'v2.8.641';
+  static version = 'v2.8.645';
   /**
    * Repository cli API
    * @static
@@ -51,6 +52,13 @@ class Underpost {
    * @memberof Underpost
    */
   static test = UnderpostTest.API;
+  /**
+   * Underpost Start Up cli API
+   * @static
+   * @type {UnderpostStartUp.API}
+   * @memberof Underpost
+   */
+  static start = UnderpostStartUp.API;
   /**
    * Cluster cli API
    * @static
@@ -93,13 +101,6 @@ class Underpost {
    * @memberof Underpost
    */
   static deploy = UnderpostDeploy.API;
-  /**
-   * Deployment cli NETWORK
-   * @static
-   * @type {UnderpostDeploy.NETWORK}
-   * @memberof Underpost
-   */
-  static deployNetwork = UnderpostDeploy.NETWORK;
   /**
    * Cron cli API
    * @static

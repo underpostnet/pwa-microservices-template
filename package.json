@@ -2,7 +2,7 @@
     "type": "module",
     "main": "src/index.js",
     "name": "underpost",
-    "version": "2.8.641",
+    "version": "2.8.645",
     "description": "pwa api rest template",
     "scripts": {
         "start": "env-cmd -f .env.production node --max-old-space-size=8192 src/server",
@@ -118,12 +118,7 @@
         "vanilla-jsoneditor": "^2.3.2",
         "winston": "^3.11.0"
     },
-    "devDependencies": {
-        "clean-jsdoc-theme": "^4.3.0",
-        "mocha": "^10.8.2",
-        "plantuml": "^0.0.2",
-        "swagger-autogen": "^2.23.7"
-    },
+    "devDependencies": {},
     "publishConfig": {
         "provenance": true,
         "access": "public",
