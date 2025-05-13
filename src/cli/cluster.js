@@ -25,6 +25,7 @@ class UnderpostCluster {
         infoCapacity: false,
         infoCapacityPod: false,
         istio: false,
+        pullImage: false,
       },
     ) {
       // 1) Install kind, kubeadm, docker, podman
@@ -82,11 +83,12 @@ class UnderpostCluster {
       ) {
         shellExec(`sudo setenforce 0`);
         shellExec(`sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config`);
-        shellExec(`sudo systemctl enable --now kubelet`);
+        // sudo systemctl disable kubelet
+        // shellExec(`sudo systemctl enable --now kubelet`);
         shellExec(`containerd config default > /etc/containerd/config.toml`);
         shellExec(`sed -i -e "s/SystemdCgroup = false/SystemdCgroup = true/g" /etc/containerd/config.toml`);
         // shellExec(`cp /etc/kubernetes/admin.conf ~/.kube/config`);
-        shellExec(`sudo systemctl restart kubelet`);
+        // shellExec(`sudo systemctl restart kubelet`);
         shellExec(`sudo service docker restart`);
         shellExec(`sudo systemctl enable --now containerd.service`);
         shellExec(`sudo swapoff -a; sudo sed -i '/swap/d' /etc/fstab`);
@@ -116,6 +118,11 @@ class UnderpostCluster {
       } else logger.warn('Cluster already initialized');
 
       if (options.full === true || options.valkey === true) {
+        if (options.pullImage === true) {
+          // kubectl patch statefulset service-valkey --type='json' -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/image", "value":"valkey/valkey:latest"}]'
+          shellExec(`docker pull valkey/valkey`);
+          shellExec(`sudo kind load docker-image valkey/valkey`);
+        }
         shellExec(`kubectl delete statefulset service-valkey`);
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/valkey`);
       }
@@ -130,6 +137,10 @@ class UnderpostCluster {
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/mariadb`);
       }
       if (options.mongodb4 === true) {
+        if (options.pullImage === true) {
+          shellExec(`docker pull mongo:4.4`);
+          shellExec(`sudo kind load docker-image mongo:4.4`);
+        }
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/mongodb-4.4`);
 
         const deploymentName = 'mongodb-deployment';
@@ -229,6 +240,11 @@ class UnderpostCluster {
         `sudo sed -i -e "s@/var/lib/containers/storage@/home/containers/storage@g" /etc/containers/storage.conf`,
       );
       shellExec(`sudo podman system reset -f`);
+      // https://github.com/kubernetes-sigs/kind/issues/2886
+      shellExec(`sysctl net.bridge.bridge-nf-call-iptables=0`);
+      shellExec(`sysctl net.bridge.bridge-nf-call-arptables=0`);
+      shellExec(`sysctl net.bridge.bridge-nf-call-ip6tables=0`);
+      shellExec(`docker network rm kind`);
     },
     getResourcesCapacity() {
       const resources = {};

@@ -29,7 +29,7 @@ import {
   getUnderpostRootPath,
 } from '../src/server/conf.js';
 import { buildClient } from '../src/server/client-build.js';
-import { range, setPad, timer, uniqueArray } from '../src/client/components/core/CommonJs.js';
+import { range, s4, setPad, timer, uniqueArray } from '../src/client/components/core/CommonJs.js';
 import { MongooseDB } from '../src/db/mongo/MongooseDB.js';
 import { Lampp } from '../src/runtime/lampp/Lampp.js';
 import { DefaultConf } from '../conf.js';
@@ -38,6 +38,8 @@ import { JSONweb } from '../src/server/client-formatted.js';
 import { Xampp } from '../src/runtime/xampp/Xampp.js';
 import { ejs } from '../src/server/json-schema.js';
 import { buildCliDoc } from '../src/cli/index.js';
+import { getLocalIPv4Address } from '../src/server/dns.js';
+import { Downloader } from '../src/server/downloader.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -1108,25 +1110,992 @@ ${shellExec(`git log | grep Author: | sort -u`, { stdout: true }).split(`\n`).jo
     case 'postgresql': {
       if (process.argv.includes('install')) {
         shellExec(`sudo dnf install -y postgresql-server postgresql`);
+        shellExec(`sudo postgresql-setup --initdb`);
+        shellExec(`chown postgres /var/lib/pgsql/data`);
+        shellExec(`sudo systemctl enable postgresql.service`);
+        shellExec(`sudo systemctl start postgresql.service`);
+      } else {
+        shellExec(`sudo systemctl enable postgresql.service`);
+        shellExec(`sudo systemctl restart postgresql.service`);
       }
-      shellExec(`sudo postgresql-setup --initdb`);
-      shellExec(`sudo systemctl enable postgresql.service`);
-      shellExec(`sudo systemctl start postgresql.service`);
+
       shellExec(`sudo systemctl status postgresql.service`);
+
+      // sudo systemctl stop postgresql
+      // sudo systemctl disable postgresql
+
       // psql login
-      // psql -U <user> <db-name>
+      // psql -U <user> -h 127.0.0.1 -W <db-name>
+
+      // gedit /var/lib/pgsql/data/pg_hba.conf
+      // host    <db-name>    	<db-user>        <db-host>               md5
+      // local   all             postgres                                trust
+      // # "local" is for Unix domain socket connections only
+      // local   all             all                                     md5
+      // # IPv4 local connections:
+      // host    all             all             127.0.0.1/32            md5
+      // # IPv6 local connections:
+      // host    all             all             ::1/128                 md5
+
+      // gedit /var/lib/pgsql/data/postgresql.conf
+      // listen_addresses = '*'
+
+      break;
+    }
+
+    case 'postgresql-14': {
+      shellExec(`sudo /usr/pgsql-14/bin/postgresql-14-setup initdb`);
+      shellExec(`sudo systemctl start postgresql-14`);
+      shellExec(`sudo systemctl enable postgresql-14`);
+      shellExec(`sudo systemctl status postgresql-14`);
+      // sudo dnf install postgresql14-contrib
+      break;
+    }
+
+    case 'pg-list-db': {
+      shellExec(`sudo -i -u postgres psql -c "\\l"`);
+      break;
+    }
+
+    case 'pg-list-table': {
+      shellExec(`sudo -i -u postgres psql -c "\\dt *.*"`);
+      // schema_name.*
+      break;
+    }
+    case 'pg-drop-db': {
+      shellExec(`sudo -i -u postgres psql -c "DROP DATABASE ${process.argv[3]} WITH (FORCE)"`);
+      shellExec(`sudo -i -u postgres psql -c "DROP USER ${process.argv[4]}"`);
       break;
     }
 
     case 'maas': {
       dotenv.config({ path: `${getUnderpostRootPath()}/.env`, override: true });
-      shellExec(`DB_PG_MAAS_NAME=${process.env.DB_PG_MAAS_NAME}`);
-      shellExec(`DB_PG_MAAS_PASS=${process.env.DB_PG_MAAS_PASS}`);
-      shellExec(`DB_PG_MAAS_USER=${process.env.DB_PG_MAAS_USER}`);
-      shellExec(
-        `sudo -i -u postgres psql -c "CREATE USER \"$DB_PG_MAAS_USER\" WITH ENCRYPTED PASSWORD '$DB_PG_MAAS_PASS'"`,
+      const IP_ADDRESS = getLocalIPv4Address();
+      const serverip = IP_ADDRESS;
+      const tftpRoot = process.env.TFTP_ROOT;
+      const ipaddr = '192.168.1.83';
+      const netmask = process.env.NETMASK;
+      const gatewayip = process.env.GATEWAY_IP;
+
+      let resources;
+      try {
+        resources = JSON.parse(
+          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resources read`, {
+            silent: true,
+            stdout: true,
+          }),
+        ).map((o) => ({
+          id: o.id,
+          name: o.name,
+          architecture: o.architecture,
+        }));
+      } catch (error) {
+        logger.error(error);
+      }
+
+      const machineFactory = (m) => ({
+        system_id: m.interface_set[0].system_id,
+        mac_address: m.interface_set[0].mac_address,
+        hostname: m.hostname,
+        status_name: m.status_name,
+      });
+
+      let machines;
+      try {
+        machines = JSON.parse(
+          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machines read`, {
+            stdout: true,
+            silent: true,
+          }),
+        ).map((m) => machineFactory(m));
+      } catch (error) {
+        logger.error(error);
+      }
+
+      if (process.argv.includes('db')) {
+        // DROP, ALTER, CREATE, WITH ENCRYPTED
+        // sudo -u <user> -h <host> psql <db-name>
+        shellExec(`DB_PG_MAAS_NAME=${process.env.DB_PG_MAAS_NAME}`);
+        shellExec(`DB_PG_MAAS_PASS=${process.env.DB_PG_MAAS_PASS}`);
+        shellExec(`DB_PG_MAAS_USER=${process.env.DB_PG_MAAS_USER}`);
+        shellExec(`DB_PG_MAAS_HOST=${process.env.DB_PG_MAAS_HOST}`);
+        shellExec(
+          `sudo -i -u postgres psql -c "CREATE USER \"$DB_PG_MAAS_USER\" WITH ENCRYPTED PASSWORD '$DB_PG_MAAS_PASS'"`,
+        );
+        shellExec(
+          `sudo -i -u postgres psql -c "ALTER USER \"$DB_PG_MAAS_USER\" WITH ENCRYPTED PASSWORD '$DB_PG_MAAS_PASS'"`,
+        );
+        const actions = ['LOGIN', 'SUPERUSER', 'INHERIT', 'CREATEDB', 'CREATEROLE', 'REPLICATION'];
+        shellExec(`sudo -i -u postgres psql -c "ALTER USER \"$DB_PG_MAAS_USER\" WITH ${actions.join(' ')}"`);
+        shellExec(`sudo -i -u postgres psql -c "\\du"`);
+
+        shellExec(`sudo -i -u postgres createdb -O "$DB_PG_MAAS_USER" "$DB_PG_MAAS_NAME"`);
+
+        shellExec(`sudo -i -u postgres psql -c "\\l"`);
+      }
+
+      if (process.argv.includes('ls')) {
+        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-sources read`);
+        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} commissioning-scripts read`);
+        // shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-source-selections read 60`);
+        console.table(resources);
+        console.table(machines);
+        process.exit(0);
+      }
+      if (process.argv.includes('clear')) {
+        for (const machine of machines) {
+          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine delete ${machine.system_id}`);
+        }
+        // machines = [];
+        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} discoveries clear all=true`);
+        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} discoveries scan force=true`);
+        process.exit(0);
+      }
+      if (process.argv.includes('grub-arm64')) {
+        shellExec(`sudo dnf install grub2-efi-aa64-modules`);
+        shellExec(`sudo dnf install grub2-efi-x64-modules`);
+        // sudo grub2-mknetdir --net-directory=${tftpRoot} --subdir=/boot/grub --module-path=/usr/lib/grub/arm64-efi arm64-efi
+        process.exit(0);
+      }
+
+      if (process.argv.includes('psql')) {
+        const cmd = `psql -U ${process.env.DB_PG_MAAS_USER} -h ${process.env.DB_PG_MAAS_HOST} -W ${process.env.DB_PG_MAAS_NAME}`;
+        pbcopy(cmd);
+        process.exit(0);
+      }
+      if (process.argv.includes('logs')) {
+        shellExec(`maas status`);
+        const cmd = `journalctl -f -t dhcpd -u snap.maas.pebble.service`;
+        pbcopy(cmd);
+        process.exit(0);
+      }
+      if (process.argv.includes('reset')) {
+        // shellExec(
+        //   `maas init region+rack --database-uri "postgres://$DB_PG_MAAS_USER:$DB_PG_MAAS_PASS@$DB_PG_MAAS_HOST/$DB_PG_MAAS_NAME"` +
+        //     ` --maas-url http://${IP_ADDRESS}:5240/MAAS`,
+        // );
+        const cmd =
+          `maas init region+rack --database-uri "postgres://${process.env.DB_PG_MAAS_USER}:${process.env.DB_PG_MAAS_PASS}@${process.env.DB_PG_MAAS_HOST}/${process.env.DB_PG_MAAS_NAME}"` +
+          ` --maas-url http://${IP_ADDRESS}:5240/MAAS`;
+        pbcopy(cmd);
+        process.exit(0);
+      }
+      if (process.argv.includes('dhcp')) {
+        const snippets = JSON.parse(
+          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} dhcpsnippets read`, {
+            stdout: true,
+            silent: true,
+            disableLog: true,
+          }),
+        );
+        for (const snippet of snippets) {
+          switch (snippet.name) {
+            case 'arm64':
+              snippet.value = snippet.value.split(`\n`);
+              snippet.value[1] = `          filename "http://${IP_ADDRESS}:5248/images/bootloaders/uefi/arm64/grubaa64.efi";`;
+              snippet.value[5] = `          filename "http://${IP_ADDRESS}:5248/images/bootloaders/uefi/arm64/grubaa64.efi";`;
+              snippet.value = snippet.value.join(`\n`);
+              shellExec(
+                `maas ${process.env.MAAS_ADMIN_USERNAME} dhcpsnippet update ${snippet.name} value='${snippet.value}'`,
+              );
+              break;
+
+            default:
+              break;
+          }
+        }
+
+        console.log(snippets);
+
+        process.exit(0);
+      }
+      // shellExec(`MAAS_ADMIN_USERNAME=${process.env.MAAS_ADMIN_USERNAME}`);
+      // shellExec(`MAAS_ADMIN_EMAIL=${process.env.MAAS_ADMIN_EMAIL}`);
+      // shellExec(`maas createadmin --username $MAAS_ADMIN_USERNAME --email $MAAS_ADMIN_EMAIL`);
+
+      // MaaS admin CLI:
+      // maas login <maas-admin-username> http://localhost:5240/MAAS
+      // paste GUI API KEY (profile section)
+
+      // Import custom image
+      // maas <maas-admin-username> boot-resources create name='custom/RockyLinuxRpi4' \
+      // title='RockyLinuxRpi4' \
+      // architecture='arm64/generic' \
+      // filetype='tgz' \
+      // content@=/home/RockyLinuxRpi_9-latest.tar.gz
+
+      // Image boot resource:
+      // /var/snap/maas/current/root/snap/maas
+      // /var/snap/maas/common/maas/tftp_root
+      // sudo chmod 755 /var/snap/maas/common/maas/tftp_root
+
+      // /var/snap/maas/common/maas/dhcpd.conf
+      // sudo snap restart maas.pebble
+
+      // PXE Linux files:
+      // /var/snap/maas/common/maas/image-storage/bootloaders/pxe/i386
+      // sudo nmcli con modify <interface-device-name-connection-id> ethtool.feature-rx on ethtool.feature-tx off
+      // sudo nmcli connection up <interface-device-name-connection-id>
+
+      // man nm-settings |grep feature-tx-checksum
+
+      // nmcli c modify <interface-device-name-connection-id> \
+      //  ethtool.feature-tx-checksum-fcoe-crc off \
+      //  ethtool.feature-tx-checksum-ip-generic off \
+      //  ethtool.feature-tx-checksum-ipv4 off \
+      //  ethtool.feature-tx-checksum-ipv6 off \
+      //  ethtool.feature-tx-checksum-sctp off
+
+      // Ensure Rocky NFS server and /etc/exports configured
+      // sudo systemctl restart nfs-server
+      // Check mounts: showmount -e <server-ip>
+      // Check nfs ports: rpcinfo -p
+      // sudo chown -R root:root /nfs-export/rpi4mb
+      // sudo chmod 755 /nfs-export/rpi4mb
+
+      // tftp server
+      // sudo chown -R root:root /var/snap/maas/common/maas/tftp_root/rpi4mb
+
+      // tftp client
+      // sudo dnf install tftp
+      // tftp <server-ip> -c get <path>
+
+      // Check firewall-cmd
+      // firewall-cmd --permanent --add-service=rpc-bind
+      // firewall-cmd --reload
+
+      // Image extension transform (.img.xz to .tar.gz):
+      // tar -cvzf image-name.tar.gz image-name.img.xz
+
+      // Rocky network configuration:
+      // /etc/NetworkManager/system-connections
+
+      // Rocky kernel params update
+      // sudo grubby --args="<key>=<value> <key>=<value>" --update-kernel=ALL
+      // sudo reboot now
+
+      // Temporal:
+      // sudo snap install temporal
+      // journalctl -u snap.maas.pebble -t maas-regiond
+      // journalctl -u snap.maas.pebble -t maas-temporal -n 100 --no-pager -f
+
+      // Remove:
+      // sudo dnf remove <package> -y; sudo dnf autoremove -y; sudo dnf clean packages
+      // check: ~
+      // check: ~./cache
+      // check: ~./config
+
+      // Check file logs
+      // grep -i -E -C 1 '<key-a>|<key-b>' /example.log | tail -n 600
+
+      // Back into your firmware setup (UEFI or BIOS config screen).
+      // grub> fwsetup
+
+      // Poweroff:
+      // grub > halt
+      // initramfs > poweroff
+
+      // Check interface
+      // ip link show
+      // nmcli con show
+
+      let firmwarePath,
+        tftpSubDir,
+        kernelFilesPaths,
+        name,
+        architecture,
+        resource,
+        nfsConnectStr,
+        etcExports,
+        nfsServerRootPath,
+        bootConf,
+        zipFirmwareFileName,
+        zipFirmwareName,
+        zipFirmwareUrl,
+        interfaceName,
+        nfsHost;
+
+      switch (process.argv[3]) {
+        case 'rpi4mb':
+          const resourceId = process.argv[4] ?? '39';
+          tftpSubDir = '/rpi4mb';
+          zipFirmwareFileName = `RPi4_UEFI_Firmware_v1.41.zip`;
+          zipFirmwareName = zipFirmwareFileName.split('.zip')[0];
+          zipFirmwareUrl = `https://github.com/pftf/RPi4/releases/download/v1.41/RPi4_UEFI_Firmware_v1.41.zip`;
+          firmwarePath = `../${zipFirmwareName}`;
+          interfaceName = process.env.RPI4_INTERFACE_NAME;
+          nfsHost = 'rpi4mb';
+          if (!fs.existsSync(firmwarePath)) {
+            await Downloader(zipFirmwareUrl, `../${zipFirmwareFileName}`);
+            shellExec(`cd .. && mkdir ${zipFirmwareName} && cd ${zipFirmwareName} && unzip ../${zipFirmwareFileName}`);
+          }
+          resource = resources.find((o) => o.id == resourceId);
+          name = resource.name;
+          architecture = resource.architecture;
+          resource = resources.find((o) => o.name === name && o.architecture === architecture);
+          nfsServerRootPath = `/nfs-export/rpi4mb`;
+          // ,anonuid=1001,anongid=100
+          // etcExports = `${nfsServerRootPath} *(rw,all_squash,sync,no_root_squash,insecure)`;
+          etcExports = `${nfsServerRootPath} 192.168.1.0/24(${[
+            'rw',
+            // 'all_squash',
+            'sync',
+            'no_root_squash',
+            'no_subtree_check',
+            'insecure',
+          ]})`;
+          const resourceData = JSON.parse(
+            shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resource read ${resource.id}`, {
+              stdout: true,
+              silent: true,
+              disableLog: true,
+            }),
+          );
+          const bootFiles = resourceData.sets[Object.keys(resourceData.sets)[0]].files;
+          const suffix = architecture.match('xgene') ? '.xgene' : '';
+
+          kernelFilesPaths = {
+            'vmlinuz-efi': bootFiles['boot-kernel' + suffix].filename_on_disk,
+            'initrd.img': bootFiles['boot-initrd' + suffix].filename_on_disk,
+            squashfs: bootFiles['squashfs'].filename_on_disk,
+          };
+          const protocol = 'tcp'; // v3 -> tcp, v4 -> udp
+
+          const mountOptions = [
+            protocol,
+            'vers=3',
+            'nfsvers=3',
+            'nolock',
+            // 'protocol=tcp',
+            // 'hard=true',
+            'port=2049',
+            // 'sec=none',
+            'rw',
+            'hard',
+            'intr',
+            'rsize=32768',
+            'wsize=32768',
+            'acregmin=0',
+            'acregmax=0',
+            'acdirmin=0',
+            'acdirmax=0',
+            'noac',
+            // 'nodev',
+            // 'nosuid',
+          ];
+          const cmd = [
+            `console=serial0,115200`,
+            `console=tty1`,
+            // `initrd=-1`,
+            // `net.ifnames=0`,
+            // `dwc_otg.lpm_enable=0`,
+            // `elevator=deadline`,
+            `root=/dev/nfs`,
+            `nfsroot=${serverip}:/nfs-export/rpi4mb,${mountOptions}`,
+            // `nfsroot=${serverip}:/nfs-export/rpi4mb`,
+            `ip=${ipaddr}:${serverip}:${gatewayip}:${netmask}:${nfsHost}:${interfaceName}:static`,
+            `rootfstype=nfs`,
+            `rw`,
+            `rootwait`,
+            `fixrtc`,
+            'initrd=initrd.img',
+            // 'boot=casper',
+            // 'ro',
+            'netboot=nfs',
+            // 'ip=dhcp',
+            // 'ip=dfcp',
+            // 'autoinstall',
+            // 'rd.break',
+          ];
+
+          nfsConnectStr = cmd.join(' ');
+          bootConf = `[all]
+MAC_ADDRESS=00:00:00:00:00:00
+MAC_ADDRESS_OTP=0,1
+BOOT_UART=0
+WAKE_ON_GPIO=1
+POWER_OFF_ON_HALT=0
+ENABLE_SELF_UPDATE=1
+DISABLE_HDMI=0
+TFTP_IP=${serverip}
+TFTP_PREFIX=1
+TFTP_PREFIX_STR=${tftpSubDir.slice(1)}/
+NET_INSTALL_ENABLED=1
+DHCP_TIMEOUT=45000
+DHCP_REQ_TIMEOUT=4000
+TFTP_FILE_TIMEOUT=30000
+BOOT_ORDER=0x21`;
+
+          break;
+
+        default:
+          break;
+      }
+      shellExec(`sudo chmod 755 /nfs-export/${nfsHost}`);
+
+      shellExec(`sudo rm -rf ${tftpRoot}${tftpSubDir}`);
+      shellExec(`sudo cp -a ${firmwarePath} ${tftpRoot}${tftpSubDir}`);
+      shellExec(`mkdir -p ${tftpRoot}${tftpSubDir}/pxe`);
+
+      fs.writeFileSync(`/etc/exports`, etcExports, 'utf8');
+      if (bootConf) fs.writeFileSync(`${tftpRoot}${tftpSubDir}/boot.conf`, bootConf, 'utf8');
+
+      shellExec(`node bin/deploy nfs`);
+
+      if (process.argv.includes('restart')) {
+        shellExec(`sudo snap restart maas.pebble`);
+        let secs = 0;
+        while (
+          !(
+            shellExec(`maas status`, { silent: true, disableLog: true, stdout: true })
+              .split(' ')
+              .filter((l) => l.match('inactive')).length === 1
+          )
+        ) {
+          await timer(1000);
+          console.log(`Waiting... (${++secs}s)`);
+        }
+      }
+
+      switch (process.argv[3]) {
+        case 'rpi4mb':
+          {
+            // subnet DHCP snippets
+            // # UEFI ARM64
+            // if option arch = 00:0B {
+            //   filename "rpi4mb/pxe/grubaa64.efi";
+            // }
+            // elsif option arch = 00:13 {
+            //   filename "http://<IP_ADDRESS>:5248/images/bootloaders/uefi/arm64/grubaa64.efi";
+            //   option vendor-class-identifier "HTTPClient";
+            // }
+            for (const file of ['bootaa64.efi', 'grubaa64.efi']) {
+              shellExec(
+                `sudo cp -a /var/snap/maas/common/maas/image-storage/bootloaders/uefi/arm64/${file} ${tftpRoot}${tftpSubDir}/pxe/${file}`,
+              );
+            }
+            // const file = 'bcm2711-rpi-4-b.dtb';
+            // shellExec(
+            //   `sudo cp -a  ${firmwarePath}/${file} /var/snap/maas/common/maas/image-storage/bootloaders/uefi/arm64/${file}`,
+            // );
+
+            // const ipxeSrc = fs
+            //   .readFileSync(`${tftpRoot}/ipxe.cfg`, 'utf8')
+            //   .replaceAll('amd64', 'arm64')
+            //   .replaceAll('${next-server}', IP_ADDRESS);
+            // fs.writeFileSync(`${tftpRoot}/ipxe.cfg`, ipxeSrc, 'utf8');
+
+            {
+              for (const file of Object.keys(kernelFilesPaths)) {
+                shellExec(
+                  `sudo cp -a /var/snap/maas/common/maas/image-storage/${kernelFilesPaths[file]} ${tftpRoot}${tftpSubDir}/pxe/${file}`,
+                );
+              }
+              // const configTxtSrc = fs.readFileSync(`${firmwarePath}/config.txt`, 'utf8');
+              // fs.writeFileSync(
+              //   `${tftpRoot}${tftpSubDir}/config.txt`,
+              //   configTxtSrc
+              //     .replace(`kernel=kernel8.img`, `kernel=vmlinuz`)
+              //     .replace(`# max_framebuffers=2`, `max_framebuffers=2`)
+              //     .replace(`initramfs initramfs8 followkernel`, `initramfs initrd.img followkernel`),
+              //   'utf8',
+              // );
+
+              // grub:
+              // set root=(pxe)
+
+              // UNDERPOST.NET UEFI/GRUB/MAAS RPi4 commissioning (ARM64)
+              const menuentryStr = 'underpost.net rpi4mb maas commissioning (ARM64)';
+              const grubCfgPath = `${tftpRoot}/grub/grub.cfg`;
+              fs.writeFileSync(
+                grubCfgPath,
+                `
+    insmod gzio
+    insmod http
+    insmod nfs
+    set timeout=5
+    set default=0
+    
+    menuentry '${menuentryStr}' {
+      set root=(tftp,${serverip}) 
+      linux ${tftpSubDir}/pxe/vmlinuz-efi ${nfsConnectStr}
+      initrd ${tftpSubDir}/pxe/initrd.img
+      boot
+    }
+    
+        `,
+                'utf8',
+              );
+            }
+            const arm64EfiPath = `${tftpRoot}/grub/arm64-efi`;
+            if (fs.existsSync(arm64EfiPath)) shellExec(`sudo rm -rf ${arm64EfiPath}`);
+            shellExec(`sudo cp -a /usr/lib/grub/arm64-efi ${arm64EfiPath}`);
+          }
+
+          break;
+
+        default:
+          break;
+      }
+
+      logger.info('succes maas deploy', {
+        resource,
+        kernelFilesPaths,
+        tftpRoot,
+        tftpSubDir,
+        firmwarePath,
+        etcExports,
+        nfsServerRootPath,
+        nfsConnectStr,
+      });
+      if (process.argv.includes('restart')) {
+        if (fs.existsSync(`node engine-private/r.js`)) shellExec(`node engine-private/r`);
+        shellExec(`node bin/deploy maas dhcp`);
+        shellExec(`sudo chown -R root:root ${tftpRoot}`);
+        shellExec(`sudo sudo chmod 755 ${tftpRoot}`);
+      }
+      for (const machine of machines) {
+        // shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine delete ${machine.system_id}`);
+        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine commission ${machine.system_id}`, {
+          silent: true,
+        });
+      }
+      // machines = [];
+
+      const monitor = async () => {
+        // discoveries         Query observed discoveries.
+        // discovery           Read or delete an observed discovery.
+
+        const discoveries = JSON.parse(
+          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} discoveries read`, {
+            silent: true,
+            stdout: true,
+          }),
+        ).filter(
+          (o) => o.ip !== IP_ADDRESS && o.ip !== gatewayip && !machines.find((_o) => _o.mac_address === o.mac_address),
+        );
+
+        //   {
+        //     "discovery_id": "",
+        //     "ip": "192.168.1.189",
+        //     "mac_address": "00:00:00:00:00:00",
+        //     "last_seen": "2025-05-05T14:17:37.354",
+        //     "hostname": null,
+        //     "fabric_name": "",
+        //     "vid": null,
+        //     "mac_organization": "",
+        //     "observer": {
+        //         "system_id": "",
+        //         "hostname": "",
+        //         "interface_id": 1,
+        //         "interface_name": ""
+        //     },
+        //     "resource_uri": "/MAAS/api/2.0/discovery/MTkyLjE2OC4xLjE4OSwwMDowMDowMDowMDowMDowMA==/"
+        // },
+
+        for (const discovery of discoveries) {
+          const machine = {
+            architecture: architecture.match('amd') ? 'amd64/generic' : 'arm64/generic',
+            mac_address: discovery.mac_address,
+            hostname:
+              discovery.hostname ?? discovery.mac_organization ?? discovery.domain ?? discovery.ip.match(ipaddr)
+                ? nfsHost
+                : `unknown-${s4()}`,
+            // description: '',
+            // https://maas.io/docs/reference-power-drivers
+            power_type: 'manual', // manual
+            // power_parameters_power_address: discovery.ip,
+            mac_addresses: discovery.mac_address,
+          };
+          machine.hostname = machine.hostname.replaceAll(' ', '').replaceAll('.', '');
+
+          try {
+            let newMachine = shellExec(
+              `maas ${process.env.MAAS_ADMIN_USERNAME} machines create ${Object.keys(machine)
+                .map((k) => `${k}="${machine[k]}"`)
+                .join(' ')}`,
+              {
+                silent: true,
+                stdout: true,
+              },
+            );
+            newMachine = machineFactory(JSON.parse(newMachine));
+            machines.push(newMachine);
+            console.log(newMachine);
+            shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine commission ${newMachine.system_id}`, {
+              silent: true,
+            });
+          } catch (error) {
+            logger.error(error, error.stack);
+          }
+        }
+        // if (discoveries.length > 0) {
+        //   shellExec(
+        //     `maas ${process.env.MAAS_ADMIN_USERNAME} machines read | jq '.[] | {system_id: .interface_set[0].system_id, hostname, status_name, mac_address: .interface_set[0].mac_address}'`,
+        //   );
+        // }
+        await timer(1000);
+        monitor();
+      };
+      // shellExec(`node bin/deploy open-virtual-root ${architecture.match('amd') ? 'amd64' : 'arm64'} ${nfsHost}`);
+      monitor();
+      break;
+    }
+
+    case 'nfs': {
+      // Daemon RPC  NFSv3. ports:
+
+      // 2049 (TCP/UDP) – puerto estándar de nfsd.
+      // 111 (TCP/UDP) – rpcbind/portmapper.
+      // 20048 (TCP/UDP) – rpc.mountd.
+      // 32765 (TCP/UDP) – rpc.statd.
+      // 32766 (TCP/UDP) – lockd (NLM).
+
+      // Configure export and permissions:
+      // /etc/exports
+
+      // Configure ports:
+      // /etc/nfs.conf
+
+      fs.writeFileSync(
+        `/etc/nfs.conf`,
+        `
+[mountd]
+port = 20048
+
+[statd]
+port = 32765
+outgoing-port = 32765
+
+[nfsd]
+rdma=y
+rdma-port=20049
+
+[lockd]
+port = 32766
+udp-port = 32766
+        `,
+        'utf8',
       );
-      shellExec(`sudo -i -u postgres createdb -O "$DB_PG_MAAS_USER" "$DB_PG_MAAS_NAME"`);
+
+      // Client users have read-only access to resources and are identified as anonymous on the server.
+      // /share ip-client(ro,all_squash)
+
+      // Client users can modify resources and keep their UID on the server. Only root is identified as anonymous.
+      // /share ip-client(rw)
+
+      // Users on client workstation 1 can modify resources, while those on client workstation 2 have read-only access.
+      // UIDs are kept on the server, and only root is identified as anonymous.
+      // /share ip-client1(rw) ip-client2(ro)
+
+      // Client1 users can modify resources. Their UID is changed to 1001 and their GID to 100 on the server.
+      // /share ip-client(rw,all_squash,anonuid=1001,anongid=100)
+
+      // sudo dnf install nfs-utils
+      // sudo systemctl enable --now rpcbind    // RPC map service
+      // sudo systemctl enable --now nfs-server // nfs domains nfsd
+
+      // Update exports:
+      // shellExec(`sudo exportfs -a -r`);
+      // shellExec(`sudo exportfs -v`);
+
+      // Active nfs
+      shellExec(`sudo exportfs -s`);
+
+      shellExec(`sudo exportfs -rav`);
+
+      // Rocky enable virt_use_nfs
+      // sudo setsebool -P virt_use_nfs 1
+
+      // Disable share:
+      // sudo exportfs -u <client-ip>:/nfs-export/rpi4mb
+
+      // Nfs client:
+      // mount -t nfs <server-ip>:/server-mnt /mnt
+      // umount /mnt
+
+      shellExec(`sudo systemctl restart nfs-server`);
+      break;
+    }
+    case 'open-virtual-root': {
+      dotenv.config({ path: `${getUnderpostRootPath()}/.env`, override: true });
+      const IP_ADDRESS = getLocalIPv4Address();
+      const architecture = process.argv[3];
+      const host = process.argv[4];
+      const nftRootPath = `/nfs-export/${host}`;
+      shellExec(`dnf install -y debootstrap`);
+      switch (architecture) {
+        case 'arm64':
+          shellExec(`sudo podman run --rm --privileged multiarch/qemu-user-static --reset -p yes`);
+
+          break;
+
+        default:
+          break;
+      }
+
+      shellExec(`sudo modprobe binfmt_misc`);
+      shellExec(`sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc`);
+
+      if (process.argv.includes('build')) {
+        let cmd;
+        switch (host) {
+          case 'rpi4mb':
+            shellExec(`sudo rm -rf ${nftRootPath}/*`);
+            shellExec(`sudo chown -R root:root ${nftRootPath}`);
+            cmd = [
+              `sudo debootstrap`,
+              `--arch=arm64`,
+              `--variant=minbase`,
+              `--foreign`, // arm64 on amd64
+              `noble`,
+              nftRootPath,
+              `http://ports.ubuntu.com/ubuntu-ports/`,
+            ];
+            break;
+
+          default:
+            break;
+        }
+        shellExec(cmd.join(' '));
+
+        shellExec(`sudo podman create --name extract multiarch/qemu-user-static`);
+        shellExec(`podman ps -a`);
+        shellExec(`sudo podman cp extract:/usr/bin/qemu-aarch64-static ${nftRootPath}/usr/bin/`);
+        shellExec(`sudo podman rm extract`);
+        shellExec(`podman ps -a`);
+
+        switch (host) {
+          case 'rpi4mb':
+            shellExec(`file ${nftRootPath}/bin/bash`); // expected: ELF 64-bit LSB pie executable, ARM aarch64 …
+            break;
+
+          default:
+            break;
+        }
+
+        shellExec(`sudo chroot ${nftRootPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
+/debootstrap/debootstrap --second-stage
+EOF`);
+      }
+      if (process.argv.includes('mount')) {
+        shellExec(`sudo mount --bind /proc ${nftRootPath}/proc`);
+        shellExec(`sudo mount --bind /sys  ${nftRootPath}/sys`);
+        shellExec(`sudo mount --rbind /dev  ${nftRootPath}/dev`);
+      }
+
+      if (process.argv.includes('build')) {
+        switch (host) {
+          case 'rpi4mb':
+            // https://www.cyberciti.biz/faq/understanding-etcgroup-file/
+            // https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/4/html/introduction_to_system_administration/s3-acctspgrps-group#s3-acctspgrps-group
+            // shellExec(`grep '^root:'  ${nftRootPath}/etc/group`); // check group root
+            // shellExec(`echo 'root:x:0:' | sudo tee -a  ${nftRootPath}/etc/group`); // set group root
+            // console.log(`echo 'root:x:0:0:root:/root:/bin/bash' > ${nftRootPath}/nfs-export/rpi4mb/etc/passwd`);
+
+            // apt install -y linux-lowlatency-hwe-22.04
+            // chown -R ${process.env.MAAS_COMMISSION_USERNAME}:${process.env.MAAS_COMMISSION_USERNAME} /home/${
+            //   process.env.MAAS_COMMISSION_USERNAME
+            // }/.ssh
+            // echo '${process.env.MAAS_COMMISSION_USERNAME}:${process.env.MAAS_COMMISSION_PASSWORD}' | chpasswd
+
+            shellExec(`sudo chroot ${nftRootPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
+apt update
+apt install -y sudo
+apt install -y openssh-server
+mkdir -p /home/${process.env.MAAS_COMMISSION_USERNAME}/.ssh
+useradd -m -s /bin/bash -G sudo ${process.env.MAAS_COMMISSION_USERNAME}
+echo "${process.env.MAAS_COMMISSION_USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ubuntu-nopasswd
+chmod 0440 /etc/sudoers.d/ubuntu-nopasswd
+echo '${fs.readFileSync(`/home/dd/engine/engine-private/deploy/dd.pub`, 'utf8')}' >> /home/${
+              process.env.MAAS_COMMISSION_USERNAME
+            }/.ssh/authorized_keys
+chown -R ${process.env.MAAS_COMMISSION_USERNAME}:${process.env.MAAS_COMMISSION_USERNAME} /home/${
+              process.env.MAAS_COMMISSION_USERNAME
+            }
+chmod 700 /home/${process.env.MAAS_COMMISSION_USERNAME}/.ssh
+chmod 600 /home/${process.env.MAAS_COMMISSION_USERNAME}/.ssh/authorized_keys
+systemctl enable ssh
+apt install -y ntp
+ln -sf /lib/systemd/systemd /sbin/init
+apt install -y linux-generic-hwe-24.04
+apt install -y cloud-init
+mkdir -p /var/lib/cloud
+chown -R root:root /var/lib/cloud
+chmod -R 0755 /var/lib/cloud
+cat <<EOF_MAAS_CFG > /etc/cloud/cloud.cfg.d/90_maas.cfg
+datasource_list: [ MAAS ]
+datasource:
+  MAAS:
+    metadata_url: http://${IP_ADDRESS}:5248/MAAS/metadata
+users:
+  - name: ${process.env.MAAS_ADMIN_USERNAME}
+    ssh_authorized_keys:
+      - ${fs.readFileSync(`/home/dd/engine/engine-private/deploy/dd.pub`, 'utf8')}
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    groups: sudo
+    shell: /bin/bash
+  - name: ${process.env.MAAS_COMMISSION_USERNAME}
+    ssh_authorized_keys:
+      - ${fs.readFileSync(`/home/dd/engine/engine-private/deploy/dd.pub`, 'utf8')}
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    groups: sudo
+    shell: /bin/bash
+packages:
+  - git
+  - htop
+  - ufw
+package_update: true
+runcmd:
+  - ufw enable
+  - ufw allow ssh
+resize_rootfs: False
+growpart:
+  mode: off
+EOF_MAAS_CFG
+mkdir -p /etc/network
+cat <<EOF_NET > /etc/network/interfaces
+auto lo
+iface lo inet loopback
+
+auto ${process.env.RPI4_INTERFACE_NAME}
+iface ${process.env.RPI4_INTERFACE_NAME} inet dhcp
+EOF_NET
+EOF`);
+            shellExec(`sudo tee -a ${nftRootPath}/etc/hosts <<EOF
+127.0.0.1 ${process.env.MAAS_COMMISSION_USERNAME}
+${IP_ADDRESS} ${process.env.MAAS_COMMISSION_USERNAME}
+127.0.0.1 ${process.env.MAAS_COMMISSION_HOSTNAME}
+${IP_ADDRESS} ${process.env.MAAS_COMMISSION_HOSTNAME}
+EOF`);
+
+            // check sudo
+            // sudo -u ${process.env.MAAS_ADMIN_USERNAME} whoami
+            // sudo whoami
+            break;
+
+          default:
+            break;
+        }
+      }
+
+      shellExec(`sudo chroot ${nftRootPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
+apt update
+EOF`);
+
+      break;
+    }
+
+    case 'close-virtual-root': {
+      const architecture = process.argv[3];
+      const host = process.argv[4];
+      const nftRootPath = `/nfs-export/${host}`;
+      shellExec(`sudo umount ${nftRootPath}/proc`);
+      shellExec(`sudo umount ${nftRootPath}/sys`);
+      shellExec(`sudo umount ${nftRootPath}/dev`);
+      break;
+    }
+
+    case 'mount': {
+      const mounts = shellExec(`mount`).split(`\n`);
+      console.table(
+        mounts
+          .filter((l) => l.trim())
+          .map(
+            (o) => (
+              (o = o.split(' ')),
+              {
+                path: o[2],
+                type: o[4],
+                permissions: o[5],
+              }
+            ),
+          ),
+      );
+      break;
+    }
+
+    case 'create-ports': {
+      const cmd = [];
+      const ipaddr = getLocalIPv4Address();
+      for (const port of ['5240']) {
+        const name = 'maas';
+        cmd.push(`${name}:${port}-${port}:${ipaddr}`);
+      }
+      pbcopy(`node engine-private/r create-port ${cmd}`);
+      break;
+    }
+
+    case 'maas-ports': {
+      // Configure firewall:
+
+      // systemctl stop firewalld
+      // systemctl mask firewalld
+
+      // ufw disable
+      // ufw enable
+
+      // sudo snap install ufw
+      // const ports = ['80', '443', '22', '3000-3100'];
+      const ports = [
+        '43',
+        '53',
+        '60',
+        '66',
+        '67',
+        '69',
+        '4011',
+        '111',
+        '2049',
+        '20048',
+        '20049',
+        '32765',
+        '32766',
+        '5248',
+        '5240',
+      ];
+      for (const port of ports) {
+        shellExec(`ufw allow ${port}/tcp`);
+        shellExec(`ufw allow ${port}/udp`);
+      }
+
+      break;
+    }
+
+    case 'rpi4': {
+      // Rpi4 Run Bootloader:
+
+      // 1) create boot.conf
+
+      // 2) Run lite RPiOs from rpi-imager
+      // with boot.conf files in root disk path
+
+      // 3) cd /boot/firmware && sudo rpi-eeprom-config --apply boot.conf
+
+      // 4) sudo reboot
+
+      // 5) check: 'vcgencmd bootloader_version'
+      // 6) check: 'vcgencmd bootloader_config'
+
+      // 7) shutdown and restart without sd card
+
+      // sudo apt update
+      // sudo apt install git
+
+      break;
+    }
+
+    case 'blue': {
+      // lsusb | grep blue -i
+      // rfkill list
+      // sudo service bluetooth start
+      // bluetoothctl show
+      // sudo rfkill unblock bluetooth
+      // dmesg | grep -i bluetooth
+      // journalctl -u bluetooth -f
+      // sudo dnf update bluez bluez-libs bluez-utils
+      // sudo rmmod btusb
+      // sudo modprobe btusb
       break;
     }
 
