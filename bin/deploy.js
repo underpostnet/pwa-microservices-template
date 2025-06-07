@@ -38,14 +38,93 @@ import { JSONweb } from '../src/server/client-formatted.js';
 import { Xampp } from '../src/runtime/xampp/Xampp.js';
 import { ejs } from '../src/server/json-schema.js';
 import { buildCliDoc } from '../src/cli/index.js';
-import { getLocalIPv4Address } from '../src/server/dns.js';
+import { getLocalIPv4Address, ip } from '../src/server/dns.js';
 import { Downloader } from '../src/server/downloader.js';
+import colors from 'colors';
+
+colors.enable();
 
 const logger = loggerFactory(import.meta);
 
 logger.info('argv', process.argv);
 
 const [exe, dir, operator] = process.argv;
+
+const updateVirtualRoot = async ({ nfsHostPath, IP_ADDRESS, ipaddr }) => {
+  const steps = [
+    `apt update`,
+    `ln -sf /lib/systemd/systemd /sbin/init`,
+    // `sudo apt install linux-modules-extra-6.8.0-31-generic`,
+    `apt install -y sudo`,
+    `apt install -y ntp`,
+    `apt install -y openssh-server`,
+    `apt install -y iptables`,
+    `update-alternatives --set iptables /usr/sbin/iptables-legacy`,
+    `update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy`,
+    `apt install -y locales`,
+    `apt install -y cloud-init`,
+    `mkdir -p /var/lib/cloud`,
+    `chown -R root:root /var/lib/cloud`,
+    `chmod -R 0755 /var/lib/cloud`,
+    `mkdir -p /home/root/.ssh`,
+    `echo '${fs.readFileSync(
+      `/home/dd/engine/engine-private/deploy/id_rsa.pub`,
+      'utf8',
+    )}' >> /home/root/.ssh/authorized_keys`,
+    `chmod 700 /home/root/.ssh`,
+    `chmod 600 /home/root/.ssh/authorized_keys`,
+    `systemctl enable ssh`,
+    `systemctl enable ntp`,
+    `apt install -y linux-generic-hwe-24.04`,
+    `modprobe ip_tables`,
+    `cat <<EOF_MAAS_CFG > /etc/cloud/cloud.cfg.d/90_maas.cfg
+datasource_list: [ MAAS ]
+datasource:
+  MAAS:
+    metadata_url: http://${IP_ADDRESS}:5248/MAAS/metadata
+users:
+  - name: ${process.env.MAAS_ADMIN_USERNAME}
+    ssh_authorized_keys:
+      - ${fs.readFileSync(`/home/dd/engine/engine-private/deploy/id_rsa.pub`, 'utf8')}
+    sudo: "ALL=(ALL) NOPASSWD:ALL"
+    groups: sudo
+    shell: /bin/bash
+packages:
+  - git
+  - htop
+  - ufw
+# package_update: true
+runcmd:
+  - ufw enable
+  - ufw allow ssh
+resize_rootfs: false
+growpart:
+  mode: off
+network:
+  version: 2
+  ethernets:
+    ${process.env.RPI4_INTERFACE_NAME}:
+        dhcp4: true
+        addresses:
+          - ${ipaddr}/24
+EOF_MAAS_CFG`,
+  ];
+
+  shellExec(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
+${steps
+  .map(
+    (s, i) => `echo "step ${i + 1}/${steps.length}: ${s.split('\n')[0]}"
+${s}
+`,
+  )
+  .join(``)}
+EOF`);
+
+  shellExec(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
+echo "nameserver ${process.env.MAAS_DNS}" | tee /etc/resolv.conf > /dev/null
+apt update
+EOF`);
+};
 
 try {
   switch (operator) {
@@ -868,157 +947,123 @@ ${shellExec(`git log | grep Author: | sort -u`, { stdout: true }).split(`\n`).jo
 
       break;
     }
-    case 'ssh-export-server-keys': {
-      fs.copyFile('/etc/ssh/ssh_host_rsa_key', './engine-private/deploy/ssh_host_rsa_key');
-      fs.copyFile('/etc/ssh/ssh_host_rsa_key.pub', './engine-private/deploy/ssh_host_rsa_key.pub');
-      break;
-    }
-    case 'ssh-import-server-keys': {
-      fs.copyFile('./engine-private/deploy/ssh_host_rsa_key', '/etc/ssh/ssh_host_rsa_key');
-      fs.copyFile('./engine-private/deploy/ssh_host_rsa_key.pub', '/etc/ssh/ssh_host_rsa_key.pub');
-      break;
-    }
-    case 'ssh-import-client-keys': {
-      const host = process.argv[3];
-      shellExec(
-        `node bin/deploy set-ssh-keys ./engine-private/deploy/ssh_host_rsa_key ${host ? ` ${host}` : ``} ${
-          process.argv.includes('clean') ? 'clean' : ''
-        }`,
-      );
-      break;
-    }
-    case 'ssh-keys': {
-      // create ssh keys
-      const sshAccount = process.argv[3]; // [sudo username]@[host/ip]
-      const destPath = process.argv[4];
-      // shellExec(`ssh-keygen -t ed25519 -C "${sshAccount}" -f ${destPath}`);
-      if (fs.existsSync(destPath)) {
-        fs.removeSync(destPath);
-        fs.removeSync(destPath + '.pub');
-      }
-      shellExec(`ssh-keygen -t rsa -b 4096 -C "${sshAccount}" -f ${destPath}`);
-      // add host to keyscan
-      // shellExec(`ssh-keyscan -t rsa ${sshAccount.split(`@`)[1]} >> ~/.ssh/known_hosts`);
-      break;
-    }
-
-    case 'set-ssh-keys': {
-      const files = ['authorized_keys', 'id_rsa', 'id_rsa.pub', 'known_hosts ', 'known_hosts.old'];
-
-      // > write
-      // >> append
-
-      // /root/.ssh/id_rsa
-      // /root/.ssh/id_rsa.pub
-      if (process.argv.includes('clean')) {
-        for (const file of files) {
-          if (fs.existsSync(`/root/.ssh/${file}`)) {
-            logger.info('remove', `/root/.ssh/${file}`);
-            fs.removeSync(`/root/.ssh/${file}`);
-          }
-          fs.writeFileSync(`/root/.ssh/${file}`, '', 'utf8');
-        }
-        shellExec('eval `ssh-agent -s`' + ` && ssh-add -D`);
-      }
-
-      const destPath = process.argv[3];
-      const sshAuthKeyTarget = '/root/.ssh/authorized_keys';
-      if (!fs.existsSync(sshAuthKeyTarget)) shellExec(`touch ${sshAuthKeyTarget}`);
-      shellExec(`cat ${destPath}.pub > ${sshAuthKeyTarget}`);
-      shellExec(`cat ${destPath} >> ${sshAuthKeyTarget}`);
-
-      if (!fs.existsSync('/root/.ssh/id_rsa')) shellExec(`touch ${'/root/.ssh/id_rsa'}`);
-      shellExec(`cat ${destPath} > ${'/root/.ssh/id_rsa'}`);
-
-      if (!fs.existsSync('/root/.ssh/id_rsa.pub')) shellExec(`touch ${'/root/.ssh/id_rsa.pub'}`);
-      shellExec(`cat ${destPath}.pub > ${'/root/.ssh/id_rsa.pub'}`);
-
-      shellExec(`chmod 700 /root/.ssh/`);
-      for (const file of files) {
-        shellExec(`chmod 600 /root/.ssh/${file}`);
-      }
-      const host = process.argv[4];
-      // add key
-      shellExec('eval `ssh-agent -s`' + ' && ssh-add /root/.ssh/id_rsa' + ' && ssh-add -l');
-      if (host) shellExec(`ssh-keyscan -H ${host} >> ~/.ssh/known_hosts`);
-      shellExec(`sudo systemctl enable ssh`);
-      shellExec(`sudo systemctl restart ssh`);
-      shellExec(`sudo systemctl status ssh`);
-
-      break;
-    }
 
     case 'ssh': {
-      if (process.argv.includes('rocky')) {
+      const host = process.argv[3] ?? `root@${await ip.public.ipv4()}`;
+      const domain = host.split('@')[1];
+      const user = 'root'; // host.split('@')[0];
+      const password = process.argv[4] ?? '';
+      const port = 22;
+
+      const setUpSSH = () => {
+        // Required port forwarding mapping
+        // ssh	TCP	2222	22	<local-server-ip>
+        // ssh	UDP	2222	22	<local-server-ip>
+
+        // Remote connect via public key
+        // ssh -i <key-path> <user>@<host>:2222
+
+        shellExec(`cat ./engine-private/deploy/id_rsa.pub > ~/.ssh/authorized_keys`);
+
+        // local trust on first use validator
+        // check ~/.ssh/known_hosts
+
+        // shellExec(`sudo sed -i -e "s@#PasswordAuthentication yes@PasswordAuthentication no@g" /etc/ssh/sshd_config`);
+        // shellExec(`sudo sed -i -e "s@#UsePAM no@UsePAM yes@g" /etc/ssh/sshd_config`);
+
+        // Include /etc/ssh/sshd_config.d/*.conf
+        // sudo tee /etc/ssh/sshd_config.d/99-custom.conf
+        shellExec(`sudo tee /etc/ssh/sshd_config <<EOF
+PasswordAuthentication	no
+ChallengeResponseAuthentication	yes
+UsePAM	yes
+PubkeyAuthentication	Yes
+RSAAuthentication	Yes
+PermitRootLogin	Yes
+X11Forwarding	yes
+X11DisplayOffset	10
+LoginGraceTime	120
+StrictModes	yes
+SyslogFacility	AUTH
+LogLevel	INFO
+#HostKey	/etc/ssh/ssh_host_ecdsa_key
+HostKey	/etc/ssh/ssh_host_ed25519_key
+#HostKey	/etc/ssh/ssh_host_rsa_key
+AuthorizedKeysFile	~/.ssh/authorized_keys
+Subsystem	sftp	/usr/libexec/openssh/sftp-server
+ListenAddress 0.0.0.0
+ListenAddress ::
+ListenAddress ${domain}
+ListenAddress ${domain}:22
+EOF`);
+
+        shellExec(`sudo chmod 700 ~/.ssh/`);
+        shellExec(`sudo chmod 600 ~/.ssh/authorized_keys`);
+        shellExec(`sudo chmod 644 ~/.ssh/known_hosts`);
+        shellExec(`chown -R ${user}:${user} ~/.ssh`);
+
+        shellExec(`ufw allow ${port}/tcp`);
+        shellExec(`ufw allow ${port}/udp`);
+        shellExec(`ufw allow ssh`);
+        shellExec(`ufw allow from 192.168.0.0/16 to any port 22`);
+
+        // active ssh-agent
+        shellExec('eval `ssh-agent -s`' + ` && ssh-add ~/.ssh/id_rsa` + ` && ssh-add -l`);
+        // remove all
+        // shellExec(`ssh-add -D`);
+        // remove single
+        // shellExec(`ssh-add -d ~/.ssh/id_rsa`);
+
+        // shellExec(`echo "@${host.split(`@`)[1]} * $(cat ~/.ssh/id_rsa.pub)" > ~/.ssh/known_hosts`);
+        shellExec('eval `ssh-agent -s`' + `&& ssh-keyscan -H -t ed25519 ${host.split(`@`)[1]} > ~/.ssh/known_hosts`);
+        // shellExec(`sudo echo "" > ~/.ssh/known_hosts`);
+
+        // ssh-copy-id -i ~/.ssh/id_rsa.pub -p <port_number> <username>@<host>
+        shellExec(`ssh-copy-id -i ~/.ssh/id_rsa.pub -p ${port} ${host}`);
+        // debug:
+        // shellExec(`ssh -vvv ${host}`);
+
+        shellExec(`sudo cp ./engine-private/deploy/id_rsa ~/.ssh/id_rsa`);
+        shellExec(`sudo cp ./engine-private/deploy/id_rsa.pub ~/.ssh/id_rsa.pub`);
+
+        shellExec(`sudo echo "" > /etc/ssh/ssh_host_ecdsa_key`);
+        shellExec(`sudo cp ./engine-private/deploy/id_rsa /etc/ssh/ssh_host_ed25519_key`);
+        shellExec(`sudo echo "" > /etc/ssh/ssh_host_rsa_key`);
+
+        shellExec(`sudo echo "" > /etc/ssh/ssh_host_ecdsa_key.pub`);
+        shellExec(`sudo cp ./engine-private/deploy/id_rsa.pub /etc/ssh/ssh_host_ed25519_key.pub`);
+        shellExec(`sudo echo "" > /etc/ssh/ssh_host_rsa_key.pub`);
+
         shellExec(`sudo systemctl enable sshd`);
+        shellExec(`sudo systemctl restart sshd`);
 
-        shellExec(`sudo systemctl start sshd`);
+        const status = shellExec(`sudo systemctl status sshd`, { silent: true, stdout: true });
+        console.log(
+          status.match('running') ? status.replaceAll(`running`, `running`.green) : `ssh service not running`.red,
+        );
+      };
 
-        shellExec(`sudo systemctl status sshd`);
-
-        shellExec(`sudo ss -lt`);
-      } else {
-        if (!process.argv.includes('server')) {
-          shellExec(`sudo apt update`);
-          shellExec(`sudo apt install openssh-server -y`);
-          shellExec(`sudo apt install ssh-askpass`);
-        }
-        shellExec(`sudo systemctl enable ssh`);
-        shellExec(`sudo systemctl restart ssh`);
-        shellExec(`sudo systemctl status ssh`);
+      if (process.argv.includes('import')) {
+        setUpSSH();
+        break;
       }
-      // sudo service ssh restart
-      shellExec(`ip a`);
 
-      // adduser newuser
-      // usermod -aG sudo newuser
+      shellExec(`sudo rm -rf ./id_rsa`);
+      shellExec(`sudo rm -rf ./id_rsa.pub`);
 
-      // ssh -i '/path/to/keyfile' username@server
+      if (process.argv.includes('legacy'))
+        shellExec(`ssh-keygen -t rsa -b 4096 -f id_rsa -N "${password}" -q -C "${host}"`);
+      else shellExec(`ssh-keygen -t ed25519 -f id_rsa -N "${password}" -q -C "${host}"`);
 
-      // ssh-keygen -t ed25519 -C "your_email@example.com" -f $HOME/.ssh/id_rsa
+      shellExec(`sudo cp ./id_rsa ~/.ssh/id_rsa`);
+      shellExec(`sudo cp ./id_rsa.pub ~/.ssh/id_rsa.pub`);
 
-      // legacy: ssh-keygen -t rsa -b 4096 -C "your_email@example.com" -f $HOME/.ssh/id_rsa
+      shellExec(`sudo cp ./id_rsa ./engine-private/deploy/id_rsa`);
+      shellExec(`sudo cp ./id_rsa.pub ./engine-private/deploy/id_rsa.pub`);
 
-      // vi .ssh/authorized_keys
-      // chmod 700 .ssh
-      // chmod 600 authorized_keys
-
-      // cat id_rsa.pub > .ssh/authorized_keys
-
-      // add public key to authorized keys
-      // cat .ssh/id_ed25519.pub | ssh [sudo username]@[host/ip] 'cat >> .ssh/authorized_keys'
-
-      // 2. Open /etc/ssh/sshd_config file
-      // nano /etc/ssh/sshd_config
-
-      // 3. add example code to last line of file
-      // Match User newuser
-      //   PasswordAuthentication yes
-
-      // ssh [sudo username]@[host/ip]
-      // open port 22
-
-      // init ssh agent service
-      // eval `ssh-agent -s`
-
-      // list keys
-      // ssh-add -l
-
-      // add key
-      // ssh-add /root/.ssh/id_rsa
-
-      // remove
-      // ssh-add -d /path/to/private/key
-
-      // remove all
-      // ssh-add -D
-
-      // sshpass -p ${{ secrets.PSWD }} ssh -o StrictHostKeyChecking=no -p 22 ${{ secrets.USER}}@${{ secrets.VPS_IP }} 'cd /home/adam && ./deploy.sh'
-
-      // copies the public key of your default identity (use -i identity_file for other identities) to the remote host.
-      // ssh-copy-id user@hostname.example.com
-      // ssh-copy-id "user@hostname.example.com -p <port-number>"
-
+      shellExec(`sudo rm -rf ./id_rsa`);
+      shellExec(`sudo rm -rf ./id_rsa.pub`);
+      setUpSSH();
       break;
     }
 
@@ -1173,7 +1218,7 @@ ${shellExec(`git log | grep Author: | sort -u`, { stdout: true }).split(`\n`).jo
       const IP_ADDRESS = getLocalIPv4Address();
       const serverip = IP_ADDRESS;
       const tftpRoot = process.env.TFTP_ROOT;
-      const ipaddr = '192.168.1.83';
+      const ipaddr = process.env.RPI4_IP;
       const netmask = process.env.NETMASK;
       const gatewayip = process.env.GATEWAY_IP;
 
@@ -1242,13 +1287,20 @@ ${shellExec(`git log | grep Author: | sort -u`, { stdout: true }).split(`\n`).jo
         console.table(machines);
         process.exit(0);
       }
+
+      // TODO: - Disable maas proxy (egress forwarding to public dns)
+      //       - Configure maas dns forwarding ${process.env.MAAS_DNS}
+      //       - Enable DNSSEC validation of upstream zones: Automatic (use default root key)
+
       if (process.argv.includes('clear')) {
         for (const machine of machines) {
           shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine delete ${machine.system_id}`);
         }
         // machines = [];
         shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} discoveries clear all=true`);
-        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} discoveries scan force=true`);
+        if (process.argv.includes('force')) {
+          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} discoveries scan force=true`);
+        }
         process.exit(0);
       }
       if (process.argv.includes('grub-arm64')) {
@@ -1350,8 +1402,8 @@ ${shellExec(`git log | grep Author: | sort -u`, { stdout: true }).split(`\n`).jo
       // sudo systemctl restart nfs-server
       // Check mounts: showmount -e <server-ip>
       // Check nfs ports: rpcinfo -p
-      // sudo chown -R root:root /nfs-export/rpi4mb
-      // sudo chmod 755 /nfs-export/rpi4mb
+      // sudo chown -R root:root ${process.env.NFS_EXPORT_PATH}/rpi4mb
+      // sudo chmod 755 ${process.env.NFS_EXPORT_PATH}/rpi4mb
 
       // tftp server
       // sudo chown -R root:root /var/snap/maas/common/maas/tftp_root/rpi4mb
@@ -1433,7 +1485,7 @@ ${shellExec(`git log | grep Author: | sort -u`, { stdout: true }).split(`\n`).jo
           name = resource.name;
           architecture = resource.architecture;
           resource = resources.find((o) => o.name === name && o.architecture === architecture);
-          nfsServerRootPath = `/nfs-export/rpi4mb`;
+          nfsServerRootPath = `${process.env.NFS_EXPORT_PATH}/rpi4mb`;
           // ,anonuid=1001,anongid=100
           // etcExports = `${nfsServerRootPath} *(rw,all_squash,sync,no_root_squash,insecure)`;
           etcExports = `${nfsServerRootPath} 192.168.1.0/24(${[
@@ -1491,8 +1543,8 @@ ${shellExec(`git log | grep Author: | sort -u`, { stdout: true }).split(`\n`).jo
             // `dwc_otg.lpm_enable=0`,
             // `elevator=deadline`,
             `root=/dev/nfs`,
-            `nfsroot=${serverip}:/nfs-export/rpi4mb,${mountOptions}`,
-            // `nfsroot=${serverip}:/nfs-export/rpi4mb`,
+            `nfsroot=${serverip}:${process.env.NFS_EXPORT_PATH}/rpi4mb,${mountOptions}`,
+            // `nfsroot=${serverip}:${process.env.NFS_EXPORT_PATH}/rpi4mb`,
             `ip=${ipaddr}:${serverip}:${gatewayip}:${netmask}:${nfsHost}:${interfaceName}:static`,
             `rootfstype=nfs`,
             `rw`,
@@ -1502,6 +1554,7 @@ ${shellExec(`git log | grep Author: | sort -u`, { stdout: true }).split(`\n`).jo
             // 'boot=casper',
             // 'ro',
             'netboot=nfs',
+            `cloud-config-url=/dev/null`,
             // 'ip=dhcp',
             // 'ip=dfcp',
             // 'autoinstall',
@@ -1531,7 +1584,7 @@ BOOT_ORDER=0x21`;
         default:
           break;
       }
-      shellExec(`sudo chmod 755 /nfs-export/${nfsHost}`);
+      shellExec(`sudo chmod 755 ${process.env.NFS_EXPORT_PATH}/${nfsHost}`);
 
       shellExec(`sudo rm -rf ${tftpRoot}${tftpSubDir}`);
       shellExec(`sudo cp -a ${firmwarePath} ${tftpRoot}${tftpSubDir}`);
@@ -1654,12 +1707,12 @@ BOOT_ORDER=0x21`;
         shellExec(`sudo chown -R root:root ${tftpRoot}`);
         shellExec(`sudo sudo chmod 755 ${tftpRoot}`);
       }
-      for (const machine of machines) {
-        // shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine delete ${machine.system_id}`);
-        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine commission ${machine.system_id}`, {
-          silent: true,
-        });
-      }
+      // for (const machine of machines) {
+      //   // shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine delete ${machine.system_id}`);
+      //   shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine commission ${machine.system_id}`, {
+      //     silent: true,
+      //   });
+      // }
       // machines = [];
 
       const monitor = async () => {
@@ -1697,10 +1750,10 @@ BOOT_ORDER=0x21`;
           const machine = {
             architecture: architecture.match('amd') ? 'amd64/generic' : 'arm64/generic',
             mac_address: discovery.mac_address,
-            hostname:
-              discovery.hostname ?? discovery.mac_organization ?? discovery.domain ?? discovery.ip.match(ipaddr)
-                ? nfsHost
-                : `unknown-${s4()}`,
+            hostname: discovery.hostname ?? discovery.mac_organization ?? discovery.domain ?? `generic-host-${s4()}`,
+            // discovery.ip.match(ipaddr)
+            //   ? nfsHost
+            //   : `unknown-${s4()}`,
             // description: '',
             // https://maas.io/docs/reference-power-drivers
             power_type: 'manual', // manual
@@ -1738,6 +1791,8 @@ BOOT_ORDER=0x21`;
         monitor();
       };
       // shellExec(`node bin/deploy open-virtual-root ${architecture.match('amd') ? 'amd64' : 'arm64'} ${nfsHost}`);
+      machines = [];
+      shellExec(`node bin/deploy maas clear`);
       monitor();
       break;
     }
@@ -1745,7 +1800,7 @@ BOOT_ORDER=0x21`;
     case 'nfs': {
       // Daemon RPC  NFSv3. ports:
 
-      // 2049 (TCP/UDP) – puerto estándar de nfsd.
+      // 2049 (TCP/UDP) – nfsd standard port.
       // 111 (TCP/UDP) – rpcbind/portmapper.
       // 20048 (TCP/UDP) – rpc.mountd.
       // 32765 (TCP/UDP) – rpc.statd.
@@ -1808,7 +1863,7 @@ udp-port = 32766
       // sudo setsebool -P virt_use_nfs 1
 
       // Disable share:
-      // sudo exportfs -u <client-ip>:/nfs-export/rpi4mb
+      // sudo exportfs -u <client-ip>:${process.env.NFS_EXPORT_PATH}/rpi4mb
 
       // Nfs client:
       // mount -t nfs <server-ip>:/server-mnt /mnt
@@ -1817,13 +1872,31 @@ udp-port = 32766
       shellExec(`sudo systemctl restart nfs-server`);
       break;
     }
+    case 'update-virtual-root': {
+      dotenv.config({ path: `${getUnderpostRootPath()}/.env`, override: true });
+      const IP_ADDRESS = getLocalIPv4Address();
+      const architecture = process.argv[3];
+      const host = process.argv[4];
+      const nfsHostPath = `${process.env.NFS_EXPORT_PATH}/${host}`;
+      const ipaddr = process.env.RPI4_IP;
+      await updateVirtualRoot({
+        IP_ADDRESS,
+        architecture,
+        host,
+        nfsHostPath,
+        ipaddr,
+      });
+      break;
+    }
     case 'open-virtual-root': {
       dotenv.config({ path: `${getUnderpostRootPath()}/.env`, override: true });
       const IP_ADDRESS = getLocalIPv4Address();
       const architecture = process.argv[3];
       const host = process.argv[4];
-      const nftRootPath = `/nfs-export/${host}`;
-      shellExec(`dnf install -y debootstrap`);
+      const nfsHostPath = `${process.env.NFS_EXPORT_PATH}/${host}`;
+      shellExec(`sudo dnf install -y iptables-legacy`);
+      shellExec(`sudo dnf install -y debootstrap`);
+      shellExec(`sudo dnf install kernel-modules-extra-$(uname -r)`);
       switch (architecture) {
         case 'arm64':
           shellExec(`sudo podman run --rm --privileged multiarch/qemu-user-static --reset -p yes`);
@@ -1838,18 +1911,20 @@ udp-port = 32766
       shellExec(`sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc`);
 
       if (process.argv.includes('build')) {
+        // shellExec(`depmod -a`);
+        shellExec(`mkdir -p ${nfsHostPath}`);
         let cmd;
         switch (host) {
           case 'rpi4mb':
-            shellExec(`sudo rm -rf ${nftRootPath}/*`);
-            shellExec(`sudo chown -R root:root ${nftRootPath}`);
+            shellExec(`sudo rm -rf ${nfsHostPath}/*`);
+            shellExec(`sudo chown -R root:root ${nfsHostPath}`);
             cmd = [
               `sudo debootstrap`,
               `--arch=arm64`,
               `--variant=minbase`,
               `--foreign`, // arm64 on amd64
               `noble`,
-              nftRootPath,
+              nfsHostPath,
               `http://ports.ubuntu.com/ubuntu-ports/`,
             ];
             break;
@@ -1861,127 +1936,51 @@ udp-port = 32766
 
         shellExec(`sudo podman create --name extract multiarch/qemu-user-static`);
         shellExec(`podman ps -a`);
-        shellExec(`sudo podman cp extract:/usr/bin/qemu-aarch64-static ${nftRootPath}/usr/bin/`);
+        shellExec(`sudo podman cp extract:/usr/bin/qemu-aarch64-static ${nfsHostPath}/usr/bin/`);
         shellExec(`sudo podman rm extract`);
         shellExec(`podman ps -a`);
 
         switch (host) {
           case 'rpi4mb':
-            shellExec(`file ${nftRootPath}/bin/bash`); // expected: ELF 64-bit LSB pie executable, ARM aarch64 …
+            shellExec(`file ${nfsHostPath}/bin/bash`); // expected: ELF 64-bit LSB pie executable, ARM aarch64 …
             break;
 
           default:
             break;
         }
 
-        shellExec(`sudo chroot ${nftRootPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
+        shellExec(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
 /debootstrap/debootstrap --second-stage
 EOF`);
       }
       if (process.argv.includes('mount')) {
-        shellExec(`sudo mount --bind /proc ${nftRootPath}/proc`);
-        shellExec(`sudo mount --bind /sys  ${nftRootPath}/sys`);
-        shellExec(`sudo mount --rbind /dev  ${nftRootPath}/dev`);
+        shellExec(`sudo mount --bind /proc ${nfsHostPath}/proc`);
+        shellExec(`sudo mount --bind /sys  ${nfsHostPath}/sys`);
+        shellExec(`sudo mount --rbind /dev  ${nfsHostPath}/dev`);
       }
 
       if (process.argv.includes('build')) {
         switch (host) {
           case 'rpi4mb':
-            // https://www.cyberciti.biz/faq/understanding-etcgroup-file/
-            // https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/4/html/introduction_to_system_administration/s3-acctspgrps-group#s3-acctspgrps-group
-            // shellExec(`grep '^root:'  ${nftRootPath}/etc/group`); // check group root
-            // shellExec(`echo 'root:x:0:' | sudo tee -a  ${nftRootPath}/etc/group`); // set group root
-            // console.log(`echo 'root:x:0:0:root:/root:/bin/bash' > ${nftRootPath}/nfs-export/rpi4mb/etc/passwd`);
+            const ipaddr = process.env.RPI4_IP;
 
-            // apt install -y linux-lowlatency-hwe-22.04
-            // chown -R ${process.env.MAAS_COMMISSION_USERNAME}:${process.env.MAAS_COMMISSION_USERNAME} /home/${
-            //   process.env.MAAS_COMMISSION_USERNAME
-            // }/.ssh
-            // echo '${process.env.MAAS_COMMISSION_USERNAME}:${process.env.MAAS_COMMISSION_PASSWORD}' | chpasswd
+            await updateVirtualRoot({
+              IP_ADDRESS,
+              architecture,
+              host,
+              nfsHostPath,
+              ipaddr,
+            });
 
-            shellExec(`sudo chroot ${nftRootPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
-apt update
-apt install -y sudo
-apt install -y openssh-server
-mkdir -p /home/${process.env.MAAS_COMMISSION_USERNAME}/.ssh
-useradd -m -s /bin/bash -G sudo ${process.env.MAAS_COMMISSION_USERNAME}
-echo "${process.env.MAAS_COMMISSION_USERNAME} ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ubuntu-nopasswd
-chmod 0440 /etc/sudoers.d/ubuntu-nopasswd
-echo '${fs.readFileSync(`/home/dd/engine/engine-private/deploy/dd.pub`, 'utf8')}' >> /home/${
-              process.env.MAAS_COMMISSION_USERNAME
-            }/.ssh/authorized_keys
-chown -R ${process.env.MAAS_COMMISSION_USERNAME}:${process.env.MAAS_COMMISSION_USERNAME} /home/${
-              process.env.MAAS_COMMISSION_USERNAME
-            }
-chmod 700 /home/${process.env.MAAS_COMMISSION_USERNAME}/.ssh
-chmod 600 /home/${process.env.MAAS_COMMISSION_USERNAME}/.ssh/authorized_keys
-systemctl enable ssh
-apt install -y ntp
-ln -sf /lib/systemd/systemd /sbin/init
-apt install -y linux-generic-hwe-24.04
-apt install -y cloud-init
-mkdir -p /var/lib/cloud
-chown -R root:root /var/lib/cloud
-chmod -R 0755 /var/lib/cloud
-cat <<EOF_MAAS_CFG > /etc/cloud/cloud.cfg.d/90_maas.cfg
-datasource_list: [ MAAS ]
-datasource:
-  MAAS:
-    metadata_url: http://${IP_ADDRESS}:5248/MAAS/metadata
-users:
-  - name: ${process.env.MAAS_ADMIN_USERNAME}
-    ssh_authorized_keys:
-      - ${fs.readFileSync(`/home/dd/engine/engine-private/deploy/dd.pub`, 'utf8')}
-    sudo: "ALL=(ALL) NOPASSWD:ALL"
-    groups: sudo
-    shell: /bin/bash
-  - name: ${process.env.MAAS_COMMISSION_USERNAME}
-    ssh_authorized_keys:
-      - ${fs.readFileSync(`/home/dd/engine/engine-private/deploy/dd.pub`, 'utf8')}
-    sudo: "ALL=(ALL) NOPASSWD:ALL"
-    groups: sudo
-    shell: /bin/bash
-packages:
-  - git
-  - htop
-  - ufw
-package_update: true
-runcmd:
-  - ufw enable
-  - ufw allow ssh
-resize_rootfs: False
-growpart:
-  mode: off
-EOF_MAAS_CFG
-mkdir -p /etc/network
-cat <<EOF_NET > /etc/network/interfaces
-auto lo
-iface lo inet loopback
-
-auto ${process.env.RPI4_INTERFACE_NAME}
-iface ${process.env.RPI4_INTERFACE_NAME} inet dhcp
-EOF_NET
-EOF`);
-            shellExec(`sudo tee -a ${nftRootPath}/etc/hosts <<EOF
-127.0.0.1 ${process.env.MAAS_COMMISSION_USERNAME}
-${IP_ADDRESS} ${process.env.MAAS_COMMISSION_USERNAME}
-127.0.0.1 ${process.env.MAAS_COMMISSION_HOSTNAME}
-${IP_ADDRESS} ${process.env.MAAS_COMMISSION_HOSTNAME}
-EOF`);
-
-            // check sudo
-            // sudo -u ${process.env.MAAS_ADMIN_USERNAME} whoami
-            // sudo whoami
             break;
 
           default:
             break;
         }
       }
-
-      shellExec(`sudo chroot ${nftRootPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
-apt update
-EOF`);
+      // if (process.argv.includes('mount')) {
+      //   shellExec(`sudo mount --bind /lib/modules ${nfsHostPath}/lib/modules`);
+      // }
 
       break;
     }
@@ -1989,10 +1988,11 @@ EOF`);
     case 'close-virtual-root': {
       const architecture = process.argv[3];
       const host = process.argv[4];
-      const nftRootPath = `/nfs-export/${host}`;
-      shellExec(`sudo umount ${nftRootPath}/proc`);
-      shellExec(`sudo umount ${nftRootPath}/sys`);
-      shellExec(`sudo umount ${nftRootPath}/dev`);
+      const nfsHostPath = `${process.env.NFS_EXPORT_PATH}/${host}`;
+      shellExec(`sudo umount ${nfsHostPath}/proc`);
+      shellExec(`sudo umount ${nfsHostPath}/sys`);
+      shellExec(`sudo umount ${nfsHostPath}/dev`);
+      // shellExec(`sudo umount ${nfsHostPath}/lib/modules`);
       break;
     }
 
@@ -2058,6 +2058,29 @@ EOF`);
         shellExec(`ufw allow ${port}/tcp`);
         shellExec(`ufw allow ${port}/udp`);
       }
+
+      shellExec(`sudo systemctl mask firewalld`);
+
+      break;
+    }
+
+    case 'iptables': {
+      shellExec(`sudo systemctl enable nftables`);
+      shellExec(`sudo systemctl restart nftables`);
+
+      shellExec(`sudo tee /etc/nftables.conf <<EOF
+table inet filter {
+  chain input {
+    type filter hook input priority 0;
+    policy drop;
+    tcp dport 22 accept
+  }
+}
+EOF`);
+      shellExec(`sudo nft -f /etc/nftables.conf`);
+
+      // sudo systemctl stop nftables
+      // sudo systemctl disable nftables
 
       break;
     }
