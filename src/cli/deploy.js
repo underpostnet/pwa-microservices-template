@@ -256,6 +256,19 @@ kubectl scale statefulsets <stateful-set-name> --replicas=<new-replicas>
 kubectl get pods -w
 kubectl patch statefulset service-valkey --type='json' -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/image", "value":"valkey/valkey:latest"}]'
 kubectl patch statefulset service-valkey -p '{"spec":{"template":{"spec":{"containers":[{"name":"service-valkey","imagePullPolicy":"Never"}]}}}}'
+kubectl logs -f <pod-name>
+kubectl describe pod <pod-name>
+kubectl exec -it <pod-name> -- bash
+kubectl exec -it <pod-name> -- sh
+docker exec -it kind-control-plane bash
+curl -4 -v google.com
+kubectl taint nodes <node-name> node-role.kubernetes.io/control-plane:NoSchedule-
+kubectl run test-pod --image=busybox:latest --restart=Never -- /bin/sh -c "while true; do sleep 30; done;"
+kubectl run test-pod --image=alpine/curl:latest --restart=Never -- sh -c "sleep infinity"
+kubectl get ippools -o yaml
+kubectl get node <node-name> -o jsonpath='{.spec.podCIDR}'
+kubectl patch ippool default-ipv4-ippool --type='json' -p='[{"op": "replace", "path": "/spec/cidr", "value": "10.244.0.0/16"}]'
+kubectl patch ippool default-ipv4-ippool --type='json' -p='[{"op": "replace", "path": "/spec/cidr", "value": "192.168.0.0/24"}]'
 `);
       if (deployList === 'dd' && fs.existsSync(`./engine-private/deploy/dd.router`))
         deployList = fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8');

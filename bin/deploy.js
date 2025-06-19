@@ -1197,6 +1197,17 @@ EOF`);
       break;
     }
 
+    case 'pg-stop': {
+      shellExec(`sudo systemctl stop postgresql-14`);
+      shellExec(`sudo systemctl disable postgresql-14`);
+      break;
+    }
+    case 'pg-start': {
+      shellExec(`sudo systemctl enable postgresql-14`);
+      shellExec(`sudo systemctl restart postgresql-14`);
+      break;
+    }
+
     case 'pg-list-db': {
       shellExec(`sudo -i -u postgres psql -c "\\l"`);
       break;
@@ -1210,6 +1221,11 @@ EOF`);
     case 'pg-drop-db': {
       shellExec(`sudo -i -u postgres psql -c "DROP DATABASE ${process.argv[3]} WITH (FORCE)"`);
       shellExec(`sudo -i -u postgres psql -c "DROP USER ${process.argv[4]}"`);
+      break;
+    }
+
+    case 'maas-stop': {
+      shellExec(`sudo snap stop maas`);
       break;
     }
 
@@ -1415,6 +1431,8 @@ EOF`);
       // Check firewall-cmd
       // firewall-cmd --permanent --add-service=rpc-bind
       // firewall-cmd --reload
+      // systemctl disable firewalld
+      // sudo firewall-cmd --permanent --add-port=10259/tcp --zone=public
 
       // Image extension transform (.img.xz to .tar.gz):
       // tar -cvzf image-name.tar.gz image-name.img.xz
@@ -2124,6 +2142,120 @@ EOF`);
 
     default:
       break;
+
+    case 'fastapi': {
+      // https://github.com/NonsoEchendu/full-stack-fastapi-project
+      // https://github.com/fastapi/full-stack-fastapi-template
+      const path = `../full-stack-fastapi-template`;
+      if (process.argv.includes('env')) {
+        const password = fs.readFileSync(`/home/dd/engine/engine-private/postgresql-password`, 'utf8');
+
+        fs.writeFileSync(
+          `${path}/.env`,
+          fs
+            .readFileSync(`${path}/.env`, 'utf8')
+            .replace(`FIRST_SUPERUSER=admin@example.com`, `FIRST_SUPERUSER=development@underpost.net`)
+            .replace(`FIRST_SUPERUSER_PASSWORD=changethis`, `FIRST_SUPERUSER_PASSWORD=${password}`)
+            .replace(`SECRET_KEY=changethis`, `SECRET_KEY=${password}`)
+            .replace(`POSTGRES_DB=app`, `POSTGRES_DB=postgresdb`)
+            .replace(`POSTGRES_USER=postgres`, `POSTGRES_USER=admin`)
+            .replace(`POSTGRES_PASSWORD=changethis`, `POSTGRES_PASSWORD=${password}`),
+          'utf8',
+        );
+        fs.writeFileSync(
+          `${path}/backend/app/core/db.py`,
+          fs
+            .readFileSync(`${path}/backend/app/core/db.py`, 'utf8')
+            .replace(`    # from sqlmodel import SQLModel`, `    from sqlmodel import SQLModel`)
+            .replace(`   # SQLModel.metadata.create_all(engine)`, `   SQLModel.metadata.create_all(engine)`),
+
+          'utf8',
+        );
+      }
+      if (process.argv.includes('build-back')) {
+        const imageName = `fastapi-backend:latest`;
+        shellExec(`sudo podman pull docker.io/library/python:3.10`);
+        shellExec(`sudo podman pull ghcr.io/astral-sh/uv:0.5.11`);
+        shellExec(`sudo rm -rf ${path}/${imageName.replace(':', '_')}.tar`);
+        const args = [
+          `node bin dockerfile-image-build --path ${path}/backend/`,
+          `--image-name=${imageName} --image-path=${path}`,
+          `--podman-save --kind-load --no-cache`,
+        ];
+        shellExec(args.join(' '));
+      }
+      if (process.argv.includes('build-front')) {
+        const imageName = `fastapi-frontend:latest`;
+        shellExec(`sudo podman pull docker.io/library/node:20`);
+        shellExec(`sudo podman pull docker.io/library/nginx:1`);
+        shellExec(`sudo rm -rf ${path}/${imageName.replace(':', '_')}.tar`);
+        const args = [
+          `node bin dockerfile-image-build --path ${path}/frontend/`,
+          `--image-name=${imageName} --image-path=${path}`,
+          `--podman-save --kind-load --no-cache`,
+        ];
+        shellExec(args.join(' '));
+      }
+      if (process.argv.includes('build') || process.argv.includes('secret')) {
+        {
+          const secretSelector = `fastapi-postgres-credentials`;
+          shellExec(`sudo kubectl delete secret ${secretSelector}`);
+          shellExec(
+            `sudo kubectl create secret generic ${secretSelector}` +
+              ` --from-literal=POSTGRES_DB=postgresdb` +
+              ` --from-literal=POSTGRES_USER=admin` +
+              ` --from-file=POSTGRES_PASSWORD=/home/dd/engine/engine-private/postgresql-password`,
+          );
+        }
+        {
+          const secretSelector = `fastapi-backend-config-secret`;
+          shellExec(`sudo kubectl delete secret ${secretSelector}`);
+          shellExec(
+            `sudo kubectl create secret generic ${secretSelector}` +
+              ` --from-file=SECRET_KEY=/home/dd/engine/engine-private/postgresql-password` +
+              ` --from-literal=FIRST_SUPERUSER=development@underpost.net` +
+              ` --from-file=FIRST_SUPERUSER_PASSWORD=/home/dd/engine/engine-private/postgresql-password`,
+          );
+        }
+      }
+      if (process.argv.includes('run-back')) {
+        shellExec(`sudo kubectl apply -f ./manifests/deployment/fastapi/backend-deployment.yml`);
+        shellExec(`sudo kubectl apply -f ./manifests/deployment/fastapi/backend-service.yml`);
+      }
+      if (process.argv.includes('run-front')) {
+        shellExec(`sudo kubectl apply -f ./manifests/deployment/fastapi/frontend-deployment.yml`);
+        shellExec(`sudo kubectl apply -f ./manifests/deployment/fastapi/frontend-service.yml`);
+      }
+      break;
+    }
+
+    case 'conda': {
+      shellExec(
+        `export PATH="/root/miniconda3/bin:$PATH" && conda init && conda config --set auto_activate_base false`,
+      );
+      shellExec(`conda env list`);
+      break;
+    }
+
+    case 'kafka': {
+      // https://medium.com/@martin.hodges/deploying-kafka-on-a-kind-kubernetes-cluster-for-development-and-testing-purposes-ed7adefe03cb
+      const imageName = `doughgle/kafka-kraft`;
+      shellExec(`docker pull ${imageName}`);
+      shellExec(`kind load docker-image ${imageName}`);
+      shellExec(`kubectl create namespace kafka`);
+      shellExec(`kubectl apply -f ./manifests/deployment/kafka/deployment.yaml`);
+      // kubectl logs kafka-0 -n kafka | grep STARTED
+      // kubectl logs kafka-1 -n kafka | grep STARTED
+      // kubectl logs kafka-2 -n kafka | grep STARTED
+
+      // kafka-topics.sh --create --topic my-topic --bootstrap-server kafka-svc:9092
+      // kafka-topics.sh --list --topic my-topic --bootstrap-server kafka-svc:9092
+      // kafka-topics.sh --delete --topic my-topic --bootstrap-server kafka-svc:9092
+
+      // kafka-console-producer.sh --bootstrap-server kafka-svc:9092 --topic my-topic
+      // kafka-console-consumer.sh --bootstrap-server kafka-svc:9092 --topic my-topic
+      break;
+    }
   }
 } catch (error) {
   logger.error(error, error.stack);
