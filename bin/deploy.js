@@ -816,8 +816,8 @@ try {
       shellExec(`node bin/deploy update-dependencies`);
       shellExec(`auto-changelog`);
       shellExec(`node bin/build dd`);
-      shellExec(`node bin deploy --build-manifest --sync --info-router --replicas 1 dd`);
-      shellExec(`node bin deploy --build-manifest --sync --info-router --replicas 1 dd production`);
+      shellExec(`node bin deploy --kubeadm --build-manifest --sync --info-router --replicas 1 dd`);
+      shellExec(`node bin deploy --kubeadm --build-manifest --sync --info-router --replicas 1 dd production`);
       break;
     }
 
@@ -1000,6 +1000,8 @@ EOF`);
         shellExec(`sudo chmod 700 ~/.ssh/`);
         shellExec(`sudo chmod 600 ~/.ssh/authorized_keys`);
         shellExec(`sudo chmod 644 ~/.ssh/known_hosts`);
+        shellExec(`sudo chmod 600 ~/.ssh/id_rsa`);
+        shellExec(`sudo chmod 600 /etc/ssh/ssh_host_ed25519_key`);
         shellExec(`chown -R ${user}:${user} ~/.ssh`);
 
         shellExec(`ufw allow ${port}/tcp`);
@@ -2218,7 +2220,7 @@ EOF`);
         const args = [
           `node bin dockerfile-image-build --path ${path}/backend/`,
           `--image-name=${imageName} --image-path=${path}`,
-          `--podman-save --kind-load --no-cache`,
+          `--podman-save --${process.argv.includes('kubeadm') ? 'kubeadm' : 'kind'}-load --no-cache`,
         ];
         shellExec(args.join(' '));
       }
@@ -2230,7 +2232,7 @@ EOF`);
         const args = [
           `node bin dockerfile-image-build --path ${path}/frontend/`,
           `--image-name=${imageName} --image-path=${path}`,
-          `--podman-save --kind-load --no-cache`,
+          `--podman-save --${process.argv.includes('kubeadm') ? 'kubeadm' : 'kind'}-load --no-cache`,
         ];
         shellExec(args.join(' '));
       }
@@ -2268,6 +2270,10 @@ EOF`);
     }
 
     case 'conda': {
+      // set -e
+      // ENV_NAME="${1:-cuda_env}"
+      // eval "$(conda shell.bash hook)"
+      // conda activate "${ENV_NAME}"
       shellExec(
         `export PATH="/root/miniconda3/bin:$PATH" && conda init && conda config --set auto_activate_base false`,
       );
@@ -2279,7 +2285,10 @@ EOF`);
       // https://medium.com/@martin.hodges/deploying-kafka-on-a-kind-kubernetes-cluster-for-development-and-testing-purposes-ed7adefe03cb
       const imageName = `doughgle/kafka-kraft`;
       shellExec(`docker pull ${imageName}`);
-      shellExec(`kind load docker-image ${imageName}`);
+      if (!process.argv.includes('kubeadm'))
+        shellExec(
+          `${process.argv.includes('kubeadm') ? `ctr -n k8s.io images import` : `kind load docker-image`} ${imageName}`,
+        );
       shellExec(`kubectl create namespace kafka`);
       shellExec(`kubectl apply -f ./manifests/deployment/kafka/deployment.yaml`);
       // kubectl logs kafka-0 -n kafka | grep STARTED
@@ -2292,6 +2301,108 @@ EOF`);
 
       // kafka-console-producer.sh --bootstrap-server kafka-svc:9092 --topic my-topic
       // kafka-console-consumer.sh --bootstrap-server kafka-svc:9092 --topic my-topic
+      break;
+    }
+
+    case 'nvidia-gpu-operator': {
+      // https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html
+      shellExec(`curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | \
+sudo tee /etc/yum.repos.d/nvidia-container-toolkit.repo`);
+
+      const NVIDIA_CONTAINER_TOOLKIT_VERSION = '1.17.8-1';
+
+      shellExec(`sudo dnf install -y \
+nvidia-container-toolkit-${NVIDIA_CONTAINER_TOOLKIT_VERSION} \
+nvidia-container-toolkit-base-${NVIDIA_CONTAINER_TOOLKIT_VERSION} \
+libnvidia-container-tools-${NVIDIA_CONTAINER_TOOLKIT_VERSION} \
+libnvidia-container1-${NVIDIA_CONTAINER_TOOLKIT_VERSION}`);
+
+      // https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/latest/getting-started.html
+
+      shellExec(`kubectl create ns gpu-operator`);
+      shellExec(`kubectl label --overwrite ns gpu-operator pod-security.kubernetes.io/enforce=privileged`);
+
+      shellExec(`helm repo add nvidia https://helm.ngc.nvidia.com/nvidia \
+    && helm repo update`);
+
+      //       shellExec(`helm install --wait --generate-name \
+      // -n gpu-operator --create-namespace \
+      // nvidia/gpu-operator \
+      // --version=v25.3.1 \
+      // --set toolkit.version=v1.16.1-ubi8`);
+
+      shellExec(`helm install --wait --generate-name \
+-n gpu-operator --create-namespace \
+nvidia/gpu-operator \
+--version=v25.3.1 \
+--set driver.enabled=false \
+--set driver.repository=nvcr.io/nvidia \
+--set cdi.enabled=true \
+--set cdi.default=true \
+--set toolkit.env[0].name=CONTAINERD_CONFIG \
+--set toolkit.env[0].value=/etc/containerd/config.toml \
+--set toolkit.env[1].name=CONTAINERD_SOCKET \
+--set toolkit.env[1].value=/run/containerd/containerd.sock \
+--set toolkit.env[2].name=CONTAINERD_RUNTIME_CLASS \
+--set toolkit.env[2].value=nvidia \
+--set-string toolkit.env[3].name=CONTAINERD_SET_AS_DEFAULT \
+--set-string toolkit.env[3].value=true`);
+
+      // Check gpu drivers
+      shellExec(
+        `break;kubectl get nodes -o json | jq '.items[].metadata.labels | keys | any(startswith("feature.node.kubernetes.io"))'`,
+      );
+      break;
+    }
+
+    case 'kubeflow-spark-operator': {
+      // Use case:
+      // Data Processing Pipelines: Used for ETL tasks where Spark can handle large data volumes efficiently.
+      // Real-Time Analytics: Processing data from streaming sources (e.g., Kafka) for real-time analytics.
+      // Machine Learning and Data Science: Training and deploying machine learning models at scale using Spark MLlib.
+
+      shellExec(`helm repo add spark-operator https://kubeflow.github.io/spark-operator`);
+      shellExec(`helm install spark-operator spark-operator/spark-operator \
+  --namespace spark-operator \
+  --create-namespace \
+  --wait`);
+
+      const image = `spark:3.5.3`;
+      shellExec(`sudo docker pull ${image}`);
+      if (!process.argv.includes('kubeadm'))
+        shellExec(
+          `sudo ${
+            process.argv.includes('kubeadm') ? `ctr -n k8s.io images import` : `kind load docker-image`
+          } ${image}`,
+        );
+      shellExec(`kubectl apply -f ./manifests/deployment/spark/spark-pi-py.yaml`);
+
+      // Check the status of the Spark job:
+      // kubectl get sparkapplications.sparkoperator.k8s.io -n default
+      // kubectl get sparkapplication
+
+      // Check case log:
+      // kubectl logs -f spark-pi-python-driver
+      // kubectl logs -f spark-pi-python-driver | grep Pi
+      // kubectl describe sparkapplication spark-gpu-test
+
+      // Uninstall:
+      // kubectl delete sparkapplications.sparkoperator.k8s.io spark-pi-python -n default
+      // helm delete spark-operator -n spark-operator
+
+      // Gpu plugins:
+      // https://github.com/NVIDIA/spark-rapids
+      // RAPIDS Accelerator
+      break;
+    }
+
+    case 'sbt': {
+      // https://www.scala-sbt.org/1.x/docs/Installing-sbt-on-Linux.html
+
+      // sudo rm -f /etc/yum.repos.d/bintray-rpm.repo
+      // curl -L https://www.scala-sbt.org/sbt-rpm.repo > sbt-rpm.repo
+      // sudo mv sbt-rpm.repo /etc/yum.repos.d/
+      // sudo yum install sbt
       break;
     }
   }

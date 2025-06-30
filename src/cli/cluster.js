@@ -3,6 +3,7 @@ import { loggerFactory } from '../server/logger.js';
 import { shellExec } from '../server/process.js';
 import UnderpostDeploy from './deploy.js';
 import UnderpostTest from './test.js';
+import os from 'os';
 
 const logger = loggerFactory(import.meta);
 
@@ -27,10 +28,12 @@ class UnderpostCluster {
         infoCapacityPod: false,
         istio: false,
         pullImage: false,
+        dedicatedGpu: false,
+        kubeadm: false,
       },
     ) {
       // sudo dnf update
-      // 1) Install kind, kubeadm, docker, podman
+      // 1) Install kind, kubeadm, docker, podman, helm
       // 2) Check kubectl, kubelet, containerd.io
       // 3) Install Nvidia drivers from Rocky Linux docs
       // 4) Install LXD with MAAS from Rocky Linux docs
@@ -38,7 +41,8 @@ class UnderpostCluster {
       const npmRoot = getNpmRootPath();
       const underpostRoot = options?.dev === true ? '.' : `${npmRoot}/underpost`;
       if (options.infoCapacityPod === true) return logger.info('', UnderpostDeploy.API.resourcesFactory());
-      if (options.infoCapacity === true) return logger.info('', UnderpostCluster.API.getResourcesCapacity());
+      if (options.infoCapacity === true)
+        return logger.info('', UnderpostCluster.API.getResourcesCapacity(options.kubeadm));
       if (options.reset === true) return await UnderpostCluster.API.reset();
       if (options.listPods === true) return console.table(UnderpostDeploy.API.get(podName ?? undefined));
 
@@ -66,6 +70,7 @@ class UnderpostCluster {
         shellExec(
           `kubectl get pods --all-namespaces -o=jsonpath='{range .items[*]}{"\\n"}{.metadata.name}{":\\t"}{range .spec.containers[*]}{.image}{", "}{end}{end}'`,
         );
+        shellExec(`sudo crictl images`);
         console.log();
         logger.info('contour -------------------------------------------------');
         for (const _k of ['Cluster', 'HTTPProxy', 'ClusterIssuer', 'Certificate']) {
@@ -106,23 +111,44 @@ class UnderpostCluster {
           // shellExec(
           //   `wget https://raw.githubusercontent.com/projectcalico/calico/v3.25.0/manifests/custom-resources.yaml`,
           // );
-          shellExec(`sudo kubectl apply -f ./manifests/kubeadm-calico-config.yaml`);
+          shellExec(`sudo kubectl apply -f ${underpostRoot}/manifests/kubeadm-calico-config.yaml`);
           shellExec(`sudo systemctl restart containerd`);
+          const nodeName = os.hostname();
+          shellExec(`kubectl taint nodes ${nodeName} node-role.kubernetes.io/control-plane:NoSchedule-`);
         } else {
           shellExec(`sudo systemctl restart containerd`);
-          shellExec(
-            `cd ${underpostRoot}/manifests && kind create cluster --config kind-config${
-              options?.dev === true ? '-dev' : ''
-            }.yaml`,
-          );
+          if (options.full === true || options.dedicatedGpu === true) {
+            // https://kubernetes.io/docs/tasks/manage-gpus/scheduling-gpus/
+            shellExec(`cd ${underpostRoot}/manifests && kind create cluster --config kind-config-cuda.yaml`);
+          } else {
+            shellExec(
+              `cd ${underpostRoot}/manifests && kind create cluster --config kind-config${
+                options?.dev === true ? '-dev' : ''
+              }.yaml`,
+            );
+          }
           shellExec(`sudo chown $(id -u):$(id -g) $HOME/.kube/config**`);
         }
       } else logger.warn('Cluster already initialized');
 
+      // shellExec(`sudo kubectl apply -f ${underpostRoot}/manifests/kubelet-config.yaml`);
+
+      if (options.full === true || options.dedicatedGpu === true) {
+        shellExec(`node ${underpostRoot}/bin/deploy nvidia-gpu-operator`);
+        shellExec(
+          `node ${underpostRoot}/bin/deploy kubeflow-spark-operator${options.kubeadm === true ? ' kubeadm' : ''}`,
+        );
+      }
+
       if (options.full === true || options.valkey === true) {
         if (options.pullImage === true) {
           shellExec(`docker pull valkey/valkey`);
-          shellExec(`sudo kind load docker-image valkey/valkey:latest`);
+          if (!options.kubeadm)
+            shellExec(
+              `sudo ${
+                options.kubeadm === true ? `ctr -n k8s.io images import` : `kind load docker-image`
+              } valkey/valkey:latest`,
+            );
         }
         shellExec(`kubectl delete statefulset service-valkey`);
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/valkey`);
@@ -140,17 +166,27 @@ class UnderpostCluster {
       if (options.full === true || options.postgresql === true) {
         if (options.pullImage === true) {
           shellExec(`docker pull postgres:latest`);
-          shellExec(`sudo kind load docker-image postgres:latest`);
+          if (!options.kubeadm)
+            shellExec(
+              `sudo ${
+                options.kubeadm === true ? `ctr -n k8s.io images import` : `kind load docker-image`
+              } docker-image postgres:latest`,
+            );
         }
         shellExec(
           `sudo kubectl create secret generic postgres-secret --from-file=password=/home/dd/engine/engine-private/postgresql-password`,
         );
-        shellExec(`kubectl apply -k ./manifests/postgresql`);
+        shellExec(`kubectl apply -k ${underpostRoot}/manifests/postgresql`);
       }
       if (options.mongodb4 === true) {
         if (options.pullImage === true) {
           shellExec(`docker pull mongo:4.4`);
-          shellExec(`sudo kind load docker-image mongo:4.4`);
+          if (!options.kubeadm)
+            shellExec(
+              `sudo ${
+                options.kubeadm === true ? `ctr -n k8s.io images import` : `kind load docker-image`
+              } docker-image mongo:4.4`,
+            );
         }
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/mongodb-4.4`);
 
@@ -342,10 +378,10 @@ class UnderpostCluster {
 
       // Step 14: Remove the 'kind' Docker network.
       // This cleans up any network bridges or configurations specifically created by Kind.
-      shellExec(`docker network rm kind`);
+      // shellExec(`docker network rm kind`);
     },
 
-    getResourcesCapacity() {
+    getResourcesCapacity(kubeadm = false) {
       const resources = {};
       const info = false
         ? `Capacity:
@@ -362,10 +398,15 @@ Allocatable:
   hugepages-2Mi:      0
   memory:             11914720Ki
   pods: `
-        : shellExec(`kubectl describe node kind-worker | grep -E '(Allocatable:|Capacity:)' -A 6`, {
-            stdout: true,
-            silent: true,
-          });
+        : shellExec(
+            `kubectl describe node ${
+              kubeadm === true ? os.hostname() : 'kind-worker'
+            } | grep -E '(Allocatable:|Capacity:)' -A 6`,
+            {
+              stdout: true,
+              silent: true,
+            },
+          );
       info
         .split('Allocatable:')[1]
         .split('\n')
