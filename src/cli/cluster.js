@@ -15,6 +15,7 @@ class UnderpostCluster {
         mongodb: false,
         mongodb4: false,
         mariadb: false,
+        mysql: false,
         postgresql: false,
         valkey: false,
         full: false,
@@ -83,10 +84,14 @@ class UnderpostCluster {
         shellExec(`sudo kubectl api-resources`);
         return;
       }
+      const alrreadyCluster =
+        UnderpostDeploy.API.get('kube-apiserver-kind-control-plane')[0] ||
+        UnderpostDeploy.API.get('calico-kube-controllers')[0];
 
       if (
-        (!options.istio && !UnderpostDeploy.API.get('kube-apiserver-kind-control-plane')[0]) ||
-        (options.istio === true && !UnderpostDeploy.API.get('calico-kube-controllers')[0])
+        !alrreadyCluster &&
+        ((!options.istio && !UnderpostDeploy.API.get('kube-apiserver-kind-control-plane')[0]) ||
+          (options.istio === true && !UnderpostDeploy.API.get('calico-kube-controllers')[0]))
       ) {
         shellExec(`sudo setenforce 0`);
         shellExec(`sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config`);
@@ -101,7 +106,9 @@ class UnderpostCluster {
         shellExec(`sudo swapoff -a; sudo sed -i '/swap/d' /etc/fstab`);
         if (options.istio === true) {
           shellExec(`sysctl net.bridge.bridge-nf-call-iptables=1`);
-          shellExec(`sudo kubeadm init --pod-network-cidr=192.168.0.0/16`);
+          shellExec(
+            `sudo kubeadm init --pod-network-cidr=192.168.0.0/16 --control-plane-endpoint="${os.hostname()}:6443"`,
+          );
           shellExec(`sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config`);
           shellExec(`sudo chown $(id -u):$(id -g) $HOME/.kube/config**`);
           // https://docs.tigera.io/calico/latest/getting-started/kubernetes/quickstart
@@ -115,6 +122,9 @@ class UnderpostCluster {
           shellExec(`sudo systemctl restart containerd`);
           const nodeName = os.hostname();
           shellExec(`kubectl taint nodes ${nodeName} node-role.kubernetes.io/control-plane:NoSchedule-`);
+          shellExec(
+            `kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml`,
+          );
         } else {
           shellExec(`sudo systemctl restart containerd`);
           if (options.full === true || options.dedicatedGpu === true) {
@@ -142,7 +152,8 @@ class UnderpostCluster {
 
       if (options.full === true || options.valkey === true) {
         if (options.pullImage === true) {
-          shellExec(`docker pull valkey/valkey`);
+          shellExec(`docker pull valkey/valkey:latest`);
+          shellExec(`sudo podman pull valkey/valkey:latest`);
           if (!options.kubeadm)
             shellExec(
               `sudo ${
@@ -157,11 +168,17 @@ class UnderpostCluster {
         shellExec(
           `sudo kubectl create secret generic mariadb-secret --from-file=username=/home/dd/engine/engine-private/mariadb-username --from-file=password=/home/dd/engine/engine-private/mariadb-password`,
         );
-        shellExec(
-          `sudo kubectl create secret generic github-secret --from-literal=GITHUB_TOKEN=${process.env.GITHUB_TOKEN}`,
-        );
         shellExec(`kubectl delete statefulset mariadb-statefulset`);
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/mariadb`);
+      }
+      if (options.full === true || options.mysql === true) {
+        shellExec(
+          `sudo kubectl create secret generic mysql-secret --from-file=username=/home/dd/engine/engine-private/mysql-username --from-file=password=/home/dd/engine/engine-private/mysql-password`,
+        );
+        shellExec(`sudo mkdir -p /mnt/data`);
+        shellExec(`sudo chmod 777 /mnt/data`);
+        shellExec(`sudo chown -R root:root /mnt/data`);
+        shellExec(`kubectl apply -k ${underpostRoot}/manifests/mysql`);
       }
       if (options.full === true || options.postgresql === true) {
         if (options.pullImage === true) {
@@ -210,6 +227,9 @@ class UnderpostCluster {
 
         // await UnderpostTest.API.statusMonitor('mongodb-1');
       } else if (options.full === true || options.mongodb === true) {
+        if (options.pullImage === true) {
+          shellExec(`docker pull mongo:latest`);
+        }
         shellExec(
           `sudo kubectl create secret generic mongodb-keyfile --from-file=/home/dd/engine/engine-private/mongodb-keyfile`,
         );
@@ -217,6 +237,8 @@ class UnderpostCluster {
           `sudo kubectl create secret generic mongodb-secret --from-file=username=/home/dd/engine/engine-private/mongodb-username --from-file=password=/home/dd/engine/engine-private/mongodb-password`,
         );
         shellExec(`kubectl delete statefulset mongodb`);
+        if (options.kubeadm === true)
+          shellExec(`kubectl apply -f ${underpostRoot}/manifests/mongodb/storage-class.yaml`);
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/mongodb`);
 
         const successInstance = await UnderpostTest.API.statusMonitor('mongodb-1');
@@ -239,8 +261,12 @@ class UnderpostCluster {
         }
       }
 
-      if (options.full === true || options.contour === true)
+      if (options.full === true || options.contour === true) {
         shellExec(`kubectl apply -f https://projectcontour.io/quickstart/contour.yaml`);
+        if (options.kubeadm === true) {
+          shellExec(`sudo kubectl apply -f ${underpostRoot}/manifests/envoy-service-nodeport.yaml`);
+        }
+      }
 
       if (options.full === true || options.certManager === true) {
         if (!UnderpostDeploy.API.get('cert-manager').find((p) => p.STATUS === 'Running')) {
@@ -379,6 +405,14 @@ class UnderpostCluster {
       // Step 14: Remove the 'kind' Docker network.
       // This cleans up any network bridges or configurations specifically created by Kind.
       // shellExec(`docker network rm kind`);
+
+      // Reset kubelet
+      shellExec(`sudo systemctl stop kubelet`);
+      shellExec(`sudo rm -rf /etc/kubernetes/*`);
+      shellExec(`sudo rm -rf /var/lib/kubelet/*`);
+      shellExec(`sudo rm -rf /etc/cni/net.d/*`);
+      shellExec(`sudo systemctl daemon-reload`);
+      shellExec(`sudo systemctl start kubelet`);
     },
 
     getResourcesCapacity(kubeadm = false) {

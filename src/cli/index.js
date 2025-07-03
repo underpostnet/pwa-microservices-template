@@ -5,6 +5,7 @@ import { getUnderpostRootPath, loadConf } from '../server/conf.js';
 import fs from 'fs-extra';
 import { commitData } from '../client/components/core/CommonJs.js';
 import { shellExec } from '../server/process.js';
+import UnderpostLxd from './lxd.js';
 
 const underpostRootPath = getUnderpostRootPath();
 fs.existsSync(`${underpostRootPath}/.env`)
@@ -92,6 +93,7 @@ program
   .argument('[pod-name]', 'Optional pod name filter')
   .option('--reset', `Delete all clusters and prune all data and caches`)
   .option('--mariadb', 'Init with mariadb statefulset')
+  .option('--mysql', 'Init with mysql statefulset')
   .option('--mongodb', 'Init with mongodb statefulset')
   .option('--postgresql', 'Init with postgresql statefulset')
   .option('--mongodb4', 'Init with mongodb 4.4 service')
@@ -114,7 +116,7 @@ program
 
 program
   .command('deploy')
-  .argument('<deploy-list>', 'Deploy id list, e.g. default-a,default-b')
+  .argument('[deploy-list]', 'Deploy id list, e.g. default-a,default-b')
   .argument('[env]', 'Optional environment, for default is development')
   .option('--remove', 'Delete deployments and services')
   .option('--sync', 'Sync deployments env, ports, and replicas')
@@ -130,6 +132,7 @@ program
   .option('--disable-update-deployment', 'Disable update deployments')
   .option('--info-traffic', 'get traffic conf form current resources deployments')
   .option('--kubeadm', 'Enable kubeadm context')
+  .option('--restore-hosts', 'Restore defautl etc hosts')
   .option(
     '--rebuild-clients-bundle',
     'Inside container, rebuild clients bundle, only static public or storage client files',
@@ -169,6 +172,10 @@ program
 
 program
   .command('dockerfile-pull-base-images')
+  .option('--path [path]', 'Dockerfile path')
+  .option('--kind-load', 'Import tar image to Kind cluster')
+  .option('--kubeadm-load', 'Import tar image to Kubeadm cluster')
+  .option('--version', 'Set custom version')
   .description('Pull underpost dockerfile images requirements')
   .action(Underpost.image.dockerfile.pullBaseImages);
 
@@ -258,6 +265,14 @@ program
   .option('--sync', 'Sync with current proxy deployments proxy traffic')
   .description('Monitor health server management')
   .action(Underpost.monitor.callback);
+
+program
+  .command('lxd')
+  .option('--init', 'Init lxd')
+  .option('--reset', 'Reset lxd on current machine')
+  .option('--install', 'Install lxd on current machine')
+  .description('Lxd management')
+  .action(UnderpostLxd.API.callback);
 
 const buildCliDoc = () => {
   let md = shellExec(`node bin help`, { silent: true, stdout: true }).split('Options:');
