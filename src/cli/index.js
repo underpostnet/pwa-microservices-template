@@ -272,6 +272,11 @@ program
   .option('--init', 'Init lxd')
   .option('--reset', 'Reset lxd on current machine')
   .option('--install', 'Install lxd on current machine')
+  .option('--dev', 'Set dev context env')
+  .option('--create-virtual-network', 'Create lxd virtual network bridge')
+  .option('--create-admin-profile', 'Create admin profile for lxd management')
+  .option('--create-vm <vm-id>', 'Create default virtual machines')
+  .option('--init-vm <vm-id>', 'Get init vm underpost script')
   .description('Lxd management')
   .action(UnderpostLxd.API.callback);
 
