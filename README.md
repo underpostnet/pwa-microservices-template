@@ -68,7 +68,7 @@ Run dev client server
 npm run dev
 ```
 <!-- -->
-## underpost ci/cd cli v2.8.781
+## underpost ci/cd cli v2.8.782
 
 ### Usage: `underpost [options] [command]`
   ```

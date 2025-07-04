@@ -1,7 +1,7 @@
 import dotenv from 'dotenv';
 import { Command } from 'commander';
 import Underpost from '../index.js';
-import { getUnderpostRootPath, loadConf } from '../server/conf.js';
+import { getNpmRootPath, getUnderpostRootPath, loadConf } from '../server/conf.js';
 import fs from 'fs-extra';
 import { commitData } from '../client/components/core/CommonJs.js';
 import { shellExec } from '../server/process.js';
@@ -97,7 +97,7 @@ program
   .option('--mongodb', 'Init with mongodb statefulset')
   .option('--postgresql', 'Init with postgresql statefulset')
   .option('--mongodb4', 'Init with mongodb 4.4 service')
-  .option('--istio', 'Init base istio cluster')
+  //  .option('--istio', 'Init base istio service mesh')
   .option('--valkey', 'Init with valkey service')
   .option('--contour', 'Init with project contour base HTTPProxy and envoy')
   .option('--cert-manager', 'Init with letsencrypt-prod ClusterIssuer')
