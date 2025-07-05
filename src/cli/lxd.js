@@ -12,6 +12,8 @@ class UnderpostLxd {
         createVirtualNetwork: false,
         initVm: false,
         createVm: '',
+        infoVm: '',
+        rootSize: '',
       },
     ) {
       const npmRoot = getNpmRootPath();
@@ -41,11 +43,21 @@ ipv6.address=none`);
       }
       if (options.createVm && typeof options.createVm === 'string') {
         pbcopy(
-          `lxc launch images:rockylinux/9 ${options.createVm} --vm --target lxd-node1 -c limits.cpu=2 -c limits.memory=4GB --profile admin-profile`,
+          `lxc launch images:rockylinux/9 ${
+            options.createVm
+          } --vm --target lxd-node1 -c limits.cpu=2 -c limits.memory=4GB --profile admin-profile -d root,size=${
+            options.rootSize && typeof options.rootSize === 'string' ? options.rootSize + 'GiB' : '32GiB'
+          }`,
         );
       }
       if (options.initVm && typeof options.initVm === 'string') {
         pbcopy(`cat ${underpostRoot}/manifests/lxd/underpost-setup.sh | lxc exec ${options.initVm} -- bash`);
+      }
+      if (options.infoVm && typeof options.infoVm === 'string') {
+        shellExec(`lxc config show ${options.infoVm}`);
+        shellExec(`lxc info --show-log ${options.infoVm}`);
+        shellExec(`lxc info ${options.infoVm}`);
+        shellExec(`lxc list ${options.infoVm}`);
       }
     },
   };
