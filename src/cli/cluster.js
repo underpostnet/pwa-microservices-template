@@ -33,8 +33,8 @@ class UnderpostCluster {
         kubeadm: false,
         initHost: false,
         config: false,
-        postConfig: false,
         worker: false,
+        chown: false,
       },
     ) {
       // sudo dnf update
@@ -44,8 +44,8 @@ class UnderpostCluster {
       // 4) Install LXD with MAAS from Rocky Linux docs
       // 5) Install MAAS src from snap
       if (options.initHost === true) return UnderpostCluster.API.initHost();
-      if (options.config) UnderpostCluster.API.config();
-      if (options.postConfig) UnderpostCluster.API.postConfig();
+      if (options.config === true) UnderpostCluster.API.config();
+      if (options.chown === true) UnderpostCluster.API.chown();
       const npmRoot = getNpmRootPath();
       const underpostRoot = options?.dev === true ? '.' : `${npmRoot}/underpost`;
       if (options.infoCapacityPod === true) return logger.info('', UnderpostDeploy.API.resourcesFactory());
@@ -106,6 +106,7 @@ class UnderpostCluster {
           shellExec(
             `sudo kubeadm init --pod-network-cidr=192.168.0.0/16 --control-plane-endpoint="${os.hostname()}:6443"`,
           );
+          UnderpostCluster.API.chown();
           // https://docs.tigera.io/calico/latest/getting-started/kubernetes/quickstart
           shellExec(
             `sudo kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.3/manifests/tigera-operator.yaml`,
@@ -123,6 +124,7 @@ class UnderpostCluster {
           if (options.full === true || options.dedicatedGpu === true) {
             // https://kubernetes.io/docs/tasks/manage-gpus/scheduling-gpus/
             shellExec(`cd ${underpostRoot}/manifests && kind create cluster --config kind-config-cuda.yaml`);
+            UnderpostCluster.API.chown();
           } else {
             shellExec(
               `cd ${underpostRoot}/manifests && kind create cluster --config kind-config${
@@ -131,7 +133,6 @@ class UnderpostCluster {
             );
           }
         }
-        UnderpostCluster.API.postConfig({ postConfig: true });
       } else logger.warn('Cluster already initialized');
 
       // shellExec(`sudo kubectl apply -f ${underpostRoot}/manifests/kubelet-config.yaml`);
@@ -279,13 +280,7 @@ class UnderpostCluster {
       }
     },
 
-    config(options = { postConfig: false }) {
-      if (options.postConfig === true) {
-        shellExec(`mkdir -p ~/.kube`);
-        shellExec(`sudo -E cp -i /etc/kubernetes/admin.conf ~/.kube/config`);
-        shellExec(`sudo -E chown $(id -u):$(id -g) ~/.kube/config`);
-        return;
-      }
+    config() {
       shellExec(`sudo setenforce 0`);
       shellExec(`sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config`);
       shellExec(`sudo systemctl enable --now docker`);
@@ -298,6 +293,11 @@ class UnderpostCluster {
       shellExec(`sudo systemctl daemon-reload`);
       shellExec(`sudo systemctl restart containerd`);
       shellExec(`sysctl net.bridge.bridge-nf-call-iptables=1`);
+    },
+    chown() {
+      shellExec(`mkdir -p ~/.kube`);
+      shellExec(`sudo -E cp -i /etc/kubernetes/admin.conf ~/.kube/config`);
+      shellExec(`sudo -E chown $(id -u):$(id -g) ~/.kube/config`);
     },
     // This function performs a comprehensive reset of Kubernetes and container environments
     // on the host machine. Its primary goal is to clean up cluster components, temporary files,
