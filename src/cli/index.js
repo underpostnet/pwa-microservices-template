@@ -112,6 +112,9 @@ program
   .option('--info-capacity-pod', 'display current machine capacity pod info')
   .option('--pull-image', 'Set optional pull associated image')
   .option('--init-host', 'Install k8s node necessary cli env: kind, kubeadm, docker, podman, helm')
+  .option('--config', 'Set k8s base node config')
+  .option('--post-config', 'Set k8s base node post config')
+  .option('--worker', 'Set worker node context')
   .action(Underpost.cluster.init)
   .description('Manage cluster, for default initialization base kind cluster');
 
@@ -275,6 +278,7 @@ program
   .option('--dev', 'Set dev context env')
   .option('--create-virtual-network', 'Create lxd virtual network bridge')
   .option('--create-admin-profile', 'Create admin profile for lxd management')
+  .option('--control', 'set control node vm context')
   .option('--create-vm <vm-id>', 'Create default virtual machines')
   .option('--init-vm <vm-id>', 'Get init vm underpost script')
   .option('--info-vm <vm-id>', 'Get all info vm')
