@@ -276,14 +276,18 @@ program
   .option('--reset', 'Reset lxd on current machine')
   .option('--install', 'Install lxd on current machine')
   .option('--dev', 'Set dev context env')
-  .option('--create-virtual-network', 'Create lxd virtual network bridge')
-  .option('--create-admin-profile', 'Create admin profile for lxd management')
   .option('--control', 'set control node vm context')
   .option('--worker', 'set worker node context')
   .option('--create-vm <vm-id>', 'Create default virtual machines')
   .option('--init-vm <vm-id>', 'Get init vm underpost script')
   .option('--info-vm <vm-id>', 'Get all info vm')
+  .option('--start-vm <vm-id>', 'Start vm with networkt config')
   .option('--root-size <gb-size>', 'Set root size vm')
+  .option('--join-node <nodes>', 'Comma separated worker and control node e. g. k8s-worker-1,k8s-control')
+  .option(
+    '--expose <vm-name-ports>',
+    'Vm name and : separated with Comma separated vm port to expose e. g. k8s-control:80,443',
+  )
   .description('Lxd management')
   .action(UnderpostLxd.API.callback);
 
