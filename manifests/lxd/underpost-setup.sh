@@ -53,7 +53,7 @@ echo "
 ██╗░░░██╗███╗░░██╗██████╗░███████╗██████╗░██████╗░░█████╗░░██████╗████████╗
 ██║░░░██║████╗░██║██╔══██╗██╔════╝██╔══██╗██╔══██╗██╔══██╗██╔════╝╚══██╔══╝
 ██║░░░██║██╔██╗██║██║░░██║█████╗░░██████╔╝██████╔╝██║░░██║╚█████╗░░░░██║░░░
-██║░░░██║██║╚████║██║░░██║██╔══╝░░██╔══██╗██╔══╝░░██║░░██║░╚═══██╗░░░██║░░░
+██║░░░██║██║╚████║██║░░██║██╔══╝░░██╔══██╗██╔═══╝░██║░░██║░╚═══██╗░░░██║░░░
 ╚██████╔╝██║░╚███║██████╔╝███████╗██║░░██║██║░░░░░╚█████╔╝██████╔╝░░░██║░░░
 ░╚═════╝░╚═╝░░╚══╝╚═════╝░╚══════╝╚═╝░░╚═╝╚═╝░░░░░░╚════╝░╚═════╝░░░░╚═╝░░░
 
@@ -73,29 +73,6 @@ npm install -g underpost
 # This is crucial for Kubernetes networking (CNI)
 echo "Loading br_netfilter kernel module..."
 sudo modprobe br_netfilter
-
-# --- Disable UFW (Crucial for Kubernetes) ---
-# UFW conflicts with Kubernetes' iptables management. Disable it completely.
-echo "Disabling UFW to prevent conflicts with Kubernetes..."
-if sudo systemctl is-active --quiet ufw; then
-    sudo systemctl stop ufw
-fi
-if sudo systemctl is-enabled --quiet ufw; then
-    sudo systemctl disable ufw
-fi
-# Attempt to remove ufw package. dnf will handle if it's not installed.
-echo "Attempting to remove ufw package..."
-sudo dnf remove -y ufw
-
-# --- Kubernetes Required Ports (Informational - not for UFW) ---
-# These ports are opened by Kubernetes itself or are expected to be open
-# by external firewalls. UFW is no longer managing them.
-echo "Note: Kubernetes requires the following ports to be open (managed by K8s or external firewall):"
-echo "  - Control Plane: 6443/TCP (Kubernetes API), 2379-2380/TCP (etcd)"
-echo "  - Worker Nodes: 10250/TCP (Kubelet API), 30000-32767/TCP/UDP (NodePorts)"
-echo "  - CNI specific ports (e.g., Calico: 179/TCP, 4789/UDP; Flannel: 8472/UDP)"
-echo "  - SSH: 22/TCP"
-echo "  - HTTP/HTTPS: 80/TCP, 443/TCP (for Ingress/Load Balancers)"
 
 # --- Initial Host Setup for Kubernetes Prerequisites ---
 # This calls the initHost method in cluster.js to install Docker, Podman, Kind, Kubeadm, Helm.
@@ -130,9 +107,8 @@ echo "USE_WORKER   = $USE_WORKER"
 
 # --- Kubernetes Cluster Initialization Logic ---
 
-# Call config first to apply SELinux, Docker, Containerd, and sysctl settings.
-# This config function in cluster.js will be modified to remove iptables flushing.
-echo "Applying Kubernetes host configuration (SELinux, Containerd, Sysctl)..."
+# Apply host configuration (SELinux, Containerd, Sysctl, and now firewalld disabling)
+echo "Applying Kubernetes host configuration (SELinux, Containerd, Sysctl, Firewalld)..."
 underpost cluster --config
 
 if $USE_KUBEADM; then
@@ -144,21 +120,19 @@ if $USE_KUBEADM; then
         # For a full automated setup, you'd typically pass the join token/command here.
         # Example: underpost cluster --worker --join-command "kubeadm join ..."
         # For now, this just runs the worker-specific config.
-        underpost cluster --worker --config
+        underpost cluster --worker
+        underpost cluster --chown
         echo "Worker node setup initiated. You will need to manually join this worker to your control plane."
         echo "On your control plane, run 'kubeadm token create --print-join-command' and execute the output here."
     else
         echo "Running control plane setup with kubeadm..."
         # This will initialize the kubeadm control plane and install Calico
         underpost cluster --kubeadm
-        # Ensure kubectl config is set up for the current user
-        underpost cluster --chown
         echo "Kubeadm control plane initialized. Check cluster status with 'kubectl get nodes'."
     fi
 elif $USE_KIND; then
     echo "Running control node with kind..."
     underpost cluster
-    underpost cluster --chown
     echo "Kind cluster initialized. Check cluster status with 'kubectl get nodes'."
 else
     echo "No specific cluster role (--kubeadm, --kind, --worker) specified. Please provide one."
