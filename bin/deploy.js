@@ -797,6 +797,13 @@ try {
           .replaceAll(`engine.version: '${version}'`, `engine.version: '${newVersion}'`),
         'utf8',
       );
+      fs.writeFileSync(
+        `./manifests/deployment/dd-template-development/deployment.yaml`,
+        fs
+          .readFileSync(`./manifests/deployment/dd-template-development/deployment.yaml`, 'utf8')
+          .replaceAll(`underpost:v${version}`, `underpost:v${newVersion}`),
+        'utf8',
+      );
 
       if (fs.existsSync(`./.github/workflows/docker-image.yml`))
         fs.writeFileSync(
@@ -921,6 +928,16 @@ ${shellExec(`git log | grep Author: | sort -u`, { stdout: true }).split(`\n`).jo
         };
         DefaultConf.server[host][path].apiBaseProxyPath = '/';
         DefaultConf.server[host][path].apiBaseHost = 'www.nexodev.org';
+      } else if (confName === 'template') {
+        const host = 'default.net';
+        const path = '/';
+        DefaultConf.server[host][path].valkey = {
+          port: 6379,
+          host: 'valkey-service.default.svc.cluster.local',
+        };
+        // mongodb-0.mongodb-service
+        DefaultConf.server[host][path].db.host = 'mongodb://mongodb-service:27017';
+        confName = '';
       } else if (confName) {
         DefaultConf.client = JSON.parse(fs.readFileSync(`./engine-private/conf/${confName}/conf.client.json`, 'utf8'));
         DefaultConf.server = JSON.parse(fs.readFileSync(`./engine-private/conf/${confName}/conf.server.json`, 'utf8'));
@@ -2223,7 +2240,7 @@ EOF`);
         const args = [
           `node bin dockerfile-image-build --path ${path}/backend/`,
           `--image-name=${imageName} --image-path=${path}`,
-          `--podman-save --${process.argv.includes('kubeadm') ? 'kubeadm' : 'kind'}-load --no-cache`,
+          `--podman-save --${process.argv.includes('kubeadm') ? 'kubeadm' : 'kind'}-load --reset`,
         ];
         shellExec(args.join(' '));
       }
@@ -2235,7 +2252,7 @@ EOF`);
         const args = [
           `node bin dockerfile-image-build --path ${path}/frontend/`,
           `--image-name=${imageName} --image-path=${path}`,
-          `--podman-save --${process.argv.includes('kubeadm') ? 'kubeadm' : 'kind'}-load --no-cache`,
+          `--podman-save --${process.argv.includes('kubeadm') ? 'kubeadm' : 'kind'}-load --reset`,
         ];
         shellExec(args.join(' '));
       }
