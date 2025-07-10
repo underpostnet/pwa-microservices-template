@@ -9,6 +9,37 @@ const logger = loggerFactory(import.meta);
 
 class UnderpostCluster {
   static API = {
+    /**
+     * @method init
+     * @description Initializes and configures the Kubernetes cluster based on provided options.
+     * This method handles host prerequisites, cluster initialization (Kind or Kubeadm),
+     * and optional component deployments.
+     * @param {string} [podName] - Optional name of a pod for specific operations (e.g., listing).
+     * @param {object} [options] - Configuration options for cluster initialization.
+     * @param {boolean} [options.mongodb=false] - Deploy MongoDB.
+     * @param {boolean} [options.mongodb4=false] - Deploy MongoDB 4.4.
+     * @param {boolean} [options.mariadb=false] - Deploy MariaDB.
+     * @param {boolean} [options.mysql=false] - Deploy MySQL.
+     * @param {boolean} [options.postgresql=false] - Deploy PostgreSQL.
+     * @param {boolean} [options.valkey=false] - Deploy Valkey.
+     * @param {boolean} [options.full=false] - Deploy a full set of common components.
+     * @param {boolean} [options.info=false] - Display extensive Kubernetes cluster information.
+     * @param {boolean} [options.certManager=false] - Deploy Cert-Manager for certificate management.
+     * @param {boolean} [options.listPods=false] - List Kubernetes pods.
+     * @param {boolean} [options.reset=false] - Perform a comprehensive reset of Kubernetes and container environments.
+     * @param {boolean} [options.dev=false] - Run in development mode (adjusts paths).
+     * @param {string} [options.nsUse=''] - Set the current kubectl namespace.
+     * @param {boolean} [options.infoCapacity=false] - Display resource capacity information for the cluster.
+     * @param {boolean} [options.infoCapacityPod=false] - Display resource capacity information for pods.
+     * @param {boolean} [options.istio=false] - Deploy Istio service mesh.
+     * @param {boolean} [options.pullImage=false] - Pull necessary Docker images before deployment.
+     * @param {boolean} [options.dedicatedGpu=false] - Configure for dedicated GPU usage (e.g., NVIDIA GPU Operator).
+     * @param {boolean} [options.kubeadm=false] - Initialize the cluster using Kubeadm.
+     * @param {boolean} [options.initHost=false] - Perform initial host setup (install Docker, Podman, Kind, Kubeadm, Helm).
+     * @param {boolean} [options.config=false] - Apply general host configuration (SELinux, containerd, sysctl, firewalld).
+     * @param {boolean} [options.worker=false] - Configure as a worker node (for Kubeadm join).
+     * @param {boolean} [options.chown=false] - Set up kubectl configuration for the current user.
+     */
     async init(
       podName,
       options = {
@@ -113,6 +144,12 @@ class UnderpostCluster {
           );
           // Configure kubectl for the current user
           UnderpostCluster.API.chown();
+
+          // Apply kubelet-config.yaml explicitly
+          // Using 'kubectl replace --force' to ensure the ConfigMap is updated,
+          // even if it was modified by kubeadm or other processes, resolving conflicts.
+          // shellExec(`kubectl replace --force -f ${underpostRoot}/manifests/kubelet-config.yaml`);
+
           // Install Calico CNI
           logger.info('Installing Calico CNI...');
           shellExec(
@@ -298,8 +335,9 @@ class UnderpostCluster {
     /**
      * @method config
      * @description Configures host-level settings required for Kubernetes.
-     * IMPORTANT: This method has been updated to REMOVE all iptables flushing commands
-     * to prevent conflicts with Kubernetes' own network management.
+     * This method ensures proper SELinux, Docker, Containerd, and Sysctl settings
+     * are applied for a healthy Kubernetes environment. It explicitly avoids
+     * iptables flushing commands to prevent conflicts with Kubernetes' own network management.
      */
     config() {
       console.log('Applying host configuration: SELinux, Docker, Containerd, and Sysctl settings.');
@@ -346,7 +384,8 @@ net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`);
     /**
      * @method chown
      * @description Sets up kubectl configuration for the current user.
-     * This is typically run after kubeadm init on the control plane.
+     * This is typically run after kubeadm init on the control plane
+     * to allow non-root users to interact with the cluster.
      */
     chown() {
       console.log('Setting up kubectl configuration...');
@@ -359,74 +398,142 @@ net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`);
     /**
      * @method reset
      * @description Performs a comprehensive reset of Kubernetes and container environments.
-     * This function is for cleaning up a node, not for initial setup.
-     * It avoids aggressive iptables flushing that would break host connectivity.
+     * This function is for cleaning up a node, reverting changes made by 'kubeadm init' or 'kubeadm join'.
+     * It includes deleting Kind clusters, resetting kubeadm, removing CNI configs,
+     * cleaning Docker and Podman data, persistent volumes, and resetting kubelet components.
+     * It avoids aggressive iptables flushing that would break host connectivity, relying on kube-proxy's
+     * control loop to eventually clean up rules if the cluster is not re-initialized.
      */
-    reset() {
-      console.log('Starting comprehensive reset of Kubernetes and container environments...');
+    async reset() {
+      logger.info('Starting comprehensive reset of Kubernetes and container environments...');
 
-      // Delete all existing Kind (Kubernetes in Docker) clusters.
-      shellExec(`kind get clusters | xargs -r -t -n1 kind delete cluster --name`); // -r for no-op if no clusters
+      try {
+        // Phase 1: Pre-reset Kubernetes Cleanup (while API server is still up)
+        logger.info('Phase 1/6: Cleaning up Kubernetes resources (PVCs, PVs) while API server is accessible...');
 
-      // Reset the Kubernetes control-plane components installed by kubeadm.
-      shellExec(`sudo kubeadm reset -f`);
+        // Delete all Persistent Volume Claims (PVCs) to release the PVs.
+        // This must happen before deleting PVs or the host paths.
+        // shellExec(`kubectl delete pvc --all-namespaces --all --ignore-not-found || true`);
 
-      // Remove specific CNI configuration files (e.g., Flannel)
-      shellExec('sudo rm -f /etc/cni/net.d/10-flannel.conflist');
+        // Get all Persistent Volumes and identify their host paths for data deletion.
+        // This needs to be done *before* deleting the PVs themselves.
+        // The '|| echo '{"items":[]}'` handles cases where 'kubectl get pv' might return empty or error.
+        const pvListJson = shellExec(`kubectl get pv -o json || echo '{"items":[]}'`, { stdout: true, silent: true });
+        const pvList = JSON.parse(pvListJson);
 
-      // Remove the kubectl configuration file
-      shellExec('sudo rm -f $HOME/.kube/config');
+        if (pvList.items && pvList.items.length > 0) {
+          for (const pv of pvList.items) {
+            // Check if the PV uses hostPath and delete its contents
+            if (pv.spec.hostPath && pv.spec.hostPath.path) {
+              const hostPath = pv.spec.hostPath.path;
+              logger.info(`Removing data from host path for PV '${pv.metadata.name}': ${hostPath}`);
+              shellExec(`sudo rm -rf ${hostPath}/* || true`);
+            }
+          }
+        } else {
+          logger.info('No Persistent Volumes found with hostPath to clean up.');
+        }
 
-      // Clear trash files from the root user's trash directory.
-      shellExec('sudo rm -rf /root/.local/share/Trash/files/*');
+        // Then, delete all Persistent Volumes (PVs).
+        // shellExec(`kubectl delete pv --all --ignore-not-found || true`);
 
-      // Prune all unused Docker data.
-      shellExec('sudo docker system prune -a -f');
+        // Phase 2: Stop Kubelet and remove CNI configuration
+        logger.info('Phase 2/6: Stopping Kubelet and removing CNI configurations...');
+        // Stop kubelet service to prevent further activity and release resources.
+        shellExec(`sudo systemctl stop kubelet || true`);
 
-      // Stop the Docker daemon service.
-      shellExec('sudo service docker stop');
+        // CNI plugins use /etc/cni/net.d to store their configuration.
+        // Removing this prevents conflicts and potential issues during kubeadm reset.
+        shellExec('sudo rm -rf /etc/cni/net.d/* || true');
 
-      // Aggressively remove container storage data for containerd and Docker.
-      shellExec(`sudo rm -rf /var/lib/containers/storage/*`);
-      shellExec(`sudo rm -rf /var/lib/docker/volumes/*`);
-      shellExec(`sudo rm -rf /var/lib/docker~/*`);
-      shellExec(`sudo rm -rf /home/containers/storage/*`);
-      shellExec(`sudo rm -rf /home/docker/*`);
+        // Phase 3: Kind Cluster Cleanup
+        logger.info('Phase 3/6: Cleaning up Kind clusters...');
+        // Delete all existing Kind (Kubernetes in Docker) clusters.
+        shellExec(`kind get clusters | xargs -r -t -n1 kind delete cluster || true`);
 
-      // Re-configure Docker's default storage location (if desired).
-      shellExec('sudo mv /var/lib/docker /var/lib/docker~ || true'); // Use || true to prevent error if dir doesn't exist
-      shellExec('sudo mkdir -p /home/docker');
-      shellExec('sudo chmod 777 /home/docker');
-      shellExec('sudo ln -s /home/docker /var/lib/docker');
+        // Phase 4: Kubeadm Reset
+        logger.info('Phase 4/6: Performing kubeadm reset...');
+        // Reset the Kubernetes control-plane components installed by kubeadm.
+        // The --force flag skips confirmation prompts. This command will tear down the cluster.
+        shellExec(`sudo kubeadm reset --force`);
 
-      // Prune all unused Podman data.
-      shellExec(`sudo podman system prune -a -f`);
-      shellExec(`sudo podman system prune --all --volumes --force`);
-      shellExec(`sudo podman system prune --external --force`);
+        // Phase 5: Post-reset File System Cleanup (Local Storage, Kubeconfig)
+        logger.info('Phase 5/6: Cleaning up local storage provisioner data and kubeconfig...');
+        // Remove the kubectl configuration file for the current user.
+        // This is important to prevent stale credentials after the cluster is reset.
+        shellExec('rm -rf $HOME/.kube || true');
 
-      // Create and set permissions for Podman's custom storage directory.
-      shellExec(`sudo mkdir -p /home/containers/storage`);
-      shellExec('sudo chmod 0711 /home/containers/storage');
+        // Remove local path provisioner data, which stores data for dynamically provisioned PVCs.
+        shellExec(`sudo rm -rf /opt/local-path-provisioner/* || true`);
 
-      // Update Podman's storage configuration file.
-      shellExec(
-        `sudo sed -i -e "s@/var/lib/containers/storage@/home/containers/storage@g" /etc/containers/storage.conf`,
-      );
+        // Phase 6: Container Runtime Cleanup (Docker and Podman)
+        logger.info('Phase 6/6: Cleaning up Docker and Podman data...');
+        // Prune all unused Docker data (containers, images, volumes, networks).
+        shellExec('sudo docker system prune -a -f');
 
-      // Reset Podman system settings.
-      shellExec(`sudo podman system reset -f`);
+        // Stop the Docker daemon service to ensure all files can be removed.
+        shellExec('sudo service docker stop || true');
 
-      // Reset kubelet components
-      shellExec(`sudo systemctl stop kubelet`);
-      shellExec(`sudo rm -rf /etc/kubernetes/*`);
-      shellExec(`sudo rm -rf /var/lib/kubelet/*`);
-      shellExec(`sudo rm -rf /etc/cni/net.d/*`);
-      shellExec(`sudo systemctl daemon-reload`);
-      shellExec(`sudo systemctl start kubelet`);
+        // Aggressively remove container storage data for containerd and Docker.
+        // This targets the underlying storage directories.
+        shellExec(`sudo rm -rf /var/lib/containers/storage/* || true`);
+        shellExec(`sudo rm -rf /var/lib/docker/volumes/* || true`);
+        shellExec(`sudo rm -rf /var/lib/docker~/* || true`); // Cleanup any old Docker directories
+        shellExec(`sudo rm -rf /home/containers/storage/* || true`);
+        shellExec(`sudo rm -rf /home/docker/* || true`);
 
-      console.log('Comprehensive reset completed.');
+        // Ensure Docker's default storage location is clean and re-linked if custom.
+        shellExec(`sudo rm -rf /var/lib/docker/* || true`);
+        shellExec('sudo mkdir -p /home/docker || true');
+        shellExec('sudo chmod 777 /home/docker || true');
+        shellExec('sudo ln -sf /home/docker /var/lib/docker || true'); // Use -sf for symbolic link, force and silent
+
+        // Prune all unused Podman data.
+        shellExec(`sudo podman system prune -a -f`);
+        shellExec(`sudo podman system prune --all --volumes --force`);
+        shellExec(`sudo podman system prune --external --force`);
+
+        // Create and set permissions for Podman's custom storage directory.
+        shellExec(`sudo mkdir -p /home/containers/storage || true`);
+        shellExec('sudo chmod 0711 /home/containers/storage || true');
+
+        // Update Podman's storage configuration file.
+        shellExec(
+          `sudo sed -i -e "s@/var/lib/containers/storage@/home/containers/storage@g" /etc/containers/storage.conf || true`,
+        );
+
+        // Reset Podman system settings.
+        shellExec(`sudo podman system reset -f`);
+
+        // Final Kubelet and System Cleanup (after all other operations)
+        logger.info('Finalizing Kubelet and system file cleanup...');
+        // Remove Kubernetes configuration and kubelet data directories.
+        shellExec(`sudo rm -rf /etc/kubernetes/* || true`);
+        shellExec(`sudo rm -rf /var/lib/kubelet/* || true`);
+
+        // Clear trash files from the root user's trash directory.
+        shellExec('sudo rm -rf /root/.local/share/Trash/files/* || true');
+
+        // Reload systemd daemon to pick up any service file changes.
+        shellExec(`sudo systemctl daemon-reload`);
+        // Attempt to start kubelet; it might fail if the cluster is fully reset, which is expected.
+        shellExec(`sudo systemctl start kubelet || true`);
+
+        logger.info('Comprehensive reset completed successfully.');
+      } catch (error) {
+        logger.error(`Error during reset: ${error.message}`);
+        console.error(error);
+      }
     },
 
+    /**
+     * @method getResourcesCapacity
+     * @description Retrieves and returns the allocatable CPU and memory resources
+     * of the Kubernetes node.
+     * @param {boolean} [kubeadm=false] - If true, assumes a kubeadm-managed node;
+     * otherwise, assumes a Kind worker node.
+     * @returns {object} An object containing CPU and memory resources with values and units.
+     */
     getResourcesCapacity(kubeadm = false) {
       const resources = {};
       const info = shellExec(
@@ -457,6 +564,11 @@ net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`);
 
       return resources;
     },
+    /**
+     * @method initHost
+     * @description Installs essential host-level prerequisites for Kubernetes,
+     * including Docker, Podman, Kind, Kubeadm, and Helm.
+     */
     initHost() {
       console.log('Installing Docker, Podman, Kind, Kubeadm, and Helm...');
       // Install docker
