@@ -6,6 +6,7 @@ import fs from 'fs-extra';
 import { commitData } from '../client/components/core/CommonJs.js';
 import { shellExec } from '../server/process.js';
 import UnderpostLxd from './lxd.js';
+import UnderpostBaremetal from './baremetal.js';
 
 const underpostRootPath = getUnderpostRootPath();
 fs.existsSync(`${underpostRootPath}/.env`)
@@ -80,8 +81,9 @@ program
   .argument('operator', `Options: ${Object.keys(Underpost.env)}`)
   .argument('[key]', 'Config key')
   .argument('[value]', 'Config value')
+  .option('--plain', 'Print plain value')
   .description(`Manage configuration, operators`)
-  .action((...args) => Underpost.env[args[0]](args[1], args[2]));
+  .action((...args) => Underpost.env[args[0]](args[1], args[2], args[3]));
 
 program
   .command('root')
@@ -302,61 +304,16 @@ program
   .description('Lxd management')
   .action(UnderpostLxd.API.callback);
 
-const buildCliDoc = () => {
-  let md = shellExec(`node bin help`, { silent: true, stdout: true }).split('Options:');
-  const baseOptions =
-    `## ${md[0].split(`\n`)[2]}
+program
+  .command('baremetal')
+  .option('--control-server-install', 'Install baremetal control server')
+  .option('--control-server-init-db', 'Setup database baremetal control server')
+  .option('--control-server-init', 'Init baremetal control server')
+  .option('--control-server-uninstall', 'Uninstall baremetal control server')
+  .option('--control-server-stop', 'Stop baremetal control server')
+  .option('--control-server-start', 'Start baremetal control server')
+  .option('--dev', 'Set dev context env')
+  .description('Baremetal management')
+  .action(UnderpostBaremetal.API.callback);
 
-### Usage: ` +
-    '`' +
-    md[0].split(`\n`)[0].split('Usage: ')[1] +
-    '`' +
-    `
-  ` +
-    '```\n Options:' +
-    md[1] +
-    ' \n```';
-  md =
-    baseOptions +
-    `
-
-## Commands:
-    `;
-  program.commands.map((o) => {
-    md +=
-      `
-
-` +
-      '### `' +
-      o._name +
-      '` :' +
-      `
-` +
-      '```\n ' +
-      shellExec(`node bin help ${o._name}`, { silent: true, stdout: true }) +
-      ' \n```' +
-      `
-  `;
-  });
-  fs.writeFileSync(`./src/client/public/nexodev/docs/references/Command Line Interface.md`, md, 'utf8');
-  fs.writeFileSync(`./cli.md`, md, 'utf8');
-  const readmeSplit = `pwa-microservices-template</a>`;
-  const readme = fs.readFileSync(`./README.md`, 'utf8').split(readmeSplit);
-  fs.writeFileSync(
-    './README.md',
-    readme[0] +
-      readmeSplit +
-      `
-
-` +
-      baseOptions +
-      `
-      
-<a target="_top" href="https://github.com/underpostnet/pwa-microservices-template/blob/master/cli.md">See complete CLI Docs here.</a>
-      
-`,
-    'utf8',
-  );
-};
-
-export { program, buildCliDoc };
+export { program };

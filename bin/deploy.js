@@ -27,6 +27,7 @@ import {
   setUpProxyMaintenanceServer,
   writeEnv,
   getUnderpostRootPath,
+  buildCliDoc,
 } from '../src/server/conf.js';
 import { buildClient } from '../src/server/client-build.js';
 import { range, s4, setPad, timer, uniqueArray } from '../src/client/components/core/CommonJs.js';
@@ -37,10 +38,10 @@ import { JSONweb } from '../src/server/client-formatted.js';
 
 import { Xampp } from '../src/runtime/xampp/Xampp.js';
 import { ejs } from '../src/server/json-schema.js';
-import { buildCliDoc } from '../src/cli/index.js';
 import { getLocalIPv4Address, ip } from '../src/server/dns.js';
 import { Downloader } from '../src/server/downloader.js';
 import colors from 'colors';
+import { program } from '../src/cli/index.js';
 
 colors.enable();
 
@@ -1158,7 +1159,7 @@ EOF`);
     }
 
     case 'cli-docs': {
-      buildCliDoc();
+      buildCliDoc(program);
       break;
     }
 
@@ -1211,6 +1212,18 @@ EOF`);
     }
 
     case 'postgresql-14': {
+      if (process.argv.includes('install')) {
+        shellExec(`sudo dnf module reset postgresql -y`);
+        shellExec(`sudo dnf -qy module disable postgresql`);
+
+        shellExec(`sudo systemctl stop postgresql-14`);
+        shellExec(`sudo systemctl disable postgresql-14`);
+
+        shellExec(`sudo dnf remove -y postgresql14 postgresql14-server postgresql14-contrib`);
+        shellExec(`sudo rm -rf /var/lib/pgsql`);
+
+        shellExec(`sudo dnf install postgresql14 postgresql14-server postgresql14-contrib -y`);
+      }
       shellExec(`sudo /usr/pgsql-14/bin/postgresql-14-setup initdb`);
       shellExec(`sudo systemctl start postgresql-14`);
       shellExec(`sudo systemctl enable postgresql-14`);
@@ -1260,40 +1273,12 @@ EOF`);
       const netmask = process.env.NETMASK;
       const gatewayip = process.env.GATEWAY_IP;
 
-      let resources;
-      try {
-        resources = JSON.parse(
-          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resources read`, {
-            silent: true,
-            stdout: true,
-          }),
-        ).map((o) => ({
-          id: o.id,
-          name: o.name,
-          architecture: o.architecture,
-        }));
-      } catch (error) {
-        logger.error(error);
-      }
-
       const machineFactory = (m) => ({
         system_id: m.interface_set[0].system_id,
         mac_address: m.interface_set[0].mac_address,
         hostname: m.hostname,
         status_name: m.status_name,
       });
-
-      let machines;
-      try {
-        machines = JSON.parse(
-          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machines read`, {
-            stdout: true,
-            silent: true,
-          }),
-        ).map((m) => machineFactory(m));
-      } catch (error) {
-        logger.error(error);
-      }
 
       if (process.argv.includes('db')) {
         // DROP, ALTER, CREATE, WITH ENCRYPTED
@@ -1315,6 +1300,7 @@ EOF`);
         shellExec(`sudo -i -u postgres createdb -O "$DB_PG_MAAS_USER" "$DB_PG_MAAS_NAME"`);
 
         shellExec(`sudo -i -u postgres psql -c "\\l"`);
+        process.exit(0);
       }
 
       if (process.argv.includes('ls')) {
@@ -1399,6 +1385,23 @@ EOF`);
 
         process.exit(0);
       }
+
+      if (process.argv.includes('restart')) {
+        shellExec(`sudo snap restart maas.pebble`);
+        let secs = 0;
+        while (
+          !(
+            shellExec(`maas status`, { silent: true, disableLog: true, stdout: true })
+              .split(' ')
+              .filter((l) => l.match('inactive')).length === 1
+          )
+        ) {
+          await timer(1000);
+          console.log(`Waiting... (${++secs}s)`);
+        }
+        process.exit(0);
+      }
+
       // shellExec(`MAAS_ADMIN_USERNAME=${process.env.MAAS_ADMIN_USERNAME}`);
       // shellExec(`MAAS_ADMIN_EMAIL=${process.env.MAAS_ADMIN_EMAIL}`);
       // shellExec(`maas createadmin --username $MAAS_ADMIN_USERNAME --email $MAAS_ADMIN_EMAIL`);
@@ -1490,6 +1493,34 @@ EOF`);
       // Check interface
       // ip link show
       // nmcli con show
+
+      let resources;
+      try {
+        resources = JSON.parse(
+          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resources read`, {
+            silent: true,
+            stdout: true,
+          }),
+        ).map((o) => ({
+          id: o.id,
+          name: o.name,
+          architecture: o.architecture,
+        }));
+      } catch (error) {
+        logger.error(error);
+      }
+
+      let machines;
+      try {
+        machines = JSON.parse(
+          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machines read`, {
+            stdout: true,
+            silent: true,
+          }),
+        ).map((m) => machineFactory(m));
+      } catch (error) {
+        logger.error(error);
+      }
 
       let firmwarePath,
         tftpSubDir,
@@ -1634,21 +1665,6 @@ BOOT_ORDER=0x21`;
       if (bootConf) fs.writeFileSync(`${tftpRoot}${tftpSubDir}/boot.conf`, bootConf, 'utf8');
 
       shellExec(`node bin/deploy nfs`);
-
-      if (process.argv.includes('restart')) {
-        shellExec(`sudo snap restart maas.pebble`);
-        let secs = 0;
-        while (
-          !(
-            shellExec(`maas status`, { silent: true, disableLog: true, stdout: true })
-              .split(' ')
-              .filter((l) => l.match('inactive')).length === 1
-          )
-        ) {
-          await timer(1000);
-          console.log(`Waiting... (${++secs}s)`);
-        }
-      }
 
       switch (process.argv[3]) {
         case 'rpi4mb':
