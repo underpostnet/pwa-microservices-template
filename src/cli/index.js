@@ -307,11 +307,15 @@ program
 program
   .command('baremetal')
   .option('--control-server-install', 'Install baremetal control server')
-  .option('--control-server-init-db', 'Setup database baremetal control server')
+  .option('--control-server-db-init', 'Setup database baremetal control server')
+  .option('--control-server-db-uninstall', 'Uninstall database baremetal control server')
   .option('--control-server-init', 'Init baremetal control server')
+  .option('--control-server-login', 'Control server admin login')
   .option('--control-server-uninstall', 'Uninstall baremetal control server')
   .option('--control-server-stop', 'Stop baremetal control server')
   .option('--control-server-start', 'Start baremetal control server')
+  .option('--get-users', 'Get users')
+  .option('--new-api-key', 'Get new api key')
   .option('--dev', 'Set dev context env')
   .description('Baremetal management')
   .action(UnderpostBaremetal.API.callback);

@@ -51,53 +51,137 @@ logger.info('argv', process.argv);
 
 const [exe, dir, operator] = process.argv;
 
-const updateVirtualRoot = async ({ nfsHostPath, IP_ADDRESS, ipaddr }) => {
-  const steps = [
+const updateVirtualRoot = async ({ IP_ADDRESS, architecture, host, nfsHostPath, ipaddr, update }) => {
+  // <consumer_key>:<consumer_token>:<secret>
+  const MAAS_API_TOKEN = shellExec(`maas apikey --username ${process.env.MAAS_ADMIN_USERNAME}`, {
+    stdout: true,
+  }).trim();
+  const [consumer_key, consumer_token, secret] = MAAS_API_TOKEN.split(`\n`)[1].split(':');
+  const chronyConfPath = `/etc/chrony/chrony.conf`;
+  const timezone = 'America/New_York';
+  const timeZoneSteps = [
+    `apt-get update`,
+
+    `export DEBIAN_FRONTEND=noninteractive`,
+
+    `ln -fs /usr/share/zoneinfo/${timezone} /etc/localtime`,
+
+    `DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata`,
+    `dpkg-reconfigure --frontend noninteractive tzdata`,
+  ];
+  const keyboardSteps = [
+    `sudo locale-gen en_US.UTF-8`,
+    `sudo update-locale LANG=en_US.UTF-8`,
+    `sudo sed -i 's/XKBLAYOUT="us"/XKBLAYOUT="es"/' /etc/default/keyboard`,
+    `sudo dpkg-reconfigure --frontend noninteractive keyboard-configuration`,
+    `sudo systemctl restart keyboard-setup.service`,
+  ];
+  const installSteps = [
     `apt update`,
+    `apt install -y cloud-init systemd-sysv openssh-server sudo locales udev util-linux systemd-sysv iproute2 netplan.io ca-certificates curl wget chrony keyboard-configuration`,
     `ln -sf /lib/systemd/systemd /sbin/init`,
-    // `sudo apt install linux-modules-extra-6.8.0-31-generic`,
-    `apt install -y sudo`,
-    `apt install -y ntp`,
-    `apt install -y openssh-server`,
-    `apt install -y iptables`,
-    `update-alternatives --set iptables /usr/sbin/iptables-legacy`,
-    `update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy`,
-    `apt install -y locales`,
-    `apt install -y cloud-init`,
-    `mkdir -p /var/lib/cloud`,
-    `chown -R root:root /var/lib/cloud`,
-    `chmod -R 0755 /var/lib/cloud`,
+
+    `echo 'deb http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
+deb http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
+deb http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
+
+# Uncomment the following lines if you also need source packages (for building from source)
+# deb-src http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
+# deb-src http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
+# deb-src http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
+' > /etc/apt/sources.list`,
+    `apt update`,
+    `apt -y full-upgrade`,
+    // `apt install -y cloud-init=25.1.2-0ubuntu0~24.04.1`,
+
+    `systemctl enable ssh`,
+
+    `apt update -qq`,
+    `apt install -y xinput x11-xkb-utils usbutils`,
+  ];
+
+  let steps = [
+    // `date -s "${shellExec(`date '+%Y-%m-%d %H:%M:%S'`, { stdout: true }).trim()}"`,
+    // `date`,
+
+    ...timeZoneSteps,
+    ...chronySetUp(chronyConfPath),
+
+    // Create root user
+    `useradd -m -s /bin/bash -G sudo root`,
+    `echo 'root:root' | chpasswd`,
     `mkdir -p /home/root/.ssh`,
     `echo '${fs.readFileSync(
       `/home/dd/engine/engine-private/deploy/id_rsa.pub`,
       'utf8',
-    )}' >> /home/root/.ssh/authorized_keys`,
+    )}' > /home/root/.ssh/authorized_keys`,
+    `chown -R root /home/root/.ssh`,
     `chmod 700 /home/root/.ssh`,
     `chmod 600 /home/root/.ssh/authorized_keys`,
-    `systemctl enable ssh`,
-    `systemctl enable ntp`,
-    `apt install -y linux-generic-hwe-24.04`,
-    `modprobe ip_tables`,
+
+    // Configure cloud-init for MAAS
     `cat <<EOF_MAAS_CFG > /etc/cloud/cloud.cfg.d/90_maas.cfg
+#cloud-config
+
+hostname: ${host}
+# fqdn: server01.midominio.cl
+# prefer_fqdn_over_hostname: true
+# metadata_url: http://${IP_ADDRESS}:5240/MAAS/metadata
+# metadata_url: http://${IP_ADDRESS}:5248/MAAS/metadata
+
+# Check:
+# /MAAS/metadata/latest/enlist-preseed/?op=get_enlist_preseed
+
+# Debug:
+# https://maas.io/docs/how-to-use-logging
+
 datasource_list: [ MAAS ]
 datasource:
   MAAS:
-    metadata_url: http://${IP_ADDRESS}:5248/MAAS/metadata
+    metadata_url: http://${IP_ADDRESS}:5240/MAAS/metadata
+    consumer_key: ${consumer_key}
+    token_key: ${consumer_token}
+    token_secret: ${secret}
 users:
-  - name: ${process.env.MAAS_ADMIN_USERNAME}
+  - name: rpiadmin
+    sudo: ['ALL=(ALL) NOPASSWD:ALL']
+    shell: /bin/bash
+    lock_passwd: true
     ssh_authorized_keys:
       - ${fs.readFileSync(`/home/dd/engine/engine-private/deploy/id_rsa.pub`, 'utf8')}
-    sudo: "ALL=(ALL) NOPASSWD:ALL"
-    groups: sudo
-    shell: /bin/bash
+
+
+# keyboard:
+#   layout: es
+
+  
+# check timedatectl on host
+# timezone: America/Santiago
+timezone: ${timezone}
+
+ntp:
+  enabled: true
+  servers:
+    - ${IP_ADDRESS}
+  ntp_client: chrony
+  config:
+    confpath: ${chronyConfPath}
+    packages:
+      - chrony
+    service_name: chrony
+
+# ssh:
+#   allow-pw: false
+#   install-server: true
+
+# ssh_pwauth: false
+
+package_update: true
+package_upgrade: true
 packages:
   - git
   - htop
-  - ufw
-# package_update: true
-runcmd:
-  - ufw enable
-  - ufw allow ssh
+  - snapd
 resize_rootfs: false
 growpart:
   mode: off
@@ -108,8 +192,35 @@ network:
         dhcp4: true
         addresses:
           - ${ipaddr}/24
+
+# chpasswd:
+#   expire: false
+#   users:
+#   - {name: rpiadmin, password: changeme, type: text}
+
+final_message: "The system is up, after $UPTIME seconds"
+
+# power_state:
+#   mode: reboot
+#   message: Rebooting after initial setup
+#   timeout: 30
+#   condition: True
+bootcmd:
+  - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+  - echo "Init bootcmd"
+  - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+#  - ${JSON.stringify([...timeZoneSteps, ...chronySetUp(chronyConfPath)])}
+runcmd:
+  - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+  - echo "Init runcmd"
+  - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
 EOF_MAAS_CFG`,
+    ...keyboardSteps,
   ];
+
+  if (!update) {
+    steps = installSteps.concat(steps);
+  }
 
   shellExec(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
 ${steps
@@ -125,6 +236,82 @@ EOF`);
 echo "nameserver ${process.env.MAAS_DNS}" | tee /etc/resolv.conf > /dev/null
 apt update
 EOF`);
+
+  if (update) {
+    shellExec(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
+sudo cloud-init clean --logs --reboot
+EOF`);
+    fs.writeFileSync(`${nfsHostPath}/var/log/cloud-init.log`, '', 'utf8');
+
+    fs.writeFileSync(
+      `${nfsHostPath}/dns.sh`,
+      `rm /etc/resolv.conf
+echo 'nameserver 8.8.8.8' > /run/systemd/resolve/stub-resolv.conf
+ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf`,
+      'utf8',
+    );
+  }
+};
+
+const chronySetUp = (path) => {
+  return [
+    `echo '
+# Use public servers from the pool.ntp.org project.
+# Please consider joining the pool (http://www.pool.ntp.org/join.html).
+# pool 2.pool.ntp.org iburst
+server ntp.ubuntu.com iburst
+
+# Record the rate at which the system clock gains/losses time.
+driftfile /var/lib/chrony/drift
+
+# Allow the system clock to be stepped in the first three updates
+# if its offset is larger than 1 second.
+makestep 1.0 3
+
+# Enable kernel synchronization of the real-time clock (RTC).
+rtcsync
+
+# Enable hardware timestamping on all interfaces that support it.
+#hwtimestamp *
+
+# Increase the minimum number of selectable sources required to adjust
+# the system clock.
+#minsources 2
+
+# Allow NTP client access from local network.
+#allow 192.168.0.0/16
+
+# Serve time even if not synchronized to a time source.
+#local stratum 10
+
+# Specify file containing keys for NTP authentication.
+keyfile /etc/chrony.keys
+
+# Get TAI-UTC offset and leap seconds from the system tz database.
+leapsectz right/UTC
+
+# Specify directory for log files.
+logdir /var/log/chrony
+
+# Select which information is logged.
+#log measurements statistics tracking
+' > ${path} `,
+    `sudo systemctl stop chronyd`,
+
+    // `chronyd -q 'server 0.europe.pool.ntp.org iburst'`,
+    `chronyd -q 'server ntp.ubuntu.com iburst'`,
+
+    `sudo systemctl enable --now chronyd`,
+    `sudo systemctl restart chronyd`,
+    `sudo systemctl status chronyd`,
+
+    `chronyc sources`,
+    `chronyc tracking`,
+    // sudo firewall-cmd --add-service=ntp --permanent
+    // sudo firewall-cmd --reload
+
+    `chronyc sourcestats -v`,
+  ];
 };
 
 try {
@@ -1211,6 +1398,37 @@ EOF`);
       break;
     }
 
+    case 'postgresql-17': {
+      if (process.argv.includes('install')) {
+        shellExec(`sudo dnf module reset postgresql -y`);
+        shellExec(`sudo dnf -qy module disable postgresql`);
+        shellExec(
+          `sudo dnf install -y https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm`,
+        );
+        shellExec(`sudo dnf -qy module disable postgresql`);
+        shellExec(`sudo dnf install -y postgresql17 postgresql17-server postgresql17-contrib`);
+
+        shellExec(`sudo /usr/pgsql-17/bin/postgresql-17-setup initdb`);
+      }
+      if (process.argv.includes('uninstall')) {
+        shellExec(`sudo systemctl stop postgresql-17`);
+        shellExec(`sudo systemctl disable postgresql-17`);
+
+        // Remove PostgreSQL 17 packages and repo
+        shellExec(`sudo dnf remove -y postgresql17 postgresql17-server postgresql17-contrib`);
+        shellExec(`sudo rpm -e pgdg-redhat-repo-$(rpm -q pgdg-redhat-repo --qf '%{VERSION}-%{RELEASE}') || true`);
+        shellExec(`sudo rm -f /etc/yum.repos.d/pgdg-redhat-*.repo`);
+
+        // Clean up data, logs, config, and the postgres user
+        shellExec(`sudo rm -rf /var/lib/pgsql/17 /var/log/pgsql`);
+        shellExec(`sudo rm -rf /etc/postgresql`);
+      } else {
+        shellExec(`sudo systemctl enable postgresql-17`);
+        shellExec(`sudo systemctl start postgresql-17`);
+      }
+      break;
+    }
+
     case 'postgresql-14': {
       if (process.argv.includes('install')) {
         shellExec(`sudo dnf module reset postgresql -y`);
@@ -1224,11 +1442,19 @@ EOF`);
 
         shellExec(`sudo dnf install postgresql14 postgresql14-server postgresql14-contrib -y`);
       }
-      shellExec(`sudo /usr/pgsql-14/bin/postgresql-14-setup initdb`);
-      shellExec(`sudo systemctl start postgresql-14`);
-      shellExec(`sudo systemctl enable postgresql-14`);
-      shellExec(`sudo systemctl status postgresql-14`);
-      // sudo dnf install postgresql14-contrib
+      if (process.argv.includes('uninstall')) {
+        shellExec(`sudo systemctl stop postgresql-14`);
+        shellExec(`sudo systemctl disable postgresql-14`);
+        shellExec(`sudo dnf remove -y postgresql14 postgresql14-server postgresql14-contrib`);
+        shellExec(`sudo rm -rf /var/lib/pgsql /var/log/pgsql /etc/postgresql`);
+      } else {
+        shellExec(`sudo /usr/pgsql-14/bin/postgresql-14-setup initdb`);
+        shellExec(`sudo systemctl start postgresql-14`);
+        shellExec(`sudo systemctl enable postgresql-14`);
+        shellExec(`sudo systemctl status postgresql-14`);
+        // sudo dnf install postgresql14-contrib
+      }
+
       break;
     }
 
@@ -1265,6 +1491,9 @@ EOF`);
     }
 
     case 'maas': {
+      shellExec(
+        `underpost secret underpost --create-from-file /home/dd/engine/engine-private/conf/dd-cron/.env.production`,
+      );
       dotenv.config({ path: `${getUnderpostRootPath()}/.env`, override: true });
       const IP_ADDRESS = getLocalIPv4Address();
       const serverip = IP_ADDRESS;
@@ -1279,6 +1508,53 @@ EOF`);
         hostname: m.hostname,
         status_name: m.status_name,
       });
+
+      let resources;
+      try {
+        resources = JSON.parse(
+          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resources read`, {
+            silent: true,
+            stdout: true,
+          }),
+        ).map((o) => ({
+          id: o.id,
+          name: o.name,
+          architecture: o.architecture,
+        }));
+      } catch (error) {
+        logger.error(error);
+      }
+
+      let machines;
+      try {
+        machines = JSON.parse(
+          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machines read`, {
+            stdout: true,
+            silent: true,
+          }),
+        ).map((m) => machineFactory(m));
+      } catch (error) {
+        logger.error(error);
+      }
+
+      if (process.argv.includes('ls')) {
+        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-sources read`);
+        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} commissioning-scripts read`);
+        // shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-source-selections read 60`);
+        logger.info('Resources');
+        console.table(resources);
+        logger.info('Machines');
+        console.table(machines);
+        process.exit(0);
+      }
+
+      if (process.argv.includes('config')) {
+        shellExec(`sudo sed -i 's/^#Storage=auto/Storage=volatile/' /etc/systemd/journald.conf`);
+        shellExec(`sudo systemctl daemon-reload`);
+        shellExec(`sudo systemctl restart systemd-journald`);
+        shellExec(`journalctl --disk-usage`);
+        process.exit(0);
+      }
 
       if (process.argv.includes('db')) {
         // DROP, ALTER, CREATE, WITH ENCRYPTED
@@ -1303,18 +1579,10 @@ EOF`);
         process.exit(0);
       }
 
-      if (process.argv.includes('ls')) {
-        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-sources read`);
-        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} commissioning-scripts read`);
-        // shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-source-selections read 60`);
-        console.table(resources);
-        console.table(machines);
-        process.exit(0);
-      }
-
       // TODO: - Disable maas proxy (egress forwarding to public dns)
+      //       - Configure maas dhcp control server
       //       - Configure maas dns forwarding ${process.env.MAAS_DNS}
-      //       - Enable DNSSEC validation of upstream zones: Automatic (use default root key)
+      //       - Disable DNSSEC validation to No (Disable DNSSEC; useful when upstream DNS is misconfigured)
 
       if (process.argv.includes('clear')) {
         for (const machine of machines) {
@@ -1354,35 +1622,6 @@ EOF`);
           `maas init region+rack --database-uri "postgres://${process.env.DB_PG_MAAS_USER}:${process.env.DB_PG_MAAS_PASS}@${process.env.DB_PG_MAAS_HOST}/${process.env.DB_PG_MAAS_NAME}"` +
           ` --maas-url http://${IP_ADDRESS}:5240/MAAS`;
         pbcopy(cmd);
-        process.exit(0);
-      }
-      if (process.argv.includes('dhcp')) {
-        const snippets = JSON.parse(
-          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} dhcpsnippets read`, {
-            stdout: true,
-            silent: true,
-            disableLog: true,
-          }),
-        );
-        for (const snippet of snippets) {
-          switch (snippet.name) {
-            case 'arm64':
-              snippet.value = snippet.value.split(`\n`);
-              snippet.value[1] = `          filename "http://${IP_ADDRESS}:5248/images/bootloaders/uefi/arm64/grubaa64.efi";`;
-              snippet.value[5] = `          filename "http://${IP_ADDRESS}:5248/images/bootloaders/uefi/arm64/grubaa64.efi";`;
-              snippet.value = snippet.value.join(`\n`);
-              shellExec(
-                `maas ${process.env.MAAS_ADMIN_USERNAME} dhcpsnippet update ${snippet.name} value='${snippet.value}'`,
-              );
-              break;
-
-            default:
-              break;
-          }
-        }
-
-        console.log(snippets);
-
         process.exit(0);
       }
 
@@ -1494,34 +1733,6 @@ EOF`);
       // ip link show
       // nmcli con show
 
-      let resources;
-      try {
-        resources = JSON.parse(
-          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resources read`, {
-            silent: true,
-            stdout: true,
-          }),
-        ).map((o) => ({
-          id: o.id,
-          name: o.name,
-          architecture: o.architecture,
-        }));
-      } catch (error) {
-        logger.error(error);
-      }
-
-      let machines;
-      try {
-        machines = JSON.parse(
-          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machines read`, {
-            stdout: true,
-            silent: true,
-          }),
-        ).map((m) => machineFactory(m));
-      } catch (error) {
-        logger.error(error);
-      }
-
       let firmwarePath,
         tftpSubDir,
         kernelFilesPaths,
@@ -1540,7 +1751,7 @@ EOF`);
 
       switch (process.argv[3]) {
         case 'rpi4mb':
-          const resourceId = process.argv[4] ?? '39';
+          const resourceId = process.argv[4] ?? '12';
           tftpSubDir = '/rpi4mb';
           zipFirmwareFileName = `RPi4_UEFI_Firmware_v1.41.zip`;
           zipFirmwareName = zipFirmwareFileName.split('.zip')[0];
@@ -1625,12 +1836,47 @@ EOF`);
             // 'boot=casper',
             // 'ro',
             'netboot=nfs',
-            `cloud-config-url=/dev/null`,
+            `init=/sbin/init`,
+            // `cloud-config-url=/dev/null`,
             // 'ip=dhcp',
             // 'ip=dfcp',
             // 'autoinstall',
             // 'rd.break',
           ];
+
+          // TODO: use autoinstall cloud-config-url=http://<MAAS_IP>:5240/MAAS/metadata/latest
+          // #cloud-config
+          // autoinstall:
+          //   version: 1
+
+          //   keyboard:
+          //     layout: es
+          //     variant: latinamerican
+
+          //   identity:
+          //     hostname: rpi4
+          //     username: rpiadmin
+          //     password: "{{PASSWORD}}"
+
+          //   ssh:
+          //     install-server: true
+          //     allow-pw: true
+          //     authorized-keys:
+          //       - "{{SSH_KEY}}"
+
+          //   locale: es_ES.UTF-8
+          //   timezone: America/Santiago
+
+          //   packages:
+          //     - cloud-init
+          //     - systemd-sysv
+          //     - openssh-server
+          //     - sudo
+          //     - udev
+          //     - netplan.io
+
+          //   late-commands:
+          //     - curtin in-target --target=/target ln -sf /lib/systemd/systemd /sbin/init
 
           nfsConnectStr = cmd.join(' ');
           bootConf = `[all]
@@ -1649,7 +1895,8 @@ DHCP_TIMEOUT=45000
 DHCP_REQ_TIMEOUT=4000
 TFTP_FILE_TIMEOUT=30000
 BOOT_ORDER=0x21`;
-
+          // CLIENT_IP=${ipaddr}
+          // SUBNET=255.255.255.0
           break;
 
         default:
@@ -1831,9 +2078,12 @@ BOOT_ORDER=0x21`;
             newMachine = machineFactory(JSON.parse(newMachine));
             machines.push(newMachine);
             console.log(newMachine);
-            shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine commission ${newMachine.system_id}`, {
-              silent: true,
-            });
+            shellExec(
+              `maas ${process.env.MAAS_ADMIN_USERNAME} machine commission ${newMachine.system_id}  enable_ssh=1 commissioning_scripts=90-verify-user.sh skip_bmc_config=1 skip_networking=1 skip_storage=1`,
+              {
+                silent: true,
+              },
+            );
           } catch (error) {
             logger.error(error, error.stack);
           }
@@ -1941,6 +2191,7 @@ udp-port = 32766
         host,
         nfsHostPath,
         ipaddr,
+        update: true,
       });
       break;
     }
@@ -1979,7 +2230,7 @@ udp-port = 32766
               `--arch=arm64`,
               `--variant=minbase`,
               `--foreign`, // arm64 on amd64
-              `noble`,
+              [`noble`, `jammy`][0],
               nfsHostPath,
               `http://ports.ubuntu.com/ubuntu-ports/`,
             ];
@@ -2011,8 +2262,10 @@ EOF`);
       }
       if (process.argv.includes('mount')) {
         shellExec(`sudo mount --bind /proc ${nfsHostPath}/proc`);
-        shellExec(`sudo mount --bind /sys  ${nfsHostPath}/sys`);
-        shellExec(`sudo mount --rbind /dev  ${nfsHostPath}/dev`);
+        shellExec(`sudo mount --bind /sys ${nfsHostPath}/sys`);
+        shellExec(`sudo mount --rbind /dev ${nfsHostPath}/dev`);
+        shellExec(`sudo mount --rbind /dev/pts ${nfsHostPath}/dev/pts`);
+        shellExec(`sudo mount --bind /run ${nfsHostPath}/run`);
       }
 
       if (process.argv.includes('build')) {
@@ -2047,6 +2300,7 @@ EOF`);
       const nfsHostPath = `${process.env.NFS_EXPORT_PATH}/${host}`;
       shellExec(`sudo umount ${nfsHostPath}/proc`);
       shellExec(`sudo umount ${nfsHostPath}/sys`);
+      shellExec(`sudo umount ${nfsHostPath}/dev/pts`);
       shellExec(`sudo umount ${nfsHostPath}/dev`);
       // shellExec(`sudo umount ${nfsHostPath}/lib/modules`);
       break;
@@ -2439,6 +2693,14 @@ nvidia/gpu-operator \
       // curl -L https://www.scala-sbt.org/sbt-rpm.repo > sbt-rpm.repo
       // sudo mv sbt-rpm.repo /etc/yum.repos.d/
       // sudo yum install sbt
+      break;
+    }
+
+    case 'chrony': {
+      shellExec(`sudo dnf install chrony -y`);
+      // debian chroot: sudo apt install chrony
+      for (const cmd of chronySetUp(`/etc/chrony.conf`)) shellExec(cmd);
+
       break;
     }
   }
