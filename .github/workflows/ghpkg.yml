@@ -64,10 +64,14 @@ jobs:
       - name: Clone and Push to github package repository
         run: |
           underpost clone --bare underpostnet/pwa-microservices-template-ghpkg
+          ls -a
           rm -rf ./.git
+          ls -a
           mv ./pwa-microservices-template-ghpkg.git ./.git
           git init
           pwd
+          ls -a
+          cat package.json
           git config user.name 'underpost.net'
           git config user.email 'admin@underpost.net'
           git remote set-url origin git@github.com:underpostnet/pwa-microservices-template-ghpkg.git
