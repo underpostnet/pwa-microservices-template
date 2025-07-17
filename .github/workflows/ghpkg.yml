@@ -69,6 +69,7 @@ jobs:
           ls -a
           mv ./pwa-microservices-template-ghpkg.git ./.git
           git init
+          echo 'test'
           pwd
           ls -a
           cat package.json
