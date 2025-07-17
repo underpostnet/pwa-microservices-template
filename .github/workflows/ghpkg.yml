@@ -67,10 +67,10 @@ jobs:
           rm -rf ./.git
           mv ./pwa-microservices-template-ghpkg.git ./.git
           pwd
-          git config user.name 'underpost.net'
-          git config user.email 'admin@underpost.net'
           git remote set-url origin git@github.com:underpostnet/pwa-microservices-template-ghpkg.git
           git init
+          git config user.name 'underpost.net'
+          git config user.email 'admin@underpost.net'
           git add .
           git status
           underpost cmt . ci package-pwa-microservices-template-ghpkg 'Update github repo package'
