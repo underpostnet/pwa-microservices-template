@@ -51,12 +51,12 @@ logger.info('argv', process.argv);
 
 const [exe, dir, operator] = process.argv;
 
-const updateVirtualRoot = async ({ IP_ADDRESS, architecture, host, nfsHostPath, ipaddr, update }) => {
+const updateVirtualRoot = async ({ IP_ADDRESS, architecture, host, nfsHostPath, ipaddr, update, gatewayip }) => {
   // <consumer_key>:<consumer_token>:<secret>
   const MAAS_API_TOKEN = shellExec(`maas apikey --username ${process.env.MAAS_ADMIN_USERNAME}`, {
     stdout: true,
   }).trim();
-  const [consumer_key, consumer_token, secret] = MAAS_API_TOKEN.split(`\n`)[1].split(':');
+  const [consumer_key, consumer_token, secret] = MAAS_API_TOKEN.split(`\n`)[0].split(':');
   const chronyConfPath = `/etc/chrony/chrony.conf`;
   const timezone = 'America/New_York';
   const timeZoneSteps = [
@@ -76,9 +76,10 @@ const updateVirtualRoot = async ({ IP_ADDRESS, architecture, host, nfsHostPath, 
     `sudo dpkg-reconfigure --frontend noninteractive keyboard-configuration`,
     `sudo systemctl restart keyboard-setup.service`,
   ];
+  // #  - ${JSON.stringify([...timeZoneSteps, ...chronySetUp(chronyConfPath)])}
   const installSteps = [
     `apt update`,
-    `apt install -y cloud-init systemd-sysv openssh-server sudo locales udev util-linux systemd-sysv iproute2 netplan.io ca-certificates curl wget chrony keyboard-configuration`,
+    `apt install -y cloud-init systemd-sysv openssh-server sudo locales udev util-linux systemd-sysv iproute2 netplan.io ca-certificates curl wget chrony ntpdate keyboard-configuration`,
     `ln -sf /lib/systemd/systemd /sbin/init`,
 
     `echo 'deb http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
@@ -98,14 +99,13 @@ deb http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe
 
     `apt update -qq`,
     `apt install -y xinput x11-xkb-utils usbutils`,
-  ];
 
-  let steps = [
     // `date -s "${shellExec(`date '+%Y-%m-%d %H:%M:%S'`, { stdout: true }).trim()}"`,
     // `date`,
 
     ...timeZoneSteps,
     ...chronySetUp(chronyConfPath),
+    ...keyboardSteps,
 
     // Create root user
     `useradd -m -s /bin/bash -G sudo root`,
@@ -118,7 +118,9 @@ deb http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe
     `chown -R root /home/root/.ssh`,
     `chmod 700 /home/root/.ssh`,
     `chmod 600 /home/root/.ssh/authorized_keys`,
+  ];
 
+  let steps = [
     // Configure cloud-init for MAAS
     `cat <<EOF_MAAS_CFG > /etc/cloud/cloud.cfg.d/90_maas.cfg
 #cloud-config
@@ -189,9 +191,12 @@ network:
   version: 2
   ethernets:
     ${process.env.RPI4_INTERFACE_NAME}:
-        dhcp4: true
+        dhcp4: false
         addresses:
           - ${ipaddr}/24
+        routes:
+          - to: default
+            via: ${gatewayip}
 
 # chpasswd:
 #   expire: false
@@ -209,40 +214,49 @@ bootcmd:
   - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
   - echo "Init bootcmd"
   - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
-#  - ${JSON.stringify([...timeZoneSteps, ...chronySetUp(chronyConfPath)])}
+  - ntpdate -u ${IP_ADDRESS} || ntpdate -u ${process.env.MAAS_NTP_SERVER}
 runcmd:
   - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
   - echo "Init runcmd"
   - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
 EOF_MAAS_CFG`,
-    ...keyboardSteps,
   ];
 
-  if (!update) {
-    steps = installSteps.concat(steps);
-  }
+  const runSteps = (steps = []) => {
+    const script = steps
+      .map(
+        (s, i) => `echo "step ${i + 1}/${steps.length}: ${s.split('\n')[0]}"
+${s}`,
+      )
+      .join('\n');
 
-  shellExec(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
-${steps
-  .map(
-    (s, i) => `echo "step ${i + 1}/${steps.length}: ${s.split('\n')[0]}"
-${s}
-`,
-  )
-  .join(``)}
+    const cmd = `sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF_OUTER'
+${script}
+EOF_OUTER`;
+
+    shellExec(cmd);
+  };
+
+  if (update) {
+    // --reboot
+    shellExec(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
+sudo cloud-init clean --logs --seed --configs all --machine-id
+sudo rm -rf /var/lib/cloud/*
 EOF`);
 
-  shellExec(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
+    if (fs.existsSync(`${nfsHostPath}/var/log/`)) {
+      fs.writeFileSync(`${nfsHostPath}/var/log/cloud-init.log`, '', 'utf8');
+      fs.writeFileSync(`${nfsHostPath}/var/log/cloud-init-output.log`, '', 'utf8');
+    }
+
+    runSteps(steps);
+  } else {
+    runSteps(installSteps.concat(steps));
+
+    shellExec(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
 echo "nameserver ${process.env.MAAS_DNS}" | tee /etc/resolv.conf > /dev/null
 apt update
 EOF`);
-
-  if (update) {
-    shellExec(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
-sudo cloud-init clean --logs --reboot
-EOF`);
-    fs.writeFileSync(`${nfsHostPath}/var/log/cloud-init.log`, '', 'utf8');
-
     fs.writeFileSync(
       `${nfsHostPath}/dns.sh`,
       `rm /etc/resolv.conf
@@ -259,7 +273,7 @@ const chronySetUp = (path) => {
 # Use public servers from the pool.ntp.org project.
 # Please consider joining the pool (http://www.pool.ntp.org/join.html).
 # pool 2.pool.ntp.org iburst
-server ntp.ubuntu.com iburst
+server ${process.env.MAAS_NTP_SERVER} iburst
 
 # Record the rate at which the system clock gains/losses time.
 driftfile /var/lib/chrony/drift
@@ -1751,7 +1765,6 @@ EOF`);
 
       switch (process.argv[3]) {
         case 'rpi4mb':
-          const resourceId = process.argv[4] ?? '12';
           tftpSubDir = '/rpi4mb';
           zipFirmwareFileName = `RPi4_UEFI_Firmware_v1.41.zip`;
           zipFirmwareName = zipFirmwareFileName.split('.zip')[0];
@@ -1763,7 +1776,7 @@ EOF`);
             await Downloader(zipFirmwareUrl, `../${zipFirmwareFileName}`);
             shellExec(`cd .. && mkdir ${zipFirmwareName} && cd ${zipFirmwareName} && unzip ../${zipFirmwareFileName}`);
           }
-          resource = resources.find((o) => o.id == resourceId);
+          resource = resources.find((o) => o.architecture === 'arm64/ga-24.04' && o.name === 'ubuntu/noble');
           name = resource.name;
           architecture = resource.architecture;
           resource = resources.find((o) => o.name === name && o.architecture === architecture);
@@ -2078,8 +2091,9 @@ BOOT_ORDER=0x21`;
             newMachine = machineFactory(JSON.parse(newMachine));
             machines.push(newMachine);
             console.log(newMachine);
+            // commissioning_scripts=90-verify-user.sh
             shellExec(
-              `maas ${process.env.MAAS_ADMIN_USERNAME} machine commission ${newMachine.system_id}  enable_ssh=1 commissioning_scripts=90-verify-user.sh skip_bmc_config=1 skip_networking=1 skip_storage=1`,
+              `maas ${process.env.MAAS_ADMIN_USERNAME} machine commission ${newMachine.system_id} enable_ssh=1 skip_bmc_config=1 skip_networking=1 skip_storage=1`,
               {
                 silent: true,
               },
@@ -2185,6 +2199,7 @@ udp-port = 32766
       const host = process.argv[4];
       const nfsHostPath = `${process.env.NFS_EXPORT_PATH}/${host}`;
       const ipaddr = process.env.RPI4_IP;
+      const gatewayip = process.env.GATEWAY_IP;
       await updateVirtualRoot({
         IP_ADDRESS,
         architecture,
@@ -2192,6 +2207,7 @@ udp-port = 32766
         nfsHostPath,
         ipaddr,
         update: true,
+        gatewayip,
       });
       break;
     }
@@ -2201,6 +2217,7 @@ udp-port = 32766
       const architecture = process.argv[3];
       const host = process.argv[4];
       const nfsHostPath = `${process.env.NFS_EXPORT_PATH}/${host}`;
+      const gatewayip = process.env.GATEWAY_IP;
       shellExec(`sudo dnf install -y iptables-legacy`);
       shellExec(`sudo dnf install -y debootstrap`);
       shellExec(`sudo dnf install kernel-modules-extra-$(uname -r)`);
@@ -2279,6 +2296,7 @@ EOF`);
               host,
               nfsHostPath,
               ipaddr,
+              gatewayip,
             });
 
             break;
@@ -2302,6 +2320,7 @@ EOF`);
       shellExec(`sudo umount ${nfsHostPath}/sys`);
       shellExec(`sudo umount ${nfsHostPath}/dev/pts`);
       shellExec(`sudo umount ${nfsHostPath}/dev`);
+      shellExec(`sudo umount ${nfsHostPath}/run`);
       // shellExec(`sudo umount ${nfsHostPath}/lib/modules`);
       break;
     }
