@@ -66,7 +66,7 @@ const updateVirtualRoot = async ({ IP_ADDRESS, architecture, host, nfsHostPath, 
 
     `ln -fs /usr/share/zoneinfo/${timezone} /etc/localtime`,
 
-    `DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata`,
+    `DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata ntpdate`,
     `dpkg-reconfigure --frontend noninteractive tzdata`,
   ];
   const keyboardSteps = [
@@ -78,36 +78,21 @@ const updateVirtualRoot = async ({ IP_ADDRESS, architecture, host, nfsHostPath, 
   ];
   // #  - ${JSON.stringify([...timeZoneSteps, ...chronySetUp(chronyConfPath)])}
   const installSteps = [
-    `apt update`,
-    `apt install -y cloud-init systemd-sysv openssh-server sudo locales udev util-linux systemd-sysv iproute2 netplan.io ca-certificates curl wget chrony ntpdate keyboard-configuration`,
-    `ln -sf /lib/systemd/systemd /sbin/init`,
-
-    `echo 'deb http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
+    `cat <<EOF | sudo tee /etc/apt/sources.list
+deb http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
 deb http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
 deb http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
-
-# Uncomment the following lines if you also need source packages (for building from source)
-# deb-src http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
-# deb-src http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
-# deb-src http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
-' > /etc/apt/sources.list`,
-    `apt update`,
-    `apt -y full-upgrade`,
-    // `apt install -y cloud-init=25.1.2-0ubuntu0~24.04.1`,
-
-    `systemctl enable ssh`,
+EOF`,
 
     `apt update -qq`,
+    `apt -y full-upgrade`,
     `apt install -y xinput x11-xkb-utils usbutils`,
-
-    // `date -s "${shellExec(`date '+%Y-%m-%d %H:%M:%S'`, { stdout: true }).trim()}"`,
-    // `date`,
-
-    ...timeZoneSteps,
-    ...chronySetUp(chronyConfPath),
-    ...keyboardSteps,
+    // `apt install -y cloud-init=25.1.2-0ubuntu0~24.04.1`,
+    `apt install -y cloud-init systemd-sysv openssh-server sudo locales udev util-linux systemd-sysv iproute2 netplan.io ca-certificates curl wget chrony keyboard-configuration`,
+    `ln -sf /lib/systemd/systemd /sbin/init`,
 
     // Create root user
+    `systemctl enable ssh`,
     `useradd -m -s /bin/bash -G sudo root`,
     `echo 'root:root' | chpasswd`,
     `mkdir -p /home/root/.ssh`,
@@ -191,12 +176,12 @@ network:
   version: 2
   ethernets:
     ${process.env.RPI4_INTERFACE_NAME}:
-        dhcp4: false
+        dhcp4: true
         addresses:
           - ${ipaddr}/24
-        routes:
-          - to: default
-            via: ${gatewayip}
+#         routes:
+#           - to: default
+#             via: ${gatewayip}
 
 # chpasswd:
 #   expire: false
@@ -264,6 +249,16 @@ echo 'nameserver 8.8.8.8' > /run/systemd/resolve/stub-resolv.conf
 ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf`,
       'utf8',
     );
+
+    await timer(5000);
+
+    runSteps([
+      // `date -s "${shellExec(`date '+%Y-%m-%d %H:%M:%S'`, { stdout: true }).trim()}"`,
+      // `date`,
+      ...timeZoneSteps,
+      ...chronySetUp(chronyConfPath),
+      ...keyboardSteps,
+    ]);
   }
 };
 
