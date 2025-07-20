@@ -91,7 +91,7 @@ EOF`,
 
 const cloudConfigFactory = (
   { IP_ADDRESS, architecture, host, nfsHostPath, ipaddr, update, gatewayip },
-  { consumer_key, consumer_token, secret },
+  { consumer_key, consumer_secret, token_key, token_secret },
 ) => [
   // Configure cloud-init for MAAS
   `cat <<EOF_MAAS_CFG > /etc/cloud/cloud.cfg.d/90_maas.cfg
@@ -112,16 +112,24 @@ hostname: ${host}
 datasource_list: [ MAAS ]
 datasource:
   MAAS:
-    metadata_url: http://${IP_ADDRESS}:5248/MAAS/metadata
-    consumer_key: ${consumer_key}
-    token_key: ${consumer_token}
-    token_secret: ${secret}
+    metadata_url: http://${IP_ADDRESS}:5240/MAAS/metadata/
+    ${
+      process.argv.includes('reset')
+        ? ''
+        : `consumer_key: ${consumer_key}
+    consumer_secret: ${consumer_secret}
+    token_key: ${token_key}
+    token_secret: ${token_secret}`
+    }
+
 
 users:
-- name: root
+- name: ${process.env.MAAS_ADMIN_USERNAME}
   sudo: ['ALL=(ALL) NOPASSWD:ALL']
   shell: /bin/bash
-  lock_passwd: true
+  lock_passwd: false
+  groups: sudo,users,admin,wheel,lxd
+  plain_text_passwd: '${process.env.MAAS_ADMIN_USERNAME}'
   ssh_authorized_keys:
     - ${fs.readFileSync(`/home/dd/engine/engine-private/deploy/id_rsa.pub`, 'utf8')}
 
@@ -136,11 +144,11 @@ users:
 # timezone: America/Santiago
 # timezone: ${timezone}
 
-# ntp:
-#   enabled: true
-#   servers:
-#     - ${IP_ADDRESS}
-#   ntp_client: chrony
+ntp:
+  enabled: true
+  servers:
+    - ${process.env.MAAS_NTP_SERVER}
+  ntp_client: chrony
 #   config:
 #     confpath: ${chronyConfPath}
 #     packages:
@@ -162,13 +170,13 @@ packages:
 resize_rootfs: false
 growpart:
   mode: off
-# network:
-#   version: 2
-#   ethernets:
-#     ${process.env.RPI4_INTERFACE_NAME}:
-#         dhcp4: true
-#         addresses:
-#           - ${ipaddr}/24
+network:
+  version: 2
+  ethernets:
+    ${process.env.RPI4_INTERFACE_NAME}:
+      dhcp4: true
+      addresses:
+        - ${ipaddr}/24
 #         routes:
 #           - to: default
 #             via: ${gatewayip}
@@ -193,6 +201,72 @@ runcmd:
   - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
   - echo "Init runcmd"
   - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+
+# If this is set, 'root' will not be able to ssh in and they
+# will get a message to login instead as the default $user
+disable_root: true
+
+# This will cause the set+update hostname module to not operate (if true)
+preserve_hostname: false
+
+# The modules that run in the 'init' stage
+cloud_init_modules:
+  - migrator
+  - seed_random
+  - bootcmd
+  - write-files
+  - growpart
+  - resizefs
+  - disk_setup
+  - mounts
+  - set_hostname
+  - update_hostname
+  - update_etc_hosts
+  - ca-certs
+  - rsyslog
+  - users-groups
+  - ssh
+
+# The modules that run in the 'config' stage
+cloud_config_modules:
+# Emit the cloud config ready event
+# this can be used by upstart jobs for 'start on cloud-config'.
+  - emit_upstart
+  - snap_config
+  - ssh-import-id
+  - locale
+  - set-passwords
+  - grub-dpkg
+  - apt-pipelining
+  - apt-configure
+  - ntp
+  - timezone
+  - disable-ec2-metadata
+  - runcmd
+  - byobu
+
+# The modules that run in the 'final' stage
+cloud_final_modules:
+  - snappy
+  - package-update-upgrade-install
+#  - fan
+#  - landscape
+#  - lxd
+#  - puppet
+  - chef
+  - salt-minion
+  - mcollective
+  - rightscale_userdata
+  - scripts-vendor
+  - scripts-per-once
+  - scripts-per-boot
+  - scripts-per-instance
+  - scripts-user
+  - ssh-authkey-fingerprints
+  - keys-to-console
+#  - phone-home
+  - final-message
+#  - power-state-change
 EOF_MAAS_CFG`,
 ];
 
@@ -307,6 +381,7 @@ ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf`,
     `${nfsHostPath}/underpost/help.sh`,
     `echo "=== Cloud init utils ==="
 echo "sudo cloud-init --all-stages"
+echo "sudo cloud-init clean --logs --seed --configs all --machine-id --reboot"
 echo "sudo cloud-init init --local"
 echo "sudo cloud-init init"
 echo "sudo cloud-init modules --mode=config"
@@ -355,22 +430,32 @@ cut -d: -f1 /etc/passwd
 
 const updateVirtualRoot = async ({ IP_ADDRESS, architecture, host, nfsHostPath, ipaddr, update, gatewayip }) => {
   // <consumer_key>:<consumer_token>:<secret>
-  let [consumer_key, consumer_token, secret] = process.argv.includes('reset')
-    ? shellExec(`maas apikey --username ${process.env.MAAS_ADMIN_USERNAME}`, {
-        stdout: true,
-      })
-        .trim()
-        .split(`\n`)[0]
-        .split(':')
-    : shellExec(`maas apikey --generate --username ${process.env.MAAS_ADMIN_USERNAME}`, {
-        stdout: true,
-      })
-        .trim()
-        .split(':');
+  // <consumer_key>:<consumer_secret>:<token_key>:<token_secret>
+  // maas apikey --with-names --username ${process.env.MAAS_ADMIN_USERNAME}
+  // maas ${process.env.MAAS_ADMIN_USERNAME} account create-authorisation-token
+  // maas apikey --generate --username ${process.env.MAAS_ADMIN_USERNAME}
+  // https://github.com/CanonicalLtd/maas-docs/issues/647
 
-  if (process.argv.includes('reset')) secret = '&' + secret;
+  const parts = shellExec(`maas apikey --with-names --username ${process.env.MAAS_ADMIN_USERNAME}`, {
+    stdout: true,
+  })
+    .trim()
+    .split(`\n`)[0]
+    .split(':');
 
-  logger.info('Maas api token generated', { consumer_key, consumer_token, secret });
+  let consumer_key, consumer_secret, token_key, token_secret;
+
+  if (parts.length === 4) {
+    [consumer_key, consumer_secret, token_key, token_secret] = parts;
+  } else if (parts.length === 3) {
+    [consumer_key, token_key, token_secret] = parts;
+    consumer_secret = '""';
+    token_secret = token_secret.split(' MAAS consumer')[0].trim();
+  } else {
+    throw new Error('Invalid token format');
+  }
+
+  logger.info('Maas api token generated', { consumer_key, consumer_secret, token_key, token_secret });
 
   if (update) {
     // --reboot
@@ -411,11 +496,7 @@ EOF`);
     nfsHostPath,
     cloudConfigFactory(
       { IP_ADDRESS, architecture, host, nfsHostPath, ipaddr, update, gatewayip },
-      {
-        consumer_key,
-        consumer_token,
-        secret,
-      },
+      { consumer_key, consumer_secret, token_key, token_secret },
     ),
   );
   installUbuntuUnderpostTools(nfsHostPath);
@@ -1604,7 +1685,9 @@ EOF`);
       dotenv.config({ path: `${getUnderpostRootPath()}/.env`, override: true });
       const IP_ADDRESS = getLocalIPv4Address();
       const serverip = IP_ADDRESS;
-      const tftpRoot = process.env.TFTP_ROOT;
+      const tftpRoot = process.argv.includes('v3.0')
+        ? `/var/snap/maas/common/maas/boot-resources/snapshot-20250720-162718`
+        : process.env.TFTP_ROOT;
       const ipaddr = process.env.RPI4_IP;
       const netmask = process.env.NETMASK;
       const gatewayip = process.env.GATEWAY_IP;
@@ -1854,7 +1937,9 @@ EOF`);
         zipFirmwareName,
         zipFirmwareUrl,
         interfaceName,
-        nfsHost;
+        nfsHost,
+        bootResourcesPath,
+        bootKernelPath;
 
       switch (process.argv[3]) {
         case 'rpi4mb':
@@ -1872,7 +1957,7 @@ EOF`);
           resource = resources.find((o) => o.architecture === 'arm64/ga-24.04' && o.name === 'ubuntu/noble');
           name = resource.name;
           architecture = resource.architecture;
-          resource = resources.find((o) => o.name === name && o.architecture === architecture);
+          // resource = resources.find((o) => o.name === name && o.architecture === architecture);
           nfsServerRootPath = `${process.env.NFS_EXPORT_PATH}/rpi4mb`;
           // ,anonuid=1001,anongid=100
           // etcExports = `${nfsServerRootPath} *(rw,all_squash,sync,no_root_squash,insecure)`;
@@ -1884,21 +1969,33 @@ EOF`);
             'no_subtree_check',
             'insecure',
           ]})`;
-          const resourceData = JSON.parse(
-            shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resource read ${resource.id}`, {
-              stdout: true,
-              silent: true,
-              disableLog: true,
-            }),
-          );
-          const bootFiles = resourceData.sets[Object.keys(resourceData.sets)[0]].files;
-          const suffix = architecture.match('xgene') ? '.xgene' : '';
+          if (process.argv.includes('v3.0')) {
+            bootResourcesPath = `/var/snap/maas/common/maas/boot-resources/snapshot-20250720-162718`;
+            bootKernelPath = `/var/snap/maas/common/maas/boot-resources/snapshot-20250720-162718/ubuntu/arm64/hwe-24.04/noble/stable`;
+            kernelFilesPaths = {
+              'vmlinuz-efi': `${bootKernelPath}/boot-kernel`,
+              'initrd.img': `${bootKernelPath}/boot-initrd`,
+              squashfs: `${bootKernelPath}/squashfs`,
+            };
+          } else {
+            const resourceData = JSON.parse(
+              shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resource read ${resource.id}`, {
+                stdout: true,
+                silent: true,
+                disableLog: true,
+              }),
+            );
+            const bootFiles = resourceData.sets[Object.keys(resourceData.sets)[0]].files;
+            const suffix = architecture.match('xgene') ? '.xgene' : '';
+            bootResourcesPath = `/var/snap/maas/common/maas/image-storage/bootloaders/uefi/arm64`;
+            bootKernelPath = `/var/snap/maas/common/maas/image-storage`;
+            kernelFilesPaths = {
+              'vmlinuz-efi': `${bootKernelPath}/${bootFiles['boot-kernel' + suffix].filename_on_disk}`,
+              'initrd.img': `${bootKernelPath}/${bootFiles['boot-initrd' + suffix].filename_on_disk}`,
+              squashfs: `${bootKernelPath}/${bootFiles['squashfs'].filename_on_disk}`,
+            };
+          }
 
-          kernelFilesPaths = {
-            'vmlinuz-efi': bootFiles['boot-kernel' + suffix].filename_on_disk,
-            'initrd.img': bootFiles['boot-initrd' + suffix].filename_on_disk,
-            squashfs: bootFiles['squashfs'].filename_on_disk,
-          };
           const protocol = 'tcp'; // v3 -> tcp, v4 -> udp
 
           const mountOptions = [
@@ -2022,52 +2119,18 @@ BOOT_ORDER=0x21`;
       switch (process.argv[3]) {
         case 'rpi4mb':
           {
-            // subnet DHCP snippets
-            // # UEFI ARM64
-            // if option arch = 00:0B {
-            //   filename "rpi4mb/pxe/grubaa64.efi";
-            // }
-            // elsif option arch = 00:13 {
-            //   filename "http://<IP_ADDRESS>:5248/images/bootloaders/uefi/arm64/grubaa64.efi";
-            //   option vendor-class-identifier "HTTPClient";
-            // }
             for (const file of ['bootaa64.efi', 'grubaa64.efi']) {
-              shellExec(
-                `sudo cp -a /var/snap/maas/common/maas/image-storage/bootloaders/uefi/arm64/${file} ${tftpRoot}${tftpSubDir}/pxe/${file}`,
-              );
+              shellExec(`sudo cp -a ${bootResourcesPath}/${file} ${tftpRoot}${tftpSubDir}/pxe/${file}`);
             }
-            // const file = 'bcm2711-rpi-4-b.dtb';
-            // shellExec(
-            //   `sudo cp -a  ${firmwarePath}/${file} /var/snap/maas/common/maas/image-storage/bootloaders/uefi/arm64/${file}`,
-            // );
-
-            // const ipxeSrc = fs
-            //   .readFileSync(`${tftpRoot}/ipxe.cfg`, 'utf8')
-            //   .replaceAll('amd64', 'arm64')
-            //   .replaceAll('${next-server}', IP_ADDRESS);
-            // fs.writeFileSync(`${tftpRoot}/ipxe.cfg`, ipxeSrc, 'utf8');
 
             {
               for (const file of Object.keys(kernelFilesPaths)) {
-                shellExec(
-                  `sudo cp -a /var/snap/maas/common/maas/image-storage/${kernelFilesPaths[file]} ${tftpRoot}${tftpSubDir}/pxe/${file}`,
-                );
+                shellExec(`sudo cp -a ${kernelFilesPaths[file]} ${tftpRoot}${tftpSubDir}/pxe/${file}`);
               }
-              // const configTxtSrc = fs.readFileSync(`${firmwarePath}/config.txt`, 'utf8');
-              // fs.writeFileSync(
-              //   `${tftpRoot}${tftpSubDir}/config.txt`,
-              //   configTxtSrc
-              //     .replace(`kernel=kernel8.img`, `kernel=vmlinuz`)
-              //     .replace(`# max_framebuffers=2`, `max_framebuffers=2`)
-              //     .replace(`initramfs initramfs8 followkernel`, `initramfs initrd.img followkernel`),
-              //   'utf8',
-              // );
 
-              // grub:
-              // set root=(pxe)
+              fs.mkdirSync(`${tftpRoot}/grub`, { recursive: true });
 
-              // UNDERPOST.NET UEFI/GRUB/MAAS RPi4 commissioning (ARM64)
-              const menuentryStr = 'underpost.net rpi4mb maas commissioning (ARM64)';
+              const menuentryStr = 'UNDERPOST.NET UEFI/GRUB/MAAS RPi4 commissioning (ARM64)';
               const grubCfgPath = `${tftpRoot}/grub/grub.cfg`;
               fs.writeFileSync(
                 grubCfgPath,
@@ -2171,29 +2234,30 @@ BOOT_ORDER=0x21`;
           };
           machine.hostname = machine.hostname.replaceAll(' ', '').replaceAll('.', '');
 
-          try {
-            let newMachine = shellExec(
-              `maas ${process.env.MAAS_ADMIN_USERNAME} machines create ${Object.keys(machine)
-                .map((k) => `${k}="${machine[k]}"`)
-                .join(' ')}`,
-              {
-                silent: true,
-                stdout: true,
-              },
-            );
-            newMachine = machineFactory(JSON.parse(newMachine));
-            machines.push(newMachine);
-            console.log(newMachine);
-            // commissioning_scripts=90-verify-user.sh
-            shellExec(
-              `maas ${process.env.MAAS_ADMIN_USERNAME} machine commission ${newMachine.system_id} enable_ssh=1 skip_bmc_config=1 skip_networking=1 skip_storage=1`,
-              {
-                silent: true,
-              },
-            );
-          } catch (error) {
-            logger.error(error, error.stack);
-          }
+          if (machine.hostname.match('generic-host'))
+            try {
+              let newMachine = shellExec(
+                `maas ${process.env.MAAS_ADMIN_USERNAME} machines create ${Object.keys(machine)
+                  .map((k) => `${k}="${machine[k]}"`)
+                  .join(' ')}`,
+                {
+                  silent: true,
+                  stdout: true,
+                },
+              );
+              newMachine = machineFactory(JSON.parse(newMachine));
+              machines.push(newMachine);
+              console.log(newMachine);
+              // commissioning_scripts=90-verify-user.sh
+              shellExec(
+                `maas ${process.env.MAAS_ADMIN_USERNAME} machine commission ${newMachine.system_id} enable_ssh=1 skip_bmc_config=1 skip_networking=1 skip_storage=1`,
+                {
+                  silent: true,
+                },
+              );
+            } catch (error) {
+              logger.error(error, error.stack);
+            }
         }
         // if (discoveries.length > 0) {
         //   shellExec(

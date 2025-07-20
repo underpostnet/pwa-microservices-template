@@ -2,6 +2,7 @@
 set -euo pipefail
 
 sudo snap install jq
+# sudo snap install --channel=3.0/stable maas
 sudo snap install maas
 
 # Get default interface and IP address
