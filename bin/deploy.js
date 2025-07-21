@@ -69,7 +69,9 @@ const keyboardSteps = [
   `sudo dpkg-reconfigure --frontend noninteractive keyboard-configuration`,
   `sudo systemctl restart keyboard-setup.service`,
 ];
-// #  - ${JSON.stringify([...timeZoneSteps, ...chronySetUp(chronyConfPath)])}
+
+const kernelLibVersion = `6.8.0-41-generic`;
+
 const installSteps = [
   `cat <<EOF | tee /etc/apt/sources.list
 deb http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
@@ -79,7 +81,11 @@ EOF`,
 
   `apt update -qq`,
   `apt -y full-upgrade`,
-  `apt install -y xinput x11-xkb-utils usbutils`,
+  `apt install -y build-essential xinput x11-xkb-utils usbutils`,
+  'apt install -y linux-image-generic',
+  `apt install -y linux-modules-${kernelLibVersion} linux-modules-extra-${kernelLibVersion}`,
+
+  `depmod -a ${kernelLibVersion}`,
   // `apt install -y cloud-init=25.1.2-0ubuntu0~24.04.1`,
   `apt install -y cloud-init systemd-sysv openssh-server sudo locales udev util-linux systemd-sysv iproute2 netplan.io ca-certificates curl wget chrony`,
   `ln -sf /lib/systemd/systemd /sbin/init`,
@@ -89,12 +95,31 @@ EOF`,
   `DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata kmod keyboard-configuration console-setup iputils-ping`,
 ];
 
+const bootCmdSteps = [
+  `/underpost/dns.sh`,
+  `/underpost/host.sh`,
+  // `/underpost/date.sh`,
+  `cp -a /underpost/90_maas.cfg /etc/cloud/cloud.cfg.d/90_maas.cfg`,
+];
+
+const cloudInitReset = `sudo cloud-init clean --logs --seed --configs all --machine-id
+sudo rm -rf /var/lib/cloud/*`;
+
+const cloudConfigCmdRunFactory = (steps = []) =>
+  steps
+    .map(
+      (step, i, a) =>
+        '  - echo "\\$(date) | ' + (i + 1) + '/' + a.length + ' - ' + step.split('\n')[0] + '"' + `\n` + `  - ${step}`,
+    )
+    .join('\n');
+
 const cloudConfigFactory = (
-  { IP_ADDRESS, architecture, host, nfsHostPath, ipaddr, update, gatewayip },
+  { IP_ADDRESS, architecture, host, nfsHostPath, ipaddr, update, gatewayip, reset },
   { consumer_key, consumer_secret, token_key, token_secret },
+  path = '/etc/cloud/cloud.cfg.d/90_maas.cfg',
 ) => [
   // Configure cloud-init for MAAS
-  `cat <<EOF_MAAS_CFG > /etc/cloud/cloud.cfg.d/90_maas.cfg
+  `cat <<EOF_MAAS_CFG > ${path}
 #cloud-config
 
 hostname: ${host}
@@ -114,7 +139,7 @@ datasource:
   MAAS:
     metadata_url: http://${IP_ADDRESS}:5240/MAAS/metadata/
     ${
-      process.argv.includes('reset')
+      reset
         ? ''
         : `consumer_key: ${consumer_key}
     consumer_secret: ${consumer_secret}
@@ -142,18 +167,15 @@ users:
 
 # check timedatectl on host
 # timezone: America/Santiago
-# timezone: ${timezone}
+timezone: ${timezone}
 
 ntp:
   enabled: true
   servers:
     - ${process.env.MAAS_NTP_SERVER}
   ntp_client: chrony
-#   config:
-#     confpath: ${chronyConfPath}
-#     packages:
-#       - chrony
-#     service_name: chrony
+  config:
+    confpath: ${chronyConfPath}
 
 # ssh:
 #   allow-pw: false
@@ -167,9 +189,10 @@ packages:
   - git
   - htop
   - snapd
+  - chrony
 resize_rootfs: false
 growpart:
-  mode: off
+  mode: false
 network:
   version: 2
   ethernets:
@@ -186,7 +209,7 @@ network:
 #   users:
 #   - {name: root, password: changeme, type: text}
 
-final_message: "The system is up, after $UPTIME seconds"
+final_message: "====== Cloud init finished ======"
 
 # power_state:
 #   mode: reboot
@@ -197,6 +220,7 @@ bootcmd:
   - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
   - echo "Init bootcmd"
   - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+${cloudConfigCmdRunFactory(bootCmdSteps)}
 runcmd:
   - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
   - echo "Init runcmd"
@@ -212,61 +236,37 @@ preserve_hostname: false
 # The modules that run in the 'init' stage
 cloud_init_modules:
   - migrator
-  - seed_random
   - bootcmd
   - write-files
   - growpart
   - resizefs
-  - disk_setup
-  - mounts
   - set_hostname
-  - update_hostname
   - update_etc_hosts
-  - ca-certs
   - rsyslog
   - users-groups
   - ssh
 
-# The modules that run in the 'config' stage
 cloud_config_modules:
-# Emit the cloud config ready event
-# this can be used by upstart jobs for 'start on cloud-config'.
-  - emit_upstart
-  - snap_config
-  - ssh-import-id
+  - mounts
   - locale
   - set-passwords
-  - grub-dpkg
-  - apt-pipelining
-  - apt-configure
-  - ntp
-  - timezone
-  - disable-ec2-metadata
-  - runcmd
-  - byobu
-
-# The modules that run in the 'final' stage
-cloud_final_modules:
-  - snappy
   - package-update-upgrade-install
-#  - fan
-#  - landscape
-#  - lxd
-#  - puppet
-  - chef
-  - salt-minion
-  - mcollective
+  - timezone
+  - runcmd
+  - ssh-import-id
+  - ntp
+
+cloud_final_modules:
   - rightscale_userdata
-  - scripts-vendor
   - scripts-per-once
   - scripts-per-boot
   - scripts-per-instance
   - scripts-user
   - ssh-authkey-fingerprints
   - keys-to-console
-#  - phone-home
+  - phone-home
   - final-message
-#  - power-state-change
+
 EOF_MAAS_CFG`,
 ];
 
@@ -285,7 +285,9 @@ EOF_OUTER`;
   shellExec(cmd);
 };
 
-const chronySetUp = (path) => {
+const chronySetUp = (path, alias = 'chrony') => {
+  // use alias = 'chronyd' for RHEL
+  // use alias = 'chrony' for Ubuntu
   return [
     `echo '
 # Use public servers from the pool.ntp.org project.
@@ -328,25 +330,25 @@ logdir /var/log/chrony
 # Select which information is logged.
 #log measurements statistics tracking
 ' > ${path} `,
-    `sudo systemctl stop chronyd`,
+    `systemctl stop ${alias}`,
+
+    `${alias}d -q 'server ntp.ubuntu.com iburst'`,
 
     // `chronyd -q 'server 0.europe.pool.ntp.org iburst'`,
-    `chronyd -q 'server ntp.ubuntu.com iburst'`,
 
-    `sudo systemctl enable --now chronyd`,
-    `sudo systemctl restart chronyd`,
-    `sudo systemctl status chronyd`,
+    `sudo systemctl enable --now ${alias}`,
+    `sudo systemctl restart ${alias}`,
+    `sudo systemctl status ${alias}`,
 
     `chronyc sources`,
     `chronyc tracking`,
-    // sudo firewall-cmd --add-service=ntp --permanent
-    // sudo firewall-cmd --reload
 
     `chronyc sourcestats -v`,
+    `timedatectl status`,
   ];
 };
 
-const installUbuntuUnderpostTools = (nfsHostPath) => {
+const installUbuntuUnderpostTools = ({ nfsHostPath, host }) => {
   fs.mkdirSync(`${nfsHostPath}/underpost`, { recursive: true });
 
   logger.info('Build', `${nfsHostPath}/underpost/date.sh`);
@@ -355,6 +357,20 @@ const installUbuntuUnderpostTools = (nfsHostPath) => {
     `${timeZoneSteps.join('\n')}
 ${chronySetUp(chronyConfPath).join('\n')}
 `,
+    'utf8',
+  );
+
+  logger.info('Build', `${nfsHostPath}/underpost/host.sh`);
+  fs.writeFileSync(
+    `${nfsHostPath}/underpost/host.sh`,
+    `echo -e "127.0.0.1   localhost\n127.0.1.1   ${host}" | tee -a /etc/hosts`,
+    'utf8',
+  );
+
+  logger.info('Build', `${nfsHostPath}/underpost/keys.sh`);
+  fs.writeFileSync(
+    `${nfsHostPath}/underpost/keys.sh`,
+    `cat /etc/cloud/cloud.cfg.d/90_maas.cfg | grep -C 5 'metadata'`,
     'utf8',
   );
 
@@ -373,6 +389,24 @@ ${chronySetUp(chronyConfPath).join('\n')}
     `rm /etc/resolv.conf
 echo 'nameserver 8.8.8.8' > /run/systemd/resolve/stub-resolv.conf
 ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf`,
+    'utf8',
+  );
+
+  logger.info('Build', `${nfsHostPath}/underpost/start.sh`);
+  fs.writeFileSync(
+    `${nfsHostPath}/underpost/start.sh`,
+    `#!/bin/bash
+set -x
+sudo cloud-init --all-stages
+    `,
+    'utf8',
+  );
+
+  logger.info('Build', `${nfsHostPath}/underpost/reset.sh`);
+  fs.writeFileSync(
+    `${nfsHostPath}/underpost/reset.sh`,
+    `${cloudInitReset}
+${bootCmdSteps.join('\n')}`,
     'utf8',
   );
 
@@ -417,7 +451,12 @@ cut -d: -f1 /etc/passwd
     `chmod +x /underpost/dns.sh`,
     `chmod +x /underpost/help.sh`,
     `chmod +x /underpost/config-path.sh`,
+    `chmod +x /underpost/host.sh`,
+    `chmod +x /underpost/keys.sh`,
     `chmod +x /underpost/test.sh`,
+    `chmod +x /underpost/start.sh`,
+    `chmod +x /underpost/reset.sh`,
+    chronySetUp(chronyConfPath)[0],
     `sudo chmod 700 ~/.ssh/`,
     `sudo chmod 600 ~/.ssh/authorized_keys`,
     `sudo chmod 644 ~/.ssh/known_hosts`,
@@ -461,8 +500,7 @@ const updateVirtualRoot = async ({ IP_ADDRESS, architecture, host, nfsHostPath, 
     // --reboot
     if (process.argv.includes('reset'))
       shellExec(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash <<'EOF'
-sudo cloud-init clean --logs --seed --configs all --machine-id
-sudo rm -rf /var/lib/cloud/*
+${cloudInitReset}
 EOF`);
 
     if (fs.existsSync(`${nfsHostPath}/var/log/`)) {
@@ -495,11 +533,38 @@ EOF`);
   runSteps(
     nfsHostPath,
     cloudConfigFactory(
-      { IP_ADDRESS, architecture, host, nfsHostPath, ipaddr, update, gatewayip },
+      {
+        reset: process.argv.includes('reset') ? true : false,
+        IP_ADDRESS,
+        architecture,
+        host,
+        nfsHostPath,
+        ipaddr,
+        update,
+        gatewayip,
+      },
       { consumer_key, consumer_secret, token_key, token_secret },
     ),
   );
-  installUbuntuUnderpostTools(nfsHostPath);
+
+  runSteps(
+    nfsHostPath,
+    cloudConfigFactory(
+      {
+        IP_ADDRESS,
+        architecture,
+        host,
+        nfsHostPath,
+        ipaddr,
+        update,
+        gatewayip,
+      },
+      { consumer_key, consumer_secret, token_key, token_secret },
+      '/underpost/90_maas.cfg',
+    ),
+  );
+
+  installUbuntuUnderpostTools({ nfsHostPath, host });
 };
 
 try {
@@ -2022,6 +2087,7 @@ EOF`);
           ];
           const cmd = [
             `console=serial0,115200`,
+            // `console=ttyAMA0,115200`,
             `console=tty1`,
             // `initrd=-1`,
             // `net.ifnames=0`,
@@ -2045,6 +2111,12 @@ EOF`);
             // 'ip=dfcp',
             // 'autoinstall',
             // 'rd.break',
+
+            // Disable services that not apply over nfs
+            `systemd.mask=systemd-network-generator.service`,
+            `systemd.mask=systemd-networkd.service`,
+            `systemd.mask=systemd-fsck-root.service`,
+            `systemd.mask=systemd-udev-trigger.service`,
           ];
 
           // TODO: use autoinstall cloud-config-url=http://<MAAS_IP>:5240/MAAS/metadata/latest
@@ -2392,7 +2464,6 @@ udp-port = 32766
       shellExec(`sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc`);
 
       if (process.argv.includes('build')) {
-        // shellExec(`depmod -a`);
         shellExec(`mkdir -p ${nfsHostPath}`);
         let cmd;
         switch (host) {
