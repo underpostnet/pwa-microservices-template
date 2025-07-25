@@ -349,19 +349,19 @@ program
 
 // 'baremetal' command: Baremetal server management
 program
-  .command('baremetal')
+  .command('baremetal [workflow-id] [hostname] [ip-address]')
   .option('--control-server-install', 'Installs the baremetal control server.')
-  .option('--control-server-db-init', 'Sets up the database for the baremetal control server.')
-  .option('--control-server-db-uninstall', 'Uninstalls the database for the baremetal control server.')
-  .option('--control-server-init', 'Initializes the baremetal control server.')
-  .option('--control-server-login', 'Logs in as an administrator to the control server.')
   .option('--control-server-uninstall', 'Uninstalls the baremetal control server.')
-  .option('--control-server-stop', 'Stops the baremetal control server.')
-  .option('--control-server-start', 'Starts the baremetal control server.')
-  .option('--get-users', 'Retrieves a list of users from the control server.')
-  .option('--new-api-key', 'Generates a new API key for the control server.')
+  .option('--control-server-db-install', 'Installs up the database for the baremetal control server.')
+  .option('--control-server-db-uninstall', 'Uninstalls the database for the baremetal control server.')
+  .option('--commission', 'Init workflow for commissioning a physical machine.')
+  .option('--nfs-build', 'Builds an NFS root filesystem for a workflow id config architecture using QEMU emulation.')
+  .option('--nfs-unmount', 'Unmounts the NFS root filesystem for a workflow id config architecture.')
+  .option('--nfs-sh', 'Copies QEMU emulation root entrypoint shell command to the clipboard.')
   .option('--dev', 'Sets the development context environment for baremetal operations.')
-  .description('Manages baremetal server operations, including installation, database setup, and user management.')
+  .description(
+    'Manages baremetal server operations, including installation, database setup, commissioning, and user management.',
+  )
   .action(UnderpostBaremetal.API.callback);
 
 export { program };

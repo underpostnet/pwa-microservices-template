@@ -98,25 +98,38 @@ EOF`,
 const bootCmdSteps = [
   `/underpost/dns.sh`,
   `/underpost/host.sh`,
-  // `/underpost/date.sh`,
-  `/underpost/keys_import.sh`,
   `/underpost/mac.sh`,
   `cat /underpost/mac`,
+  // '/underpost/keys_import.sh',
 ];
 
-const cloudInitReset = `sudo cloud-init clean --logs --seed --configs all --machine-id
-sudo rm -rf /var/lib/cloud/*`;
+const cloudInitReset = `sudo cloud-init clean --seed --configs all --machine-id # --logs
+sudo rm -rf /var/lib/cloud/*
+echo '' > /var/log/cloud-init.log
+echo '' > /var/log/cloud-init-output.log
+`;
 
-const cloudConfigCmdRunFactory = (steps = []) =>
+const cloudConfigCmdRunFactory = (steps = [], yaml = true) =>
   steps
     .map(
       (step, i, a) =>
-        '  - echo "\\$(date) | ' + (i + 1) + '/' + a.length + ' - ' + step.split('\n')[0] + '"' + `\n` + `  - ${step}`,
+        (yaml ? '  - ' : '') +
+        'echo "' +
+        (yaml ? '\\' : '') +
+        '$(date) | ' +
+        (i + 1) +
+        '/' +
+        a.length +
+        ' - ' +
+        step.split('\n')[0] +
+        '"' +
+        `\n` +
+        `${yaml ? '  - ' : ''}${step}`,
     )
     .join('\n');
 
 const cloudConfigFactory = (
-  { controlServerIp, architecture, host, nfsHostPath, commissioningDeviceIp, update, gatewayip, auth },
+  { controlServerIp, architecture, host, nfsHostPath, commissioningDeviceIp, update, gatewayip, auth, mac },
   { consumer_key, consumer_secret, token_key, token_secret },
   path = '/etc/cloud/cloud.cfg.d/90_maas.cfg',
 ) => [
@@ -125,7 +138,7 @@ const cloudConfigFactory = (
 #cloud-config
 
 hostname: ${host}
-# fqdn: server01.midominio.cl
+fqdn: ${host}.maas
 # prefer_fqdn_over_hostname: true
 # metadata_url: http://${controlServerIp}:5240/MAAS/metadata
 # metadata_url: http://${controlServerIp}:5248/MAAS/metadata
@@ -194,19 +207,26 @@ packages:
   - chrony
 resize_rootfs: false
 growpart:
-  mode: false
+  mode: "off"
 network:
   version: 2
   ethernets:
     ${process.env.RPI4_INTERFACE_NAME}:
       match:
-        macaddress: "${process.env.RPI4_MAC_ADDRESS}"
+        macaddress: "${
+          fs.existsSync(`${nfsHostPath}/underpost/mac`)
+            ? fs.readFileSync(`${nfsHostPath}/underpost/mac`, 'utf8').trim()
+            : mac
+        }"
       mtu: 1500
       set-name: ${process.env.RPI4_INTERFACE_NAME}
       dhcp4: false
       addresses:
         - ${commissioningDeviceIp}/24
-      gateway4: ${gatewayip}
+      routes:
+        - to: default
+          via: ${gatewayip}
+#      gateway4: ${gatewayip}
       nameservers:
         addresses:
           - ${process.env.MAAS_DNS}
@@ -225,10 +245,11 @@ bootcmd:
   - echo "Init bootcmd"
   - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
 ${cloudConfigCmdRunFactory(bootCmdSteps)}
-runcmd:
-  - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
-  - echo "Init runcmd"
-  - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+# runcmd:
+#   - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+#   - echo "Init runcmd"
+#   - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
+# ${true ? '' : cloudConfigCmdRunFactory(['/underpost/keys_import.sh'])}
 
 # If this is set, 'root' will not be able to ssh in and they
 # will get a message to login instead as the default $user
@@ -240,36 +261,64 @@ preserve_hostname: false
 # The modules that run in the 'init' stage
 cloud_init_modules:
   - migrator
+  - seed_random
   - bootcmd
   - write-files
   - growpart
   - resizefs
   - set_hostname
+  - update_hostname
   - update_etc_hosts
+  - ca-certs
   - rsyslog
   - users-groups
   - ssh
 
+# The modules that run in the 'config' stage
 cloud_config_modules:
+# Emit the cloud config ready event
+# this can be used by upstart jobs for 'start on cloud-config'.
+  - emit_upstart
+  - disk_setup
   - mounts
+  - ssh-import-id
   - locale
   - set-passwords
+  - grub-dpkg
+  - apt-pipelining
+  - apt-configure
   - package-update-upgrade-install
+  - landscape
   - timezone
+  - puppet
+  - chef
+  - salt-minion
+  - mcollective
+  - disable-ec2-metadata
   - runcmd
+  - byobu
   - ssh-import-id
   - ntp
 
+
+# phone_home:
+#   url: "http://${controlServerIp}:5240/MAAS/metadata/v1/?op=phone_home"
+#   post: all
+#   tries: 3
+
+# The modules that run in the 'final' stage
 cloud_final_modules:
   - rightscale_userdata
+  - scripts-vendor
   - scripts-per-once
   - scripts-per-boot
-  - scripts-per-instance
-  - scripts-user
+#  - scripts-per-instance
+#  - scripts-user
   - ssh-authkey-fingerprints
   - keys-to-console
-  - phone-home
+#  - phone-home
   - final-message
+  - power-state-change
 
 EOF_MAAS_CFG`,
 ];
@@ -417,7 +466,25 @@ ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf`,
     `${nfsHostPath}/underpost/start.sh`,
     `#!/bin/bash
 set -x
-sudo cloud-init --all-stages
+# sudo cloud-init --all-stages
+${cloudConfigCmdRunFactory(
+  [
+    `/underpost/date.sh`,
+    `sleep 3`,
+    `/underpost/reset.sh`,
+    `sleep 3`,
+    `cloud-init init --local`,
+    `sleep 3`,
+    `cloud-init init`,
+    `sleep 3`,
+    `cloud-init modules --mode=config`,
+    `sleep 3`,
+    `cloud-init modules --mode=final`,
+    `sleep 3`,
+    `/underpost/enlistment.sh`,
+  ].map((c) => 'sudo ' + c),
+  false,
+)}
     `,
     'utf8',
   );
@@ -499,6 +566,7 @@ sudo shutdown -h now`,
     `chmod +x /underpost/shutdown.sh`,
     `chmod +x /underpost/device_scan.sh`,
     `chmod +x /underpost/mac.sh`,
+    `chmod +x /underpost/enlistment.sh`,
     chronySetUp(chronyConfPath)[0],
     `sudo chmod 700 ~/.ssh/`,
     `sudo chmod 600 ~/.ssh/authorized_keys`,
@@ -518,6 +586,7 @@ const updateVirtualRoot = async ({
   commissioningDeviceIp,
   update,
   gatewayip,
+  mac,
 }) => {
   // <consumer_key>:<consumer_token>:<secret>
   // <consumer_key>:<consumer_secret>:<token_key>:<token_secret>
@@ -593,6 +662,7 @@ EOF`);
         commissioningDeviceIp,
         update,
         gatewayip,
+        mac,
       },
       { consumer_key, consumer_secret, token_key, token_secret },
       '/underpost/90_maas_keys.cfg',
@@ -611,6 +681,7 @@ EOF`);
         commissioningDeviceIp,
         update,
         gatewayip,
+        mac,
       },
       { consumer_key, consumer_secret, token_key, token_secret },
       '/underpost/90_maas_no_keys.cfg',
@@ -623,11 +694,46 @@ EOF`);
     shellExec(`cp ${nfsHostPath}/underpost/90_maas_no_keys.cfg ${nfsHostPath}/etc/cloud/cloud.cfg.d/90_maas.cfg`);
   }
 
+  // First, read the system_id using Node.js's fs module
+  const machineSystemId = fs.readFileSync(`${nfsHostPath}/underpost/system_id`, 'utf8').trim();
+
+  // Now, write the enlistment.sh script, interpolating the machineSystemId
+  fs.writeFileSync(
+    `${nfsHostPath}/underpost/enlistment.sh`,
+    `#!/bin/bash
+set -x
+
+# ------------------------------------------------------------
+# Step: Commission a machine in MAAS using OAuth1 authentication
+# ------------------------------------------------------------
+
+echo ">>> Starting MAAS machine commissioning for system_id: ${machineSystemId} …"
+
+curl -X POST \\
+ --fail --location --verbose --include --raw --trace-ascii /dev/stdout\\
+ --header "Authorization:\\
+ OAuth oauth_version=1.0,\\
+ oauth_signature_method=PLAINTEXT,\\
+ oauth_consumer_key=${consumer_key},\\
+ oauth_token=${token_key},\\
+ oauth_signature=&${token_secret},\\
+ oauth_nonce=$(uuidgen),\\
+ oauth_timestamp=$(date +%s)"\\
+ http://${controlServerIp}:5240/MAAS/api/2.0/machines/${machineSystemId}/op-commission \\
+ 2>&1 | tee /underpost/enlistment.log || echo "ERROR: MAAS commissioning returned code $?"
+
+`,
+    'utf8',
+  );
   installUbuntuUnderpostTools({ nfsHostPath, host });
 
-  shellExec(`./manifests/maas/nat-iptables.sh`, { silent: true });
+  shellExec(`./manifests/maas/nat-iptables.sh`);
 
   shellExec(`cat ${nfsHostPath}/etc/cloud/cloud.cfg.d/90_maas.cfg`);
+
+  shellExec(`cat ${nfsHostPath}/underpost/start.sh`);
+
+  shellExec(`cat ${nfsHostPath}/underpost/enlistment.sh`);
 };
 
 try {
@@ -1814,7 +1920,7 @@ EOF`);
         : process.env.TFTP_ROOT;
       const commissioningDeviceIp = process.env.RPI4_IP;
       const netmask = process.env.NETMASK;
-      const gatewayip = process.env.GATEWAY_IP;
+      const gatewayip = controlServerIp;
       let commissioningMac = '00:00:00:00:00:00';
 
       const removeMachines = () => {
@@ -2041,7 +2147,6 @@ EOF`);
       let firmwarePath,
         tftpSubDir,
         kernelFilesPaths,
-        name,
         architecture,
         resource,
         nfsConnectStr,
@@ -2070,9 +2175,7 @@ EOF`);
             shellExec(`cd .. && mkdir ${zipFirmwareName} && cd ${zipFirmwareName} && unzip ../${zipFirmwareFileName}`);
           }
           resource = resources.find((o) => o.architecture === 'arm64/ga-24.04' && o.name === 'ubuntu/noble');
-          name = resource.name;
           architecture = resource.architecture;
-          // resource = resources.find((o) => o.name === name && o.architecture === architecture);
           nfsServerRootPath = `${process.env.NFS_EXPORT_PATH}/rpi4mb`;
           // ,anonuid=1001,anongid=100
           // etcExports = `${nfsServerRootPath} *(rw,all_squash,sync,no_root_squash,insecure)`;
@@ -2326,6 +2429,12 @@ GATEWAY=192.168.1.1
       shellExec(`sudo chown -R root:root ${tftpRoot}`);
       shellExec(`sudo sudo chmod 755 ${tftpRoot}`);
 
+      shellExec(
+        `node bin/deploy update-virtual-root ${architecture.match('arm64') ? 'arm64' : 'amd64'} ${nfsHost} reset`,
+      );
+
+      removeMachines();
+
       logger.info('Waiting for MAC assignment...');
       fs.removeSync(`${nfsServerRootPath}/underpost/mac`);
       await macMonitor(nfsServerRootPath);
@@ -2365,7 +2474,8 @@ GATEWAY=192.168.1.1
           const machine = {
             architecture: architecture.match('amd') ? 'amd64/generic' : 'arm64/generic',
             mac_address: discovery.mac_address,
-            hostname: discovery.hostname ?? discovery.mac_organization ?? discovery.domain ?? `generic-host-${s4()}`,
+            hostname:
+              discovery.hostname ?? discovery.mac_organization ?? discovery.domain ?? `generic-host-${s4()}${s4()}`,
             // discovery.ip.match(commissioningDeviceIp)
             //   ? nfsHost
             //   : `unknown-${s4()}`,
@@ -2394,13 +2504,52 @@ GATEWAY=192.168.1.1
               newMachine = { discovery, machine: JSON.parse(newMachine) };
               machines.push(newMachine);
               console.log(newMachine);
+
+              const discoverInterfaceName = 'eth0';
+
+              const interfaceData = JSON.parse(
+                shellExec(
+                  `maas ${process.env.MAAS_ADMIN_USERNAME} interface read ${newMachine.machine.boot_interface.system_id} ${discoverInterfaceName}`,
+                  {
+                    silent: true,
+                    stdout: true,
+                  },
+                ),
+              );
+
+              logger.info('Interface', interfaceData);
+
+              shellExec(
+                `maas ${process.env.MAAS_ADMIN_USERNAME} machine mark-broken ${newMachine.machine.boot_interface.system_id}`,
+              );
+
+              shellExec(
+                `maas ${process.env.MAAS_ADMIN_USERNAME} interface update ${newMachine.machine.boot_interface.system_id} ${interfaceData.id} name=${process.env.RPI4_INTERFACE_NAME}`,
+              );
+
+              shellExec(
+                `maas ${process.env.MAAS_ADMIN_USERNAME} machine mark-fixed ${newMachine.machine.boot_interface.system_id}`,
+              );
+
               // commissioning_scripts=90-verify-user.sh
               shellExec(
-                `maas ${process.env.MAAS_ADMIN_USERNAME} machine commission ${newMachine.machine.boot_interface.system_id} enable_ssh=1 skip_bmc_config=1 skip_networking=1 skip_storage=1`,
+                `maas ${process.env.MAAS_ADMIN_USERNAME} machine commission --debug --insecure ${newMachine.machine.boot_interface.system_id} enable_ssh=1 skip_bmc_config=1 skip_networking=1 skip_storage=1`,
                 {
                   silent: true,
                 },
               );
+
+              logger.info('system-id', newMachine.machine.boot_interface.system_id);
+              fs.writeFileSync(
+                `${nfsHostPath}/underpost/system_id`,
+                newMachine.machine.boot_interface.system_id,
+                'utf8',
+              );
+
+              shellExec(`gnome-terminal -- bash -c "node engine-private/r cloud; exec bash" & disown`, { async: true });
+              shellExec(`gnome-terminal -- bash -c "node engine-private/r machine; exec bash" & disown`, {
+                async: true,
+              });
             } catch (error) {
               logger.error(error, error.stack);
             } finally {
@@ -2411,7 +2560,6 @@ GATEWAY=192.168.1.1
         monitor();
       };
       // clearDiscoveries();
-      removeMachines();
       monitor();
       break;
     }
@@ -2498,7 +2646,7 @@ udp-port = 32766
       const host = process.argv[4];
       const nfsHostPath = `${process.env.NFS_EXPORT_PATH}/${host}`;
       const commissioningDeviceIp = process.env.RPI4_IP;
-      const gatewayip = process.env.GATEWAY_IP;
+      const gatewayip = controlServerIp;
       await updateVirtualRoot({
         controlServerIp,
         architecture,
@@ -2507,6 +2655,7 @@ udp-port = 32766
         commissioningDeviceIp,
         update: true,
         gatewayip,
+        mac: process.argv[7] ?? process.env.RPI4_MAC_ADDRESS,
       });
       break;
     }
@@ -2516,7 +2665,7 @@ udp-port = 32766
       const architecture = process.argv[3];
       const host = process.argv[4];
       const nfsHostPath = `${process.env.NFS_EXPORT_PATH}/${host}`;
-      const gatewayip = process.env.GATEWAY_IP;
+      const gatewayip = controlServerIp;
       shellExec(`sudo dnf install -y iptables-legacy`);
       shellExec(`sudo dnf install -y debootstrap`);
       shellExec(`sudo dnf install kernel-modules-extra-$(uname -r)`);
@@ -2595,6 +2744,7 @@ EOF`);
               nfsHostPath,
               commissioningDeviceIp,
               gatewayip,
+              mac: process.env.RPI4_MAC_ADDRESS,
             });
 
             break;
