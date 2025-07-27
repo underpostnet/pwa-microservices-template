@@ -75,6 +75,9 @@ class UnderpostBaremetal {
       // Set default MAC address
       let macAddress = '00:00:00:00:00:00';
 
+      // Define the debootstrap architecture.
+      let debootstrapArch;
+
       // Define the database provider ID.
       const dbProviderId = 'postgresql-17';
 
@@ -119,8 +122,23 @@ class UnderpostBaremetal {
 
       // Handle NFS shell access option.
       if (options.nfsSh === true) {
+        const { debootstrap } = UnderpostBaremetal.API.workflowsConfig[workflowId];
         // Copy the chroot command to the clipboard for easy execution.
-        pbcopy(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash`);
+        if (debootstrap.image.architecture !== callbackMetaData.runnerHost.architecture)
+          switch (debootstrap.image.architecture) {
+            case 'arm64':
+              pbcopy(`sudo chroot ${nfsHostPath} /usr/bin/qemu-aarch64-static /bin/bash`);
+              break;
+
+            case 'amd64':
+              pbcopy(`sudo chroot ${nfsHostPath} /usr/bin/qemu-x86_64-static /bin/bash`);
+              break;
+
+            default:
+              break;
+          }
+        else pbcopy(`sudo chroot ${nfsHostPath} /bin/bash`);
+
         return; // Exit early as this is a specific interactive operation.
       }
 
@@ -165,8 +183,16 @@ class UnderpostBaremetal {
         shellExec(`node ${underpostRoot}/bin/deploy ${dbProviderId} uninstall`);
       }
 
+      // Set debootstrap architecture.
+      {
+        const { architecture } = UnderpostBaremetal.API.workflowsConfig[workflowId].debootstrap.image;
+        debootstrapArch = architecture;
+      }
+
       // Handle NFS mount operation.
       if (options.nfsMount === true) {
+        // Mount binfmt_misc filesystem.
+        UnderpostBaremetal.API.mountBinfmtMisc({ nfsHostPath });
         UnderpostBaremetal.API.nfsMountCallback({ hostname, workflowId, mount: true });
       }
 
@@ -185,27 +211,16 @@ class UnderpostBaremetal {
         }
         logger.info('NFS root filesystem is not mounted, building...');
 
-        // Install necessary packages for debootstrap and QEMU.
-        shellExec(`sudo dnf install -y iptables-legacy`);
-        shellExec(`sudo dnf install -y debootstrap`);
-        shellExec(`sudo dnf install kernel-modules-extra-$(uname -r)`);
-        // Reset QEMU user-static binfmt for proper cross-architecture execution.
-        shellExec(`sudo podman run --rm --privileged multiarch/qemu-user-static --reset -p yes`);
-        shellExec(`sudo modprobe binfmt_misc`);
-        shellExec(`sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc`);
-
         // Clean and create the NFS host path.
         shellExec(`sudo rm -rf ${nfsHostPath}/*`);
         shellExec(`mkdir -p ${nfsHostPath}`);
-        shellExec(`sudo chown -R root:root ${nfsHostPath}`);
-        shellExec(`sudo chmod 755 ${nfsHostPath}`);
 
-        let debootstrapArch;
+        // Mount binfmt_misc filesystem.
+        UnderpostBaremetal.API.mountBinfmtMisc({ nfsHostPath });
 
         // Perform the first stage of debootstrap.
         {
           const { architecture, name } = UnderpostBaremetal.API.workflowsConfig[workflowId].debootstrap.image;
-          debootstrapArch = architecture;
           shellExec(
             [
               `sudo debootstrap`,
@@ -272,44 +287,43 @@ class UnderpostBaremetal {
         }
       }
 
-      let resources, resource, machines;
-
       // Fetch boot resources and machines if commissioning or listing.
-      if (options.commission === true || options.ls === true) {
-        resources = JSON.parse(
-          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resources read`, {
-            silent: true,
-            stdout: true,
-          }),
-        ).map((o) => ({
-          id: o.id,
-          name: o.name,
-          architecture: o.architecture,
-        }));
-        if (options.ls === true) {
-          console.table(resources);
-        }
-        machines = JSON.parse(
-          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machines read`, {
-            stdout: true,
-            silent: true,
-          }),
-        ).map((m) => ({
-          system_id: m.interface_set[0].system_id,
-          mac_address: m.interface_set[0].mac_address,
-          hostname: m.hostname,
-          status_name: m.status_name,
-        }));
-        if (options.ls === true) {
-          console.table(machines);
-        }
+
+      let resources = JSON.parse(
+        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resources read`, {
+          silent: true,
+          stdout: true,
+        }),
+      ).map((o) => ({
+        id: o.id,
+        name: o.name,
+        architecture: o.architecture,
+      }));
+      if (options.ls === true) {
+        console.table(resources);
+      }
+      let machines = JSON.parse(
+        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machines read`, {
+          stdout: true,
+          silent: true,
+        }),
+      ).map((m) => ({
+        system_id: m.interface_set[0].system_id,
+        mac_address: m.interface_set[0].mac_address,
+        hostname: m.hostname,
+        status_name: m.status_name,
+      }));
+      if (options.ls === true) {
+        console.table(machines);
       }
 
       // Handle commissioning tasks (placeholder for future implementation).
       if (options.commission === true) {
         const { firmwares, networkInterfaceName, maas, netmask, menuentryStr } =
           UnderpostBaremetal.API.workflowsConfig[workflowId];
-        resource = resources.find((o) => o.architecture === maas.image.architecture && o.name === maas.image.name);
+        const resource = resources.find(
+          (o) => o.architecture === maas.image.architecture && o.name === maas.image.name,
+        );
         logger.info('Commissioning resource', resource);
 
         // Clean and create TFTP root path.
@@ -466,8 +480,12 @@ menuentry '${menuentryStr}' {
         shellExec(`sudo sudo chmod 755 ${process.env.TFTP_ROOT}`);
       }
 
-      // Build cloud-init tools if commissioning or updating cloud-init.
+      // Final commissioning steps.
       if (options.commission === true || options.cloudInitUpdate === true) {
+        const { debootstrap, networkInterfaceName, chronyc, maas } = UnderpostBaremetal.API.workflowsConfig[workflowId];
+        const { timezone, chronyConfPath } = chronyc;
+
+        // Build cloud-init tools.
         UnderpostCloudInit.API.buildTools({
           workflowId,
           nfsHostPath,
@@ -475,15 +493,6 @@ menuentry '${menuentryStr}' {
           callbackMetaData,
           dev: options.dev,
         });
-      }
-
-      // Final commissioning steps.
-      if (options.commission === true) {
-        const { debootstrap, networkInterfaceName, chronyc, maas } = UnderpostBaremetal.API.workflowsConfig[workflowId];
-        const { timezone, chronyConfPath } = chronyc;
-
-        // Remove existing machines from MAAS.
-        machines = UnderpostBaremetal.API.removeMachines({ machines });
 
         // Run cloud-init reset and configure cloud-init.
         UnderpostBaremetal.API.crossArchRunner({
@@ -491,7 +500,8 @@ menuentry '${menuentryStr}' {
           debootstrapArch: debootstrap.image.architecture,
           callbackMetaData,
           steps: [
-            `/underpost/reset.sh`,
+            options.cloudInitUpdate === true ? '' : `/underpost/reset.sh`,
+            `chown root:root /usr/bin/sudo && chmod 4755 /usr/bin/sudo`,
             UnderpostCloudInit.API.configFactory({
               controlServerIp: callbackMetaData.runnerHost.ip,
               hostname,
@@ -504,6 +514,8 @@ menuentry '${menuentryStr}' {
             }),
           ],
         });
+
+        if (options.cloudInitUpdate === true) return;
 
         // Apply NAT iptables rules.
         shellExec(`${underpostRoot}/manifests/maas/nat-iptables.sh`, { silent: true });
@@ -532,6 +544,9 @@ menuentry '${menuentryStr}' {
             }),
           ],
         });
+
+        // Remove existing machines from MAAS.
+        machines = UnderpostBaremetal.API.removeMachines({ machines });
 
         // Monitor commissioning process.
         UnderpostBaremetal.API.commissionMonitor({
@@ -708,6 +723,29 @@ menuentry '${menuentryStr}' {
           networkInterfaceName,
         });
       }
+    },
+
+    /**
+     * @method mountBinfmtMisc
+     * @description Mounts the binfmt_misc filesystem to enable QEMU user-static binfmt support.
+     * This is necessary for cross-architecture execution within a chroot environment.
+     * @param {object} params - The parameters for the function.
+     * @param {string} params.nfsHostPath - The path to the NFS root filesystem on the host.
+     * @returns {void}
+     */
+    mountBinfmtMisc({ nfsHostPath }) {
+      // Install necessary packages for debootstrap and QEMU.
+      shellExec(`sudo dnf install -y iptables-legacy`);
+      shellExec(`sudo dnf install -y debootstrap`);
+      shellExec(`sudo dnf install kernel-modules-extra-$(uname -r)`);
+      // Reset QEMU user-static binfmt for proper cross-architecture execution.
+      shellExec(`sudo podman run --rm --privileged multiarch/qemu-user-static --reset -p yes`);
+      // Mount binfmt_misc filesystem.
+      shellExec(`sudo modprobe binfmt_misc`);
+      shellExec(`sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc`);
+      // Set ownership and permissions for the NFS host path.
+      shellExec(`sudo chown -R root:root ${nfsHostPath}`);
+      shellExec(`sudo chmod 755 ${nfsHostPath}`);
     },
 
     /**
