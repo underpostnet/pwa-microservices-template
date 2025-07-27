@@ -5,6 +5,8 @@ import { loggerFactory } from '../server/logger.js';
 import { getLocalIPv4Address } from '../server/dns.js';
 import fs from 'fs-extra';
 import { Downloader } from '../server/downloader.js';
+import UnderpostCloudInit from './cloud-init.js';
+import { s4, timer } from '../client/components/core/CommonJs.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -37,6 +39,7 @@ class UnderpostBaremetal {
      * @param {boolean} [options.nfsMount=false] - Flag to mount the NFS root filesystem.
      * @param {boolean} [options.nfsUnmount=false] - Flag to unmount the NFS root filesystem.
      * @param {boolean} [options.nfsSh=false] - Flag to chroot into the NFS environment for shell access.
+     * @param {string} [options.logs=''] - Specifies which logs to display ('dhcp', 'cloud', 'machine', 'cloud-config').
      * @returns {void}
      */
     async callback(
@@ -54,6 +57,7 @@ class UnderpostBaremetal {
         nfsMount: false,
         nfsUnmount: false,
         nfsSh: false,
+        logs: '',
       },
     ) {
       // Load environment variables from .env file, overriding existing ones if present.
@@ -91,6 +95,27 @@ class UnderpostBaremetal {
 
       // Log the initiation of the baremetal callback with relevant metadata.
       logger.info('Baremetal callback', callbackMetaData);
+
+      // Handle various log display options.
+      if (options.logs === 'dhcp') {
+        shellExec(`journalctl -f -t dhcpd -u snap.maas.pebble.service`);
+        return;
+      }
+
+      if (options.logs === 'cloud') {
+        shellExec(`tail -f -n 900 ${nfsHostPath}/var/log/cloud-init.log`);
+        return;
+      }
+
+      if (options.logs === 'machine') {
+        shellExec(`tail -f -n 900 ${nfsHostPath}/var/log/cloud-init-output.log`);
+        return;
+      }
+
+      if (options.logs === 'cloud-config') {
+        shellExec(`cat ${nfsHostPath}/etc/cloud/cloud.cfg.d/90_maas.cfg`);
+        return;
+      }
 
       // Handle NFS shell access option.
       if (options.nfsSh === true) {
@@ -249,6 +274,7 @@ class UnderpostBaremetal {
 
       let resources, resource, machines;
 
+      // Fetch boot resources and machines if commissioning or listing.
       if (options.commission === true || options.ls === true) {
         resources = JSON.parse(
           shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resources read`, {
@@ -286,19 +312,21 @@ class UnderpostBaremetal {
         resource = resources.find((o) => o.architecture === maas.image.architecture && o.name === maas.image.name);
         logger.info('Commissioning resource', resource);
 
+        // Clean and create TFTP root path.
         shellExec(`sudo rm -rf ${tftpRootPath}`);
         shellExec(`mkdir -p ${tftpRootPath}/pxe`);
 
+        // Process firmwares for TFTP.
         for (const firmware of firmwares) {
           const { url, gateway, subnet } = firmware;
           if (url.match('.zip')) {
             const name = url.split('/').pop().replace('.zip', '');
             const path = `../${name}`;
             if (!fs.existsSync(path)) {
-              await Downloader(url, `../${name}.zip`);
-              shellExec(`cd .. && mkdir ${name} && cd ${name} && unzip ../${name}.zip`);
+              await Downloader(url, `../${name}.zip`); // Download firmware if not exists.
+              shellExec(`cd .. && mkdir ${name} && cd ${name} && unzip ../${name}.zip`); // Unzip firmware.
             }
-            shellExec(`sudo cp -a ${path}/* ${tftpRootPath}`);
+            shellExec(`sudo cp -a ${path}/* ${tftpRootPath}`); // Copy firmware files to TFTP root.
 
             if (gateway && subnet) {
               fs.writeFileSync(
@@ -318,10 +346,12 @@ class UnderpostBaremetal {
           }
         }
 
+        // Rebuild NFS server configuration.
         UnderpostBaremetal.API.rebuildNfsServer({
           nfsHostPath,
         });
 
+        // Configure GRUB for PXE boot.
         {
           const resourceData = JSON.parse(
             shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resource read ${resource.id}`, {
@@ -339,6 +369,7 @@ class UnderpostBaremetal {
             'initrd.img': `${kernelPath}/${bootFiles['boot-initrd' + suffix].filename_on_disk}`,
             squashfs: `${kernelPath}/${bootFiles['squashfs'].filename_on_disk}`,
           };
+          // Construct kernel command line arguments for NFS boot.
           const cmd = [
             `console=serial0,115200`,
             // `console=ttyAMA0,115200`,
@@ -394,13 +425,16 @@ class UnderpostBaremetal {
           ];
           const nfsConnectStr = cmd.join(' ');
 
+          // Copy EFI bootloaders to TFTP path.
           for (const file of ['bootaa64.efi', 'grubaa64.efi']) {
             shellExec(`sudo cp -a ${resourcesPath}/${file} ${tftpRootPath}/pxe/${file}`);
           }
+          // Copy kernel and initrd images to TFTP path.
           for (const file of Object.keys(kernelFilesPaths)) {
             shellExec(`sudo cp -a ${kernelFilesPaths[file]} ${tftpRootPath}/pxe/${file}`);
           }
 
+          // Write GRUB configuration file.
           fs.writeFileSync(
             `${process.env.TFTP_ROOT}/grub/grub.cfg`,
             `
@@ -422,13 +456,304 @@ menuentry '${menuentryStr}' {
           );
         }
 
+        // Copy ARM64 EFI GRUB modules.
         const arm64EfiPath = `${process.env.TFTP_ROOT}/grub/arm64-efi`;
         if (fs.existsSync(arm64EfiPath)) shellExec(`sudo rm -rf ${arm64EfiPath}`);
         shellExec(`sudo cp -a /usr/lib/grub/arm64-efi ${arm64EfiPath}`);
 
+        // Set ownership and permissions for TFTP root.
         shellExec(`sudo chown -R root:root ${process.env.TFTP_ROOT}`);
         shellExec(`sudo sudo chmod 755 ${process.env.TFTP_ROOT}`);
       }
+
+      // Build cloud-init tools if commissioning or updating cloud-init.
+      if (options.commission === true || options.cloudInitUpdate === true) {
+        UnderpostCloudInit.API.buildTools({
+          workflowId,
+          nfsHostPath,
+          hostname,
+          callbackMetaData,
+          dev: options.dev,
+        });
+      }
+
+      // Final commissioning steps.
+      if (options.commission === true) {
+        const { debootstrap, networkInterfaceName, chronyc, maas } = UnderpostBaremetal.API.workflowsConfig[workflowId];
+        const { timezone, chronyConfPath } = chronyc;
+
+        // Remove existing machines from MAAS.
+        machines = UnderpostBaremetal.API.removeMachines({ machines });
+
+        // Run cloud-init reset and configure cloud-init.
+        UnderpostBaremetal.API.crossArchRunner({
+          nfsHostPath,
+          debootstrapArch: debootstrap.image.architecture,
+          callbackMetaData,
+          steps: [
+            `/underpost/reset.sh`,
+            UnderpostCloudInit.API.configFactory({
+              controlServerIp: callbackMetaData.runnerHost.ip,
+              hostname,
+              commissioningDeviceIp: ipAddress,
+              gatewayip: callbackMetaData.runnerHost.ip,
+              mac: macAddress, // Initial MAC, will be updated.
+              timezone,
+              chronyConfPath,
+              networkInterfaceName,
+            }),
+          ],
+        });
+
+        // Apply NAT iptables rules.
+        shellExec(`${underpostRoot}/manifests/maas/nat-iptables.sh`, { silent: true });
+
+        // Wait for MAC address assignment.
+        logger.info('Waiting for MAC assignment...');
+        fs.removeSync(`${nfsHostPath}/underpost/mac`); // Clear previous MAC.
+        await UnderpostBaremetal.API.macMonitor({ nfsHostPath }); // Monitor for MAC file.
+        macAddress = fs.readFileSync(`${nfsHostPath}/underpost/mac`, 'utf8').trim(); // Read assigned MAC.
+
+        // Re-run cloud-init config factory with the newly assigned MAC address.
+        UnderpostBaremetal.API.crossArchRunner({
+          nfsHostPath,
+          debootstrapArch: debootstrap.image.architecture,
+          callbackMetaData,
+          steps: [
+            UnderpostCloudInit.API.configFactory({
+              controlServerIp: callbackMetaData.runnerHost.ip,
+              hostname,
+              commissioningDeviceIp: ipAddress,
+              gatewayip: callbackMetaData.runnerHost.ip,
+              mac: macAddress, // Updated MAC address.
+              timezone,
+              chronyConfPath,
+              networkInterfaceName,
+            }),
+          ],
+        });
+
+        // Monitor commissioning process.
+        UnderpostBaremetal.API.commissionMonitor({
+          macAddress,
+          nfsHostPath,
+          underpostRoot,
+          hostname,
+          maas,
+          networkInterfaceName,
+        });
+      }
+    },
+
+    /**
+     * @method commissionMonitor
+     * @description Monitors the MAAS discoveries and initiates machine creation and commissioning
+     * once a matching MAC address is found. It also opens terminal windows for live logs.
+     * @param {object} params - The parameters for the function.
+     * @param {string} params.macAddress - The MAC address to monitor for.
+     * @param {string} params.nfsHostPath - The NFS host path for storing system-id and auth tokens.
+     * @param {string} params.underpostRoot - The root directory of the Underpost project.
+     * @param {string} params.hostname - The desired hostname for the new machine.
+     * @param {object} params.maas - MAAS configuration details.
+     * @param {string} params.networkInterfaceName - The name of the network interface.
+     * @returns {Promise<void>} A promise that resolves when commissioning is initiated or after a delay.
+     */
+    async commissionMonitor({ macAddress, nfsHostPath, underpostRoot, hostname, maas, networkInterfaceName }) {
+      {
+        logger.info('Waiting for commissioning...', {
+          macAddress,
+          nfsHostPath,
+          underpostRoot,
+          hostname,
+          maas,
+          networkInterfaceName,
+        });
+
+        // Query observed discoveries from MAAS.
+        const discoveries = JSON.parse(
+          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} discoveries read`, {
+            silent: true,
+            stdout: true,
+          }),
+        );
+
+        //   {
+        //     "discovery_id": "",
+        //     "ip": "192.168.1.189",
+        //     "mac_address": "00:00:00:00:00:00",
+        //     "last_seen": "2025-05-05T14:17:37.354",
+        //     "hostname": null,
+        //     "fabric_name": "",
+        //     "vid": null,
+        //     "mac_organization": "",
+        //     "observer": {
+        //         "system_id": "",
+        //         "hostname": "",
+        //         "interface_id": 1,
+        //         "interface_name": ""
+        //     },
+        //     "resource_uri": "/MAAS/api/2.0/discovery/MTkyLjE2OC4xLjE4OSwwMDowMDowMDowMDowMDowMA==/"
+        // },
+
+        // Log discovered IPs for visibility.
+        console.log(discoveries.map((d) => d.ip).join(' | '));
+
+        // Iterate through discoveries to find a matching MAC address.
+        for (const discovery of discoveries) {
+          const machine = {
+            architecture: maas.image.architecture.match('amd') ? 'amd64/generic' : 'arm64/generic',
+            mac_address: discovery.mac_address,
+            hostname:
+              discovery.hostname ?? discovery.mac_organization ?? discovery.domain ?? `generic-host-${s4()}${s4()}`,
+            power_type: 'manual',
+            mac_addresses: discovery.mac_address,
+            ip: discovery.ip,
+          };
+          machine.hostname = machine.hostname.replaceAll(' ', '').replaceAll('.', ''); // Sanitize hostname.
+
+          if (machine.mac_addresses === macAddress)
+            try {
+              machine.hostname = hostname;
+              machine.mac_address = macAddress;
+              // Create a new machine in MAAS.
+              let newMachine = shellExec(
+                `maas ${process.env.MAAS_ADMIN_USERNAME} machines create ${Object.keys(machine)
+                  .map((k) => `${k}="${machine[k]}"`)
+                  .join(' ')}`,
+                {
+                  silent: true,
+                  stdout: true,
+                },
+              );
+              newMachine = { discovery, machine: JSON.parse(newMachine) };
+              console.log(newMachine);
+
+              const discoverInterfaceName = 'eth0'; // Default interface name for discovery.
+
+              // Read interface data.
+              const interfaceData = JSON.parse(
+                shellExec(
+                  `maas ${process.env.MAAS_ADMIN_USERNAME} interface read ${newMachine.machine.boot_interface.system_id} ${discoverInterfaceName}`,
+                  {
+                    silent: true,
+                    stdout: true,
+                  },
+                ),
+              );
+
+              logger.info('Interface', interfaceData);
+
+              // Mark machine as broken, update interface name, then mark as fixed.
+              shellExec(
+                `maas ${process.env.MAAS_ADMIN_USERNAME} machine mark-broken ${newMachine.machine.boot_interface.system_id}`,
+              );
+
+              shellExec(
+                `maas ${process.env.MAAS_ADMIN_USERNAME} interface update ${newMachine.machine.boot_interface.system_id} ${interfaceData.id} name=${networkInterfaceName}`,
+              );
+
+              shellExec(
+                `maas ${process.env.MAAS_ADMIN_USERNAME} machine mark-fixed ${newMachine.machine.boot_interface.system_id}`,
+              );
+
+              // commissioning_scripts=90-verify-user.sh
+              // shellExec(
+              //   `maas ${process.env.MAAS_ADMIN_USERNAME} machine commission --debug --insecure ${newMachine.machine.boot_interface.system_id} enable_ssh=1 skip_bmc_config=1 skip_networking=1 skip_storage=1`,
+              //   {
+              //     silent: true,
+              //   },
+              // );
+
+              // Save system-id for enlistment.
+              logger.info('system-id', newMachine.machine.boot_interface.system_id);
+              fs.writeFileSync(
+                `${nfsHostPath}/underpost/system-id`,
+                newMachine.machine.boot_interface.system_id,
+                'utf8',
+              );
+
+              // Get and save MAAS authentication credentials.
+              const { consumer_key, token_key, token_secret } = UnderpostCloudInit.API.authCredentialsFactory();
+
+              fs.writeFileSync(`${nfsHostPath}/underpost/consumer-key`, consumer_key, 'utf8');
+              fs.writeFileSync(`${nfsHostPath}/underpost/token-key`, token_key, 'utf8');
+              fs.writeFileSync(`${nfsHostPath}/underpost/token-secret`, token_secret, 'utf8');
+
+              // Open new terminals for live cloud-init logs.
+              shellExec(
+                `gnome-terminal -- bash -c "node ${underpostRoot}/bin baremetal --logs cloud; exec bash" & disown`,
+                {
+                  async: true,
+                },
+              );
+              shellExec(
+                `gnome-terminal -- bash -c "node ${underpostRoot}/bin baremetal --logs machine; exec bash" & disown`,
+                {
+                  async: true,
+                },
+              );
+            } catch (error) {
+              logger.error(error, error.stack);
+            } finally {
+              process.exit(0);
+            }
+        }
+        await timer(1000);
+        UnderpostBaremetal.API.commissionMonitor({
+          macAddress,
+          nfsHostPath,
+          underpostRoot,
+          hostname,
+          maas,
+          networkInterfaceName,
+        });
+      }
+    },
+
+    /**
+     * @method removeMachines
+     * @description Deletes all specified machines from MAAS.
+     * @param {object} params - The parameters for the function.
+     * @param {Array<object>} params.machines - An array of machine objects, each with a `system_id`.
+     * @returns {Array<object>} An empty array after machines are removed.
+     */
+    removeMachines({ machines }) {
+      for (const machine of machines) {
+        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine delete ${machine.system_id}`);
+      }
+      return [];
+    },
+
+    /**
+     * @method clearDiscoveries
+     * @description Clears all observed discoveries in MAAS and optionally forces a new scan.
+     * @param {object} params - The parameters for the function.
+     * @param {boolean} params.force - If true, forces a new discovery scan after clearing.
+     * @returns {void}
+     */
+    clearDiscoveries({ force }) {
+      shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} discoveries clear all=true`);
+      if (force === true) {
+        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} discoveries scan force=true`);
+      }
+    },
+
+    /**
+     * @method macMonitor
+     * @description Monitors for the presence of a MAC address file in the NFS host path.
+     * This is used to wait for the target machine to report its MAC address.
+     * @param {object} params - The parameters for the function.
+     * @param {string} params.nfsHostPath - The NFS host path where the MAC file is expected.
+     * @returns {Promise<void>} A promise that resolves when the MAC file is found or after a delay.
+     */
+    async macMonitor({ nfsHostPath }) {
+      if (fs.existsSync(`${nfsHostPath}/underpost/mac`)) {
+        const mac = fs.readFileSync(`${nfsHostPath}/underpost/mac`, 'utf8').trim();
+        logger.info('Commissioning MAC', mac);
+        return;
+      }
+      await timer(1000);
+      await UnderpostBaremetal.API.macMonitor({ nfsHostPath });
     },
 
     /**
@@ -455,6 +780,7 @@ menuentry '${menuentryStr}' {
           logger.warn(`Unsupported debootstrap architecture: ${debootstrapArch}`);
           break;
       }
+      // Install GRUB EFI modules for both architectures to ensure compatibility.
       shellExec(`sudo dnf install grub2-efi-aa64-modules`);
       shellExec(`sudo dnf install grub2-efi-x64-modules`);
     },
@@ -522,7 +848,7 @@ EOF`);
             `\n` +
             `${yaml ? '  - ' : ''}${step}`,
         )
-        .join('\n'); // Join all steps with newlines.
+        .join('\n');
     },
 
     /**
@@ -542,7 +868,7 @@ EOF`);
       for (const mountCmd of Object.keys(UnderpostBaremetal.API.workflowsConfig[workflowId].nfs.mounts)) {
         for (const mountPath of UnderpostBaremetal.API.workflowsConfig[workflowId].nfs.mounts[mountCmd]) {
           const hostMountPath = `${process.env.NFS_EXPORT_PATH}/${hostname}${mountPath}`;
-          // Check if the path is already mounted.
+          // Check if the path is already mounted using `mountpoint` command.
           const isPathMounted = !shellExec(`mountpoint ${hostMountPath}`, { silent: true, stdout: true }).match(
             'not a mountpoint',
           );
@@ -615,7 +941,7 @@ SOURCES`,
           `apt update -qq`,
           `apt -y full-upgrade`,
           // Install essential development and system utilities.
-          `apt install -y build-essential xinput x11-xkb-utils usbutils`,
+          `apt install -y build-essential xinput x11-xkb-utils usbutils uuid-runtime`,
           'apt install -y linux-image-generic',
           // Install specific kernel modules.
           `apt install -y linux-modules-${kernelLibVersion} linux-modules-extra-${kernelLibVersion}`,
@@ -735,22 +1061,33 @@ logdir /var/log/chrony
       },
     },
 
+    /**
+     * @method rebuildNfsServer
+     * @description Configures and restarts the NFS server to export the specified path.
+     * This is crucial for allowing baremetal machines to boot via NFS.
+     * @param {object} params - The parameters for the function.
+     * @param {string} params.nfsHostPath - The path to be exported by the NFS server.
+     * @param {string} [params.subnet='192.168.1.0/24'] - The subnet allowed to access the NFS export.
+     * @returns {void}
+     */
     rebuildNfsServer({ nfsHostPath, subnet }) {
-      if (!subnet) subnet = '192.168.1.0/24';
+      if (!subnet) subnet = '192.168.1.0/24'; // Default subnet if not provided.
+      // Write the NFS exports configuration to /etc/exports.
       fs.writeFileSync(
         `/etc/exports`,
         `${nfsHostPath} ${subnet}(${[
-          'rw',
-          // 'all_squash',
-          'sync',
-          'no_root_squash',
-          'no_subtree_check',
-          'insecure',
+          'rw', // Read-write access.
+          // 'all_squash', // Squash all client UIDs/GIDs to anonymous.
+          'sync', // Synchronous writes.
+          'no_root_squash', // Do not squash root user.
+          'no_subtree_check', // Disable subtree checking.
+          'insecure', // Allow connections from non-privileged ports.
         ]})`,
         'utf8',
       );
 
       logger.info('Writing NFS server configuration to /etc/nfs.conf...');
+      // Write NFS daemon configuration, including port settings.
       fs.writeFileSync(
         `/etc/nfs.conf`,
         `[mountd]
@@ -787,6 +1124,22 @@ udp-port = 32766
       logger.info('NFS server restarted.');
     },
 
+    /**
+     * @method bootConfFactory
+     * @description Generates the boot configuration file for specific workflows,
+     * primarily for Raspberry Pi 4 Model B. This configuration includes TFTP settings,
+     * MAC address override, and static IP configuration.
+     * @param {object} params - The parameters for the function.
+     * @param {string} params.workflowId - The identifier for the specific workflow.
+     * @param {string} params.tftpIp - The IP address of the TFTP server.
+     * @param {string} params.tftpPrefixStr - The TFTP prefix string for boot files.
+     * @param {string} params.macAddress - The MAC address to be set for the device.
+     * @param {string} params.clientIp - The static IP address for the client device.
+     * @param {string} params.subnet - The subnet mask for the client device.
+     * @param {string} params.gateway - The gateway IP address for the client device.
+     * @returns {string} The generated boot configuration content.
+     * @throws {Error} If an invalid workflow ID is provided.
+     */
     bootConfFactory({ workflowId, tftpIp, tftpPrefixStr, macAddress, clientIp, subnet, gateway }) {
       switch (workflowId) {
         case 'rpi4mb':
@@ -855,8 +1208,8 @@ GATEWAY=${gateway}`;
         menuentryStr: 'UNDERPOST.NET UEFI/GRUB/MAAS RPi4 commissioning (ARM64)',
         systemProvisioning: 'ubuntu', // Specifies the system provisioning factory to use.
         kernelLibVersion: `6.8.0-41-generic`, // The kernel library version for this workflow.
-        networkInterfaceName: 'enabcm6e4ei0',
-        netmask: '255.255.255.0',
+        networkInterfaceName: 'enabcm6e4ei0', // The name of the primary network interface on the RPi4.
+        netmask: '255.255.255.0', // Subnet mask for the network.
         firmwares: [
           {
             url: 'https://github.com/pftf/RPi4/releases/download/v1.41/RPi4_UEFI_Firmware_v1.41.zip',
@@ -871,7 +1224,7 @@ GATEWAY=${gateway}`;
         debootstrap: {
           image: {
             architecture: 'arm64', // Architecture for the debootstrap image.
-            name: 'noble', // Codename of the Ubuntu release.
+            name: 'noble', // Codename of the Ubuntu release (e.g., 'noble' for 24.04 LTS).
           },
         },
         maas: {
@@ -883,8 +1236,8 @@ GATEWAY=${gateway}`;
         nfs: {
           mounts: {
             // Define NFS mount points and their types (bind, rbind).
-            bind: ['/proc', '/sys', '/run'],
-            rbind: ['/dev'],
+            bind: ['/proc', '/sys', '/run'], // Standard bind mounts.
+            rbind: ['/dev'], // Recursive bind mount for /dev.
           },
         },
       },
