@@ -1,6 +1,7 @@
 import { getNpmRootPath } from '../server/conf.js';
 import { loggerFactory } from '../server/logger.js';
 import { shellExec } from '../server/process.js';
+import UnderpostBaremetal from './baremetal.js';
 import UnderpostDeploy from './deploy.js';
 import UnderpostTest from './test.js';
 import os from 'os';
@@ -37,6 +38,7 @@ class UnderpostCluster {
      * @param {boolean} [options.kubeadm=false] - Initialize the cluster using Kubeadm.
      * @param {boolean} [options.k3s=false] - Initialize the cluster using K3s.
      * @param {boolean} [options.initHost=false] - Perform initial host setup (install Docker, Podman, Kind, Kubeadm, Helm).
+     * @param {boolean} [options.uninstallHost=false] - Uninstall all host components.
      * @param {boolean} [options.config=false] - Apply general host configuration (SELinux, containerd, sysctl, firewalld).
      * @param {boolean} [options.worker=false] - Configure as a worker node (for Kubeadm or K3s join).
      * @param {boolean} [options.chown=false] - Set up kubectl configuration for the current user.
@@ -65,6 +67,7 @@ class UnderpostCluster {
         kubeadm: false,
         k3s: false,
         initHost: false,
+        uninstallHost: false,
         config: false,
         worker: false,
         chown: false,
@@ -72,6 +75,9 @@ class UnderpostCluster {
     ) {
       // Handles initial host setup (installing docker, podman, kind, kubeadm, helm)
       if (options.initHost === true) return UnderpostCluster.API.initHost();
+
+      // Handles initial host setup (installing docker, podman, kind, kubeadm, helm)
+      if (options.uninstallHost === true) return UnderpostCluster.API.uninstallHost();
 
       // Applies general host configuration (SELinux, containerd, sysctl)
       if (options.config === true) return UnderpostCluster.API.config();
@@ -126,7 +132,7 @@ class UnderpostCluster {
       }
 
       // Reset Kubernetes cluster components (Kind/Kubeadm/K3s) and container runtimes
-      if (options.reset === true) return await UnderpostCluster.API.reset();
+      if (options.reset === true) return await UnderpostCluster.API.safeReset({ underpostRoot });
 
       // Check if a cluster (Kind, Kubeadm, or K3s) is already initialized
       const alreadyKubeadmCluster = UnderpostDeploy.API.get('calico-kube-controllers')[0];
@@ -138,6 +144,7 @@ class UnderpostCluster {
       // This block handles the initial setup of the Kubernetes cluster (control plane or worker).
       // It prevents re-initialization if a cluster is already detected.
       if (!options.worker && !alreadyKubeadmCluster && !alreadyKindCluster && !alreadyK3sCluster) {
+        UnderpostCluster.API.config();
         if (options.k3s === true) {
           logger.info('Initializing K3s control plane...');
           // Install K3s
@@ -415,8 +422,10 @@ class UnderpostCluster {
      * This method ensures proper SELinux, Docker, Containerd, and Sysctl settings
      * are applied for a healthy Kubernetes environment. It explicitly avoids
      * iptables flushing commands to prevent conflicts with Kubernetes' own network management.
+     * @param {string} underpostRoot - The root directory of the underpost project.
      */
-    config() {
+    config(options = { underpostRoot: '.' }) {
+      const underpostRoot = options;
       console.log('Applying host configuration: SELinux, Docker, Containerd, and Sysctl settings.');
       // Disable SELinux (permissive mode)
       shellExec(`sudo setenforce 0`);
@@ -426,10 +435,14 @@ class UnderpostCluster {
       shellExec(`sudo systemctl enable --now docker || true`); // Docker might not be needed for K3s
       shellExec(`sudo systemctl enable --now kubelet || true`); // Kubelet might not be needed for K3s (K3s uses its own agent)
 
-      // Configure containerd for SystemdCgroup
+      // Configure containerd for SystemdCgroup and explicitly disable SELinux
       // This is crucial for kubelet/k3s to interact correctly with containerd
       shellExec(`containerd config default | sudo tee /etc/containerd/config.toml > /dev/null`);
       shellExec(`sudo sed -i -e "s/SystemdCgroup = false/SystemdCgroup = true/g" /etc/containerd/config.toml`);
+      // Add a new line to disable SELinux for the runc runtime
+      // shellExec(
+      //   `sudo sed -i '/SystemdCgroup = true/a       selinux_disabled = true' /etc/containerd/config.toml || true`,
+      // );
       shellExec(`sudo service docker restart || true`); // Restart docker after containerd config changes
       shellExec(`sudo systemctl enable --now containerd.service`);
       shellExec(`sudo systemctl restart containerd`); // Restart containerd to apply changes
@@ -451,7 +464,9 @@ class UnderpostCluster {
 net.bridge.bridge-nf-call-ip6tables = 1
 net.bridge.bridge-nf-call-arptables = 1
 net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`);
-      shellExec(`sudo sysctl --system`); // Apply sysctl changes immediately
+      // shellExec(`sudo sysctl --system`); // Apply sysctl changes immediately
+      // Apply NAT iptables rules.
+      shellExec(`${underpostRoot}/manifests/maas/nat-iptables.sh`, { silent: true });
 
       // Disable firewalld (common cause of network issues in Kubernetes)
       shellExec(`sudo systemctl stop firewalld || true`); // Stop if running
@@ -492,22 +507,40 @@ net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`);
     },
 
     /**
-     * @method reset
-     * @description Performs a comprehensive reset of Kubernetes and container environments.
-     * This function is for cleaning up a node, reverting changes made by 'kubeadm init', 'kubeadm join', or 'k3s install'.
-     * It includes deleting Kind clusters, resetting kubeadm, removing CNI configs,
-     * cleaning Docker and Podman data, persistent volumes, and resetting kubelet components.
-     * It avoids aggressive iptables flushing that would break host connectivity, relying on kube-proxy's
-     * control loop to eventually clean up rules if the cluster is not re-initialized.
+     * @method safeReset
+     * @description Performs a complete reset of the Kubernetes cluster and its container environments.
+     * This version focuses on correcting persistent permission errors (such as 'permission denied'
+     * in coredns) by restoring SELinux security contexts and safely cleaning up cluster artifacts.
+     * @param {object} [options] - Configuration options for the reset.
+     * @param {string} [options.underpostRoot] - The root path of the underpost project.
      */
-    async reset() {
-      logger.info('Starting comprehensive reset of Kubernetes and container environments...');
+    async safeReset(options = { underpostRoot: '.' }) {
+      logger.info('Starting a safe and comprehensive reset of Kubernetes and container environments...');
 
       try {
-        // Phase 1: Pre-reset Kubernetes Cleanup (while API server is still up)
-        logger.info('Phase 1/6: Cleaning up Kubernetes resources (PVCs, PVs) while API server is accessible...');
+        // Phase 0: Truncate large logs under /var/log to free up immediate space
+        logger.info('Phase 0/6: Truncating large log files under /var/log...');
+        try {
+          const cleanPath = `/var/log/`;
+          const largeLogsFiles = shellExec(
+            `sudo du -sh ${cleanPath}* | awk '{if ($1 ~ /G$/ && ($1+0) > 1) print}' | sort -rh`,
+            {
+              stdout: true,
+            },
+          );
+          for (const pathLog of largeLogsFiles
+            .split(`\n`)
+            .map((p) => p.split(cleanPath)[1])
+            .filter((p) => p)) {
+            shellExec(`sudo rm -rf ${cleanPath}${pathLog}`);
+          }
+        } catch (err) {
+          logger.warn(`  -> Error truncating log files: ${err.message}. Continuing with reset.`);
+        }
 
-        // Get all Persistent Volumes and identify their host paths for data deletion.
+        // Phase 1: Clean up Persistent Volumes with hostPath
+        // This targets data created by Kubernetes Persistent Volumes that use hostPath.
+        logger.info('Phase 1/6: Cleaning Kubernetes hostPath volumes...');
         try {
           const pvListJson = shellExec(`kubectl get pv -o json || echo '{"items":[]}'`, { stdout: true, silent: true });
           const pvList = JSON.parse(pvListJson);
@@ -527,60 +560,60 @@ net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`);
         } catch (error) {
           logger.error('Failed to clean up Persistent Volumes:', error);
         }
+        // Phase 2: Restore SELinux and stop services
+        // This is critical for fixing the 'permission denied' error you experienced.
+        // Enable SELinux permissive mode and restore file contexts.
+        logger.info('Phase 2/6: Stopping services and fixing SELinux...');
+        logger.info('  -> Ensuring SELinux is in permissive mode...');
+        shellExec(`sudo setenforce 0 || true`);
+        shellExec(`sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config || true`);
+        logger.info('  -> Restoring SELinux contexts for container data directories...');
+        // The 'restorecon' command corrects file system security contexts.
+        shellExec(`sudo restorecon -Rv /var/lib/containerd || true`);
+        shellExec(`sudo restorecon -Rv /var/lib/kubelet || true`);
 
-        // Phase 2: Stop Kubelet/K3s agent and remove CNI configuration
-        logger.info('Phase 2/6: Stopping Kubelet/K3s agent and removing CNI configurations...');
-        shellExec(`sudo systemctl stop kubelet || true`); // Stop kubelet if it's running (kubeadm)
-        shellExec(`sudo /usr/local/bin/k3s-uninstall.sh || true`); // Run K3s uninstall script if it exists
+        logger.info('  -> Stopping kubelet, docker, and podman services...');
+        shellExec('sudo systemctl stop kubelet || true');
+        shellExec('sudo systemctl stop docker || true');
+        shellExec('sudo systemctl stop podman || true');
+        // Safely unmount pod filesystems to avoid errors.
+        shellExec('sudo umount -f /var/lib/kubelet/pods/*/* || true');
 
-        // CNI plugins use /etc/cni/net.d to store their configuration.
+        // Phase 3: Execute official uninstallation commands
+        logger.info('Phase 3/6: Executing official reset and uninstallation commands...');
+        logger.info('  -> Executing kubeadm reset...');
+        shellExec('sudo kubeadm reset --force || true');
+        logger.info('  -> Executing K3s uninstallation script if it exists...');
+        shellExec('sudo /usr/local/bin/k3s-uninstall.sh || true');
+        logger.info('  -> Deleting Kind clusters...');
+        shellExec('kind get clusters | xargs -r -t -n1 kind delete cluster || true');
+
+        // Phase 4: File system cleanup
+        logger.info('Phase 4/6: Cleaning up remaining file system artifacts...');
+        // Remove any leftover configurations and data.
+        shellExec('sudo rm -rf /etc/kubernetes/* || true');
         shellExec('sudo rm -rf /etc/cni/net.d/* || true');
-
-        // Phase 3: Kind Cluster Cleanup
-        logger.info('Phase 3/6: Cleaning up Kind clusters...');
-        shellExec(`kind get clusters | xargs -r -t -n1 kind delete cluster || true`);
-
-        // Phase 4: Kubeadm Reset (if applicable)
-        logger.info('Phase 4/6: Performing kubeadm reset (if applicable)...');
-        shellExec(`sudo kubeadm reset --force || true`); // Use || true to prevent script from failing if kubeadm is not installed
-
-        // Phase 5: Post-reset File System Cleanup (Local Storage, Kubeconfig)
-        logger.info('Phase 5/6: Cleaning up local storage provisioner data and kubeconfig...');
+        shellExec('sudo rm -rf /var/lib/kubelet/* || true');
+        shellExec('sudo rm -rf /var/lib/cni/* || true');
+        shellExec('sudo rm -rf /var/lib/docker/* || true');
+        shellExec('sudo rm -rf /var/lib/containerd/* || true');
+        shellExec('sudo rm -rf /var/lib/containers/storage/* || true');
+        // Clean up the current user's kubeconfig.
         shellExec('rm -rf $HOME/.kube || true');
-        shellExec(`sudo rm -rf /opt/local-path-provisioner/* || true`);
 
-        // Phase 6: Container Runtime Cleanup (Docker and Podman)
-        logger.info('Phase 6/6: Cleaning up Docker and Podman data...');
-        shellExec('sudo docker system prune -a -f || true');
-        shellExec('sudo service docker stop || true');
-        shellExec(`sudo rm -rf /var/lib/containers/storage/* || true`);
-        shellExec(`sudo rm -rf /var/lib/docker/volumes/* || true`);
-        shellExec(`sudo rm -rf /var/lib/docker~/* || true`);
-        shellExec(`sudo rm -rf /home/containers/storage/* || true`);
-        shellExec(`sudo rm -rf /home/docker/* || true`);
-        shellExec('sudo mkdir -p /home/docker || true');
-        shellExec('sudo chmod 777 /home/docker || true');
-        shellExec('sudo ln -sf /home/docker /var/lib/docker || true');
+        // Phase 5: Host network cleanup
+        logger.info('Phase 5/6: Cleaning up host network configurations...');
+        // Remove iptables rules and CNI network interfaces.
+        shellExec('sudo iptables -F || true');
+        shellExec('sudo iptables -t nat -F || true');
+        shellExec('sudo ip link del cni0 || true');
+        shellExec('sudo ip link del flannel.1 || true');
 
-        shellExec(`sudo podman system prune -a -f || true`);
-        shellExec(`sudo podman system prune --all --volumes --force || true`);
-        shellExec(`sudo podman system prune --external --force || true`);
-        shellExec(`sudo mkdir -p /home/containers/storage || true`);
-        shellExec('sudo chmod 0711 /home/containers/storage || true');
-        shellExec(
-          `sudo sed -i -e "s@/var/lib/containers/storage@/home/containers/storage@g" /etc/containers/storage.conf || true`,
-        );
-        shellExec(`sudo podman system reset -f || true`);
-
-        // Final Kubelet and System Cleanup (after all other operations)
-        logger.info('Finalizing Kubelet and system file cleanup...');
-        shellExec(`sudo rm -rf /etc/kubernetes/* || true`);
-        shellExec(`sudo rm -rf /var/lib/kubelet/* || true`);
-        shellExec(`sudo rm -rf /root/.local/share/Trash/files/* || true`);
-        shellExec(`sudo systemctl daemon-reload`);
-        shellExec(`sudo systemctl start kubelet || true`); // Attempt to start kubelet; might fail if fully reset
-
-        logger.info('Comprehensive reset completed successfully.');
+        // Phase 6: Reload daemon and finalize
+        logger.info('Phase 6/6: Reloading the system daemon and finalizing...');
+        // shellExec('sudo systemctl daemon-reload');
+        UnderpostCluster.API.config();
+        logger.info('Safe and complete reset finished. The system is ready for a new cluster initialization.');
       } catch (error) {
         logger.error(`Error during reset: ${error.message}`);
         console.error(error);
@@ -623,51 +656,24 @@ net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`);
     },
     /**
      * @method initHost
-     * @description Installs essential host-level prerequisites for Kubernetes,
-     * including Docker, Podman, Kind, Kubeadm, and Helm.
-     *
-     * Quick-Start Guide for K3s Installation:
-     * This guide will help you quickly launch a cluster with default options. Make sure your nodes meet the requirements before proceeding.
-     * Consult the Installation page for greater detail on installing and configuring K3s.
-     * For information on how K3s components work together, refer to the Architecture page.
-     * If you are new to Kubernetes, the official Kubernetes docs have great tutorials covering basics that all cluster administrators should be familiar with.
-     *
-     * Install Script:
-     * K3s provides an installation script that is a convenient way to install it as a service on systemd or openrc based systems. This script is available at https://get.k3s.io. To install K3s using this method, just run:
-     * curl -sfL https://get.k3s.io | sh -
-     *
-     * After running this installation:
-     * - The K3s service will be configured to automatically restart after node reboots or if the process crashes or is killed
-     * - Additional utilities will be installed, including kubectl, crictl, ctr, k3s-killall.sh, and k3s-uninstall.sh
-     * - A kubeconfig file will be written to /etc/rancher/k3s/k3s.yaml and the kubectl installed by K3s will automatically use it
-     *
-     * A single-node server installation is a fully-functional Kubernetes cluster, including all the datastore, control-plane, kubelet, and container runtime components necessary to host workload pods. It is not necessary to add additional server or agents nodes, but you may want to do so to add additional capacity or redundancy to your cluster.
-     *
-     * To install additional agent nodes and add them to the cluster, run the installation script with the K3S_URL and K3S_TOKEN environment variables. Here is an example showing how to join an agent:
-     * curl -sfL https://get.k3s.io | K3S_URL=https://myserver:6443 K3S_TOKEN=mynodetoken sh -
-     *
-     * Setting the K3S_URL parameter causes the installer to configure K3s as an agent, instead of a server. The K3s agent will register with the K3s server listening at the supplied URL. The value to use for K3S_TOKEN is stored at /var/lib/rancher/k3s/server/node-token on your server node.
-     *
-     * Note: Each machine must have a unique hostname. If your machines do not have unique hostnames, pass the K3S_NODE_NAME environment variable and provide a value with a valid and unique hostname for each node.
-     * If you are interested in having more server nodes, see the High Availability Embedded etcd and High Availability External DB pages for more information.
+     * @description Installs essential host-level prerequisites for Kubernetes (Docker, Podman, Kind, Kubeadm, Helm).
      */
     initHost() {
-      console.log(
-        'Installing essential host-level prerequisites for Kubernetes (Docker, Podman, Kind, Kubeadm, Helm) and providing K3s Quick-Start Guide information...',
-      );
-      // Install docker
+      const archData = UnderpostBaremetal.API.getHostArch();
+      logger.info('Installing essential host-level prerequisites for Kubernetes...', archData);
+      // Install Docker and its dependencies
       shellExec(`sudo dnf -y install dnf-plugins-core`);
       shellExec(`sudo dnf config-manager --add-repo https://download.docker.com/linux/rhel/docker-ce.repo`);
       shellExec(`sudo dnf -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin`);
 
-      // Install podman
+      // Install Podman
       shellExec(`sudo dnf -y install podman`);
 
-      // Install kind
-      shellExec(`[ $(uname -m) = aarch64 ] && curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-arm64
+      // Install Kind (Kubernetes in Docker)
+      shellExec(`[ $(uname -m) = ${archData.name} ] && curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.29.0/kind-linux-${archData.alias}
 chmod +x ./kind
 sudo mv ./kind /bin/kind`);
-      // Install kubeadm, kubelet, kubectl (these are also useful for K3s for kubectl command)
+      // Install Kubernetes tools: Kubeadm, Kubelet, and Kubectl
       shellExec(`cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
 [kubernetes]
 name=Kubernetes
@@ -679,13 +685,77 @@ exclude=kubelet kubeadm kubectl cri-tools kubernetes-cni
 EOF`);
       shellExec(`sudo yum install -y kubelet kubeadm kubectl --disableexcludes=kubernetes`);
 
-      // Install helm
+      // Install Helm
       shellExec(`curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3`);
       shellExec(`chmod 700 get_helm.sh`);
       shellExec(`./get_helm.sh`);
       shellExec(`chmod +x /usr/local/bin/helm`);
       shellExec(`sudo mv /usr/local/bin/helm /bin/helm`);
+      shellExec(`sudo rm -rf get_helm.sh`);
       console.log('Host prerequisites installed successfully.');
+    },
+    /**
+     * @method uninstallHost
+     * @description Uninstalls all host components installed by initHost.
+     * This includes Docker, Podman, Kind, Kubeadm, Kubelet, Kubectl, and Helm.
+     */
+    uninstallHost() {
+      console.log('Uninstalling host components: Docker, Podman, Kind, Kubeadm, Kubelet, Kubectl, Helm.');
+
+      // Remove Kind
+      console.log('Removing Kind...');
+      shellExec(`sudo rm -f /bin/kind || true`);
+
+      // Remove Helm
+      console.log('Removing Helm...');
+      shellExec(`sudo rm -f /usr/local/bin/helm || true`);
+      shellExec(`sudo rm -f /usr/local/bin/helm.sh || true`); // clean up the install script if it exists
+
+      // Remove Docker and its dependencies
+      console.log('Removing Docker, containerd, and related packages...');
+      shellExec(
+        `sudo dnf -y remove docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin || true`,
+      );
+
+      // Remove Podman
+      console.log('Removing Podman...');
+      shellExec(`sudo dnf -y remove podman || true`);
+
+      // Remove Kubeadm, Kubelet, and Kubectl
+      console.log('Removing Kubernetes tools...');
+      shellExec(`sudo yum remove -y kubelet kubeadm kubectl || true`);
+
+      // Remove Kubernetes repo file
+      console.log('Removing Kubernetes repository configuration...');
+      shellExec(`sudo rm -f /etc/yum.repos.d/kubernetes.repo || true`);
+
+      // Clean up Kubeadm config and data directories
+      console.log('Cleaning up Kubernetes configuration directories...');
+      shellExec(`sudo rm -rf /etc/kubernetes/pki || true`);
+      shellExec(`sudo rm -rf ~/.kube || true`);
+
+      // Stop and disable services
+      console.log('Stopping and disabling services...');
+      shellExec(`sudo systemctl stop docker.service || true`);
+      shellExec(`sudo systemctl disable docker.service || true`);
+      shellExec(`sudo systemctl stop containerd.service || true`);
+      shellExec(`sudo systemctl disable containerd.service || true`);
+      shellExec(`sudo systemctl stop kubelet.service || true`);
+      shellExec(`sudo systemctl disable kubelet.service || true`);
+
+      // Clean up config files
+      console.log('Removing host configuration files...');
+      shellExec(`sudo rm -f /etc/containerd/config.toml || true`);
+      shellExec(`sudo rm -f /etc/sysctl.d/k8s.conf || true`);
+      shellExec(`sudo rm -f /etc/sysctl.d/99-k8s-ipforward.conf || true`);
+      shellExec(`sudo rm -f /etc/sysctl.d/99-k8s.conf || true`);
+
+      // Restore SELinux to enforcing
+      console.log('Restoring SELinux to enforcing mode...');
+      // shellExec(`sudo setenforce 1`);
+      // shellExec(`sudo sed -i 's/^SELINUX=permissive$/SELINUX=enforcing/' /etc/selinux/config`);
+
+      console.log('Uninstall process completed.');
     },
   };
 }

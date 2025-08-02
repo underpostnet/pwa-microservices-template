@@ -128,6 +128,7 @@ program
   .option('--info-capacity-pod', 'Displays the current machine capacity information per pod.')
   .option('--pull-image', 'Sets an optional associated image to pull during initialization.')
   .option('--init-host', 'Installs necessary Kubernetes node CLI tools (e.g., kind, kubeadm, docker, podman, helm).')
+  .option('--uninstall-host', 'Uninstalls all host components installed by init-host.')
   .option('--config', 'Sets the base Kubernetes node configuration.')
   .option('--worker', 'Sets the context for a worker node.')
   .option('--chown', 'Sets the appropriate ownership for Kubernetes kubeconfig files.')
@@ -313,6 +314,14 @@ program
   .option('--sync', 'Synchronizes with current proxy deployments and traffic configurations.')
   .description('Manages health server monitoring for specified deployments.')
   .action(Underpost.monitor.callback);
+
+// 'run' command: Run a script
+program
+  .command('run')
+  .argument('[path]', 'The absolute or relative directory path where the script is located.')
+  .option('--dev', 'Sets the development context environment for the script.')
+  .description('Runs a script from the specified path.')
+  .action(Underpost.run.callback);
 
 // 'lxd' command: LXD management
 program

@@ -91,7 +91,7 @@ class UnderpostBaremetal {
       const callbackMetaData = {
         args: { hostname, ipAddress, workflowId },
         options,
-        runnerHost: { architecture: UnderpostBaremetal.API.getHostArch(), ip: getLocalIPv4Address() },
+        runnerHost: { architecture: UnderpostBaremetal.API.getHostArch().alias, ip: getLocalIPv4Address() },
         nfsHostPath,
         tftpRootPath,
       };
@@ -149,6 +149,7 @@ class UnderpostBaremetal {
         shellExec(`chmod +x ${underpostRoot}/manifests/maas/nat-iptables.sh`);
         shellExec(`${underpostRoot}/manifests/maas/maas-setup.sh`);
         shellExec(`${underpostRoot}/manifests/maas/nat-iptables.sh`);
+        return;
       }
 
       // Handle control server uninstallation.
@@ -166,6 +167,7 @@ class UnderpostBaremetal {
         shellExec(`sudo rm -rf /etc/maas`);
         shellExec(`sudo rm -rf /var/lib/maas`);
         shellExec(`sudo rm -rf /var/log/maas`);
+        return;
       }
 
       // Handle control server database installation.
@@ -175,12 +177,14 @@ class UnderpostBaremetal {
         shellExec(
           `node ${underpostRoot}/bin/deploy pg-drop-db ${process.env.DB_PG_MAAS_NAME} ${process.env.DB_PG_MAAS_USER}`,
         );
-        shellExec(`node ${underpostRoot}/bin/deploy maas db`);
+        shellExec(`node ${underpostRoot}/bin/deploy maas-db`);
+        return;
       }
 
       // Handle control server database uninstallation.
       if (options.controlServerDbUninstall === true) {
         shellExec(`node ${underpostRoot}/bin/deploy ${dbProviderId} uninstall`);
+        return;
       }
 
       // Set debootstrap architecture.
@@ -941,8 +945,8 @@ EOF`);
     getHostArch() {
       // `uname -m` returns e.g. 'x86_64' or 'aarch64'
       const machine = shellExec('uname -m', { stdout: true }).trim();
-      if (machine === 'x86_64') return 'amd64';
-      if (machine === 'aarch64') return 'arm64';
+      if (machine === 'x86_64') return { alias: 'amd64', name: 'x86_64' };
+      if (machine === 'aarch64') return { alias: 'arm64', name: 'aarch64' };
       throw new Error(`Unsupported host architecture: ${machine}`);
     },
 

@@ -60,7 +60,7 @@ class UnderpostRepository {
     },
 
     push(repoPath = './', gitUri = 'underpostnet/pwa-microservices-template', options = { f: false, g8: false }) {
-      const gExtension = options.g8 === true ? '.g8' : '.git';
+      const gExtension = options.g8 === true || options.G8 === true ? '.g8' : '.git';
       shellExec(
         `cd ${repoPath} && git push https://${process.env.GITHUB_TOKEN}@github.com/${gitUri}${gExtension}${
           options?.f === true ? ' --force' : ''
@@ -71,9 +71,12 @@ class UnderpostRepository {
       );
       logger.info(
         'commit url',
-        `http://github.com/${gitUri}/commit/${shellExec(`cd ${repoPath} && git rev-parse --verify HEAD`, {
-          stdout: true,
-        }).trim()}`,
+        `http://github.com/${gitUri}${gExtension === '.g8' ? '.g8' : ''}/commit/${shellExec(
+          `cd ${repoPath} && git rev-parse --verify HEAD`,
+          {
+            stdout: true,
+          },
+        ).trim()}`,
       );
     },
 
