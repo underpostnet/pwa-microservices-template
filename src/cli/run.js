@@ -1,9 +1,10 @@
-import { pbcopy, shellCd, shellExec } from '../server/process.js';
+import { getTerminalPid, openTerminal, pbcopy, shellCd, shellExec } from '../server/process.js';
 import read from 'read';
 import { getNpmRootPath } from '../server/conf.js';
 import { loggerFactory } from '../server/logger.js';
 import UnderpostTest from './test.js';
 import fs from 'fs-extra';
+import { timer } from '../client/components/core/CommonJs.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -52,9 +53,73 @@ class UnderpostRun {
       const { underpostRoot } = options;
       shellExec(`node ${underpostRoot}/bin/vs ${path}`);
     },
+    monitor: (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      const pid = getTerminalPid();
+      logger.info('monitor pid', pid);
+      const checkPath = '/await';
+      const _monitor = async () => {
+        const result = JSON.parse(
+          shellExec(`kubectl exec ${path} -- test -f ${checkPath} && echo "true" || echo "false"`, {
+            stdout: true,
+            disableLog: true,
+            silent: true,
+          }).trim(),
+        );
+        logger.info('monitor', result);
+        if (result === true) {
+          switch (path) {
+            case 'tf-vae-test':
+              {
+                const nameSpace = 'default';
+                const podName = path;
+                const basePath = '/home/dd';
+                const scriptPath = '/site/en/tutorials/generative/cvae.py';
+                shellExec(
+                  `sudo kubectl cp ${nameSpace}/${podName}:${basePath}/docs${scriptPath} ${basePath}/lab/src/${scriptPath
+                    .split('/')
+                    .pop()}`,
+                );
+                const file = fs.readFileSync(`${basePath}/lab/src/${scriptPath.split('/').pop()}`, 'utf8');
+                fs.writeFileSync(
+                  `${basePath}/lab/src/${scriptPath.split('/').pop()}`,
+                  file.replace(
+                    `import time`,
+                    `import time
+print('=== SCRIPT UPDATE TEST ===')`,
+                  ),
+                  'utf8',
+                );
+                shellExec(
+                  `sudo kubectl cp ${basePath}/lab/src/${scriptPath
+                    .split('/')
+                    .pop()} ${nameSpace}/${podName}:${basePath}/docs${scriptPath}`,
+                );
+                // shellExec(`sudo kubectl exec -i ${podName} -- sh -c "ipython ${basePath}/docs${scriptPath}"`);
+                shellExec(`sudo kubectl exec -i ${podName} -- sh -c "rm -rf ${checkPath}"`);
+                shellExec(`sudo kill -9 ${pid}`);
+              }
+              break;
+
+            default:
+              break;
+          }
+          return;
+        }
+        await timer(1000);
+        _monitor();
+      };
+      _monitor();
+    },
     'tf-vae-test': async (path, options = UnderpostRun.DEFAULT_OPTION) => {
       const { underpostRoot } = options;
+      const podName = 'tf-vae-test';
       await UnderpostRun.RUNNERS['deploy-job']('', {
+        podName,
+        on: {
+          init: async () => {
+            openTerminal(`node bin run --dev monitor ${podName}`);
+          },
+        },
         args: [
           `pip install --upgrade \
                nbconvert \
@@ -68,7 +133,11 @@ class UnderpostRun {
           'git clone https://github.com/tensorflow/docs.git',
           'cd docs',
           'jupyter nbconvert --to python site/en/tutorials/generative/cvae.ipynb',
-          'ipython site/en/tutorials/generative/cvae.py',
+          `echo '' > /await`,
+          `echo '=== WAITING SCRIPT LAUNCH ==='`,
+          `while [ -f /await ]; do sleep 1; done`,
+          `ipython site/en/tutorials/generative/cvae.py`,
+          `echo '=== FINISHED ==='`,
         ],
       });
     },
@@ -134,6 +203,7 @@ EOF`;
       shellExec(cmd, { disableLog: true });
       const successInstance = await UnderpostTest.API.statusMonitor(podName);
       if (successInstance) {
+        options.on?.init ? await options.on.init() : null;
         shellExec(`kubectl logs -f ${podName}`);
       }
     },
