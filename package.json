@@ -6,6 +6,7 @@
     "description": "pwa api rest template",
     "scripts": {
         "start": "env-cmd -f .env.production node --max-old-space-size=8192 src/server",
+        "build": "node bin/deploy build-full-client",
         "test": "env-cmd -f .env.test c8 mocha",
         "pm2": "env-cmd -f .env.production pm2 start src/server.js --node-args=\"--max-old-space-size=8192\" --name engine",
         "dev": "env-cmd -f .env.development node src/client.dev default",
@@ -23,8 +24,7 @@
         "docker:start": "docker-compose up",
         "prettier": "prettier --write .",
         "fix": "npm audit fix --force && npm audit",
-        "changelog": "auto-changelog",
-        "build": "node bin/deploy build-full-client"
+        "changelog": "auto-changelog"
     },
     "bin": {
         "underpost": "bin/index.js"
@@ -99,7 +99,6 @@
         "peer": "^1.0.2",
         "peerjs": "^1.5.2",
         "pixi.js": "7.4.2",
-        "plantuml": "^0.0.2",
         "prom-client": "^15.1.2",
         "public-ip": "^6.0.1",
         "read": "^2.1.0",

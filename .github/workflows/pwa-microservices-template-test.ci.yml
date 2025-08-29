@@ -1,0 +1,33 @@
+name: CI | Gihub page | PWA Microservices Template Test
+
+on: [push]
+
+jobs:
+  test:
+    name: Template Test
+    runs-on: ubuntu-latest
+    container:
+      image: rockylinux/rockylinux:9
+      options: --entrypoint /bin/bash
+    steps:
+      - name: Clone repository
+        uses: actions/checkout@v3
+
+      - name: Install required packages
+        run: |
+          dnf install -y sudo tar gzip bzip2 git
+          dnf install -y curl --allowerasing
+
+      - name: Install Node.js
+        run: |
+          curl -fsSL https://rpm.nodesource.com/setup_23.x | bash -
+          dnf install nodejs -y
+
+      - name: Get npm root
+        run: npm root -g
+
+      - name: Install underpost CLI
+        run: npm install -g underpost
+
+      - name: Run test
+        run: underpost test
