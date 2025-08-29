@@ -8,7 +8,7 @@ const DropDown = {
   Tokens: {},
   Render: async function (options) {
     const id = options.id ? options.id : getId(this.Tokens, 'dropdown-');
-    this.Tokens[id] = { onClickEvents: {}, lastSelectValue: undefined };
+    this.Tokens[id] = { onClickEvents: {}, lastSelectValue: undefined, oncheckvalues: {} };
 
     options.data.push({
       value: 'reset',
@@ -113,9 +113,11 @@ const DropDown = {
                     on: {
                       unchecked: () => {
                         optionData.checked = false;
+                        delete DropDown.Tokens[id].oncheckvalues[valueDisplay];
                       },
                       checked: () => {
                         optionData.checked = true;
+                        DropDown.Tokens[id].oncheckvalues[valueDisplay] = {};
                       },
                     },
                   })}
@@ -176,7 +178,8 @@ const DropDown = {
 
       s(`.search-box-${id}`).oninput = dropDownSearchHandle;
 
-      s(`.search-box-${id}`).onblur = dropDownSearchHandle;
+      // Not use onblur generate bug on input toggle
+      // s(`.search-box-${id}`).onblur = dropDownSearchHandle;
     });
 
     const { render, index } = await _render(options.data);
