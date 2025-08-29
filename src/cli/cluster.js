@@ -19,6 +19,7 @@ class UnderpostCluster {
      * @param {object} [options] - Configuration options for cluster initialization.
      * @param {boolean} [options.mongodb=false] - Deploy MongoDB.
      * @param {boolean} [options.mongodb4=false] - Deploy MongoDB 4.4.
+     * @param {String} [options.mongoDbHost=''] - Set custom mongo db host
      * @param {boolean} [options.mariadb=false] - Deploy MariaDB.
      * @param {boolean} [options.mysql=false] - Deploy MySQL.
      * @param {boolean} [options.postgresql=false] - Deploy PostgreSQL.
@@ -48,6 +49,7 @@ class UnderpostCluster {
       options = {
         mongodb: false,
         mongodb4: false,
+        mongoDbHost: '',
         mariadb: false,
         mysql: false,
         postgresql: false,
@@ -271,6 +273,7 @@ class UnderpostCluster {
         }
         shellExec(`kubectl delete statefulset valkey-service --ignore-not-found`);
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/valkey`);
+        await UnderpostTest.API.statusMonitor('valkey-service', 'Running', 'pods', 1000, 60);
       }
       if (options.full === true || options.mariadb === true) {
         shellExec(
@@ -288,9 +291,7 @@ class UnderpostCluster {
             // For kubeadm/k3s, ensure it's available for containerd
             shellExec(`sudo crictl pull mariadb:latest`);
         }
-        if (options.kubeadm === true)
-          // This storage class is specific to kubeadm setup
-          shellExec(`kubectl apply -f ${underpostRoot}/manifests/mariadb/storage-class.yaml`);
+        shellExec(`kubectl apply -f ${underpostRoot}/manifests/mariadb/storage-class.yaml`);
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/mariadb`);
       }
       if (options.full === true || options.mysql === true) {
@@ -334,9 +335,10 @@ class UnderpostCluster {
         const successInstance = await UnderpostTest.API.statusMonitor(deploymentName);
 
         if (successInstance) {
+          if (!options.mongoDbHost) options.mongoDbHost = 'mongodb-service';
           const mongoConfig = {
             _id: 'rs0',
-            members: [{ _id: 0, host: 'mongodb-service:27017' }],
+            members: [{ _id: 0, host: `${options.mongoDbHost}:27017` }],
           };
 
           const [pod] = UnderpostDeploy.API.get(deploymentName);
@@ -363,19 +365,26 @@ class UnderpostCluster {
           `sudo kubectl create secret generic mongodb-secret --from-file=username=/home/dd/engine/engine-private/mongodb-username --from-file=password=/home/dd/engine/engine-private/mongodb-password --dry-run=client -o yaml | kubectl apply -f -`,
         );
         shellExec(`kubectl delete statefulset mongodb --ignore-not-found`);
-        if (options.kubeadm === true)
-          // This storage class is specific to kubeadm setup
-          shellExec(`kubectl apply -f ${underpostRoot}/manifests/mongodb/storage-class.yaml`);
+        shellExec(`kubectl apply -f ${underpostRoot}/manifests/mongodb/storage-class.yaml`);
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/mongodb`);
 
-        const successInstance = await UnderpostTest.API.statusMonitor('mongodb-1', 'Running', 'pods', 1000, 60 * 10);
+        const successInstance = await UnderpostTest.API.statusMonitor('mongodb-0', 'Running', 'pods', 1000, 60 * 10);
 
         if (successInstance) {
+          if (!options.mongoDbHost) options.mongoDbHost = 'mongodb-service';
           const mongoConfig = {
             _id: 'rs0',
             members: [
-              { _id: 0, host: 'mongodb-0.mongodb-service:27017', priority: 1 },
-              { _id: 1, host: 'mongodb-1.mongodb-service:27017', priority: 1 },
+              {
+                _id: 0,
+                host: `${options.mongoDbHost === 'mongodb-service' ? 'mongodb-0.' : ''}${options.mongoDbHost}:27017`,
+                priority: 1,
+              },
+              // {
+              //   _id: 1,
+              //   host: `${options.mongoDbHost === 'mongodb-service' ? 'mongodb-1.' : ''}${options.mongoDbHost}:27017`,
+              //   priority: 1,
+              // },
             ],
           };
 

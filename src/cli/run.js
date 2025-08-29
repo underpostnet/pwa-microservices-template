@@ -65,6 +65,27 @@ class UnderpostRun {
       shellExec(`kubectl delete pod tf-gpu-test-pod`);
       shellExec(`kubectl apply -f ${underpostRoot}/manifests/deployment/tensorflow/tf-gpu-test.yaml`);
     },
+    'dev-cluster': (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      const baseCommand = options.dev ? 'node bin' : 'underpost';
+      shellExec(`${baseCommand} cluster${options.dev ? ' --dev' : ''} --reset`);
+      shellExec(`${baseCommand} cluster${options.dev ? ' --dev' : ''}`);
+      shellExec(
+        `${baseCommand} cluster${options.dev ? ' --dev' : ''} --mongodb --mongo-db-host ${'127.0.0.1'} --pull-image`,
+      );
+      shellExec(`${baseCommand} cluster${options.dev ? ' --dev' : ''} --valkey --pull-image`);
+      shellExec(`${baseCommand} deploy --expose mongo`, { async: true });
+      shellExec(`${baseCommand} deploy --expose valkey`, { async: true });
+    },
+    'cyberia-ide': (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      const baseCommand = options.dev ? 'node bin' : 'underpost';
+      shellExec(`${baseCommand} run ide /home/dd/cyberia-server`);
+      shellExec(`${baseCommand} run ide /home/dd/cyberia-client`);
+    },
+    'engine-ide': (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      const baseCommand = options.dev ? 'node bin' : 'underpost';
+      shellExec(`${baseCommand} run ide /home/dd/engine`);
+      shellExec(`${baseCommand} run ide /home/dd/engine/engine-private`);
+    },
     ide: (path, options = UnderpostRun.DEFAULT_OPTION) => {
       const { underpostRoot } = options;
       shellExec(`node ${underpostRoot}/bin/vs ${path}`);

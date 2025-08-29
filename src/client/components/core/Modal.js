@@ -39,6 +39,7 @@ const logger = loggerFactory(import.meta);
 
 const Modal = {
   Data: {},
+
   Render: async function (
     options = {
       id: '',
@@ -86,14 +87,14 @@ const Modal = {
       onBarUiOpen: {},
       onBarUiClose: {},
       onHome: {},
+      homeModals: options.homeModals ? options.homeModals : [],
       query: options.query ? `${window.location.search}` : undefined,
     };
-    const setCenterRestore = () => {
-      const ResponsiveData = Responsive.getResponsiveData();
-      top = `${ResponsiveData.height / 2 - height / 2}px`;
-      left = `${ResponsiveData.width / 2 - width / 2}px`;
-    };
-    if (idModal !== 'main-body') setCenterRestore();
+
+    if (idModal !== 'main-body' && options.mode !== 'view') {
+      top = `${window.innerHeight / 2 - height / 2}px`;
+      left = `${window.innerWidth / 2 - width / 2}px`;
+    }
     if (options && 'mode' in options) {
       this.Data[idModal][options.mode] = {};
       switch (options.mode) {
@@ -104,6 +105,7 @@ const Modal = {
           options.style = {
             ...options.style,
             'min-width': `${minWidth}px`,
+            width: '100%',
           };
 
           if (this.mobileModal()) {
@@ -434,8 +436,14 @@ const Modal = {
                   rules: [] /*{ type: 'isEmpty' }, { type: 'isEmail' }*/,
                 },
               ];
-              let hoverHistBox = false;
-              let hoverInputBox = false;
+              // Reusable hover/focus controller for search history panel
+              let unbindDocSearch = null;
+              const hoverFocusCtl = EventsUI.HoverFocusController({
+                inputSelector: `.top-bar-search-box-container`,
+                panelSelector: `.${id}`,
+                activeElementId: inputSearchBoxId,
+                onDismiss: () => dismissSearchBox(),
+              });
               let currentKeyBoardSearchBoxIndex = 0;
               let results = [];
               let historySearchBox = [];
@@ -592,7 +600,7 @@ const Modal = {
                 const isSearchBoxActiveElement = isActiveElement(inputSearchBoxId);
                 checkHistoryBoxTitleStatus();
                 checkShortcutContainerInfoEnabled();
-                if (!isSearchBoxActiveElement && !hoverHistBox && !hoverInputBox) {
+                if (!isSearchBoxActiveElement && !hoverFocusCtl.shouldStay()) {
                   Modal.removeModal(searchBoxHistoryId);
                   return;
                 }
@@ -676,27 +684,19 @@ const Modal = {
                     barMode: options.barMode,
                   });
 
-                  const titleNode = s(`.title-modal-${id}`).cloneNode(true);
-                  s(`.title-modal-${id}`).remove();
-                  s(`.btn-bar-modal-container-render-${id}`).classList.add('in');
-                  s(`.btn-bar-modal-container-render-${id}`).classList.add('fll');
-                  s(`.btn-bar-modal-container-render-${id}`).appendChild(titleNode);
+                  // Bind hover/focus and click-outside to dismiss
+                  hoverFocusCtl.bind();
+                  unbindDocSearch = EventsUI.bindDismissOnDocumentClick({
+                    shouldStay: hoverFocusCtl.shouldStay,
+                    onDismiss: () => dismissSearchBox(),
+                    anchors: [`.top-bar-search-box-container`, `.${id}`],
+                  });
+                  // Ensure cleanup when modal closes
+                  Modal.Data[id].onCloseListener[`unbind-doc-${id}`] = () => unbindDocSearch && unbindDocSearch();
+
+                  Modal.MoveTitleToBar(id);
 
                   prepend(`.btn-bar-modal-container-${id}`, html`<div class="hide">${inputInfoNode.outerHTML}</div>`);
-
-                  s(`.top-bar-search-box-container`).onmouseover = () => {
-                    hoverInputBox = true;
-                  };
-                  s(`.top-bar-search-box-container`).onmouseout = () => {
-                    hoverInputBox = false;
-                  };
-                  s(`.${id}`).onmouseover = () => {
-                    hoverHistBox = true;
-                  };
-                  s(`.${id}`).onmouseout = () => {
-                    hoverHistBox = false;
-                    s(`.${inputSearchBoxId}`).focus();
-                  };
                 }
               };
 
@@ -708,14 +708,23 @@ const Modal = {
                 searchBoxHistoryOpen();
                 searchBoxCallBack(formDataInfoNode[0]);
               };
-              s('.top-bar-search-box').onblur = () => {
-                if (!hoverHistBox && !hoverInputBox && !isActiveElement(inputSearchBoxId)) {
-                  Modal.removeModal(searchBoxHistoryId);
+
+              const dismissSearchBox = () => {
+                if (unbindDocSearch) {
+                  try {
+                    unbindDocSearch();
+                  } catch (e) {}
                 }
+                Modal.removeModal(searchBoxHistoryId);
+              };
+              s('.top-bar-search-box').onblur = () => {
+                hoverFocusCtl.checkDismiss();
               };
               EventsUI.onClick(`.top-bar-search-box-container`, () => {
                 searchBoxHistoryOpen();
                 searchBoxCallBack(formDataInfoNode[0]);
+                const inputEl = s(`.${inputSearchBoxId}`);
+                if (inputEl && inputEl.focus) inputEl.focus();
               });
 
               const timePressDelay = 100;
@@ -897,8 +906,10 @@ const Modal = {
                 barConfig.buttons.menu.disabled = true;
                 barConfig.buttons.close.disabled = true;
                 const id = 'bottom-bar';
-                if (options && options.homeModals && !options.homeModals.includes(id)) options.homeModals.push(id);
-                else options.homeModals = [id];
+                if (!this.Data[idModal].homeModals) this.Data[idModal].homeModals = [];
+                if (!this.Data[idModal].homeModals.includes(id)) {
+                  this.Data[idModal].homeModals.push(id);
+                }
                 const html = async () => html`
                   <style>
                     .top-bar-search-box-container {
@@ -1048,13 +1059,79 @@ const Modal = {
 
               {
                 htmls(`.action-btn-lang-render`, html` ${s('html').lang}`);
-                EventsUI.onClick(`.action-btn-lang`, () => {
-                  let lang = 'en';
-                  if (s('html').lang === 'en') lang = 'es';
-                  if (s(`.dropdown-option-${lang}`))
-                    DropDown.Tokens['settings-lang'].onClickEvents[`dropdown-option-${lang}`]();
-                  else Translate.renderLang(lang);
-                });
+                // old method
+                // EventsUI.onClick(`.action-btn-lang`, () => {
+                //   let lang = 'en';
+                //   if (s('html').lang === 'en') lang = 'es';
+                //   if (s(`.dropdown-option-${lang}`))
+                //     DropDown.Tokens['settings-lang'].onClickEvents[`dropdown-option-${lang}`]();
+                //   else Translate.renderLang(lang);
+                // });
+
+                // Open lightweight empty modal on language button, with shared dismiss logic
+                EventsUI.onClick(
+                  `.action-btn-lang`,
+                  async () => {
+                    const id = 'action-btn-lang-modal';
+                    if (s(`.${id}`)) {
+                      return s(`.btn-close-${id}`).click();
+                    }
+                    const { barConfig } = await Themes[Css.currentTheme]();
+                    barConfig.buttons.maximize.disabled = true;
+                    barConfig.buttons.minimize.disabled = true;
+                    barConfig.buttons.restore.disabled = true;
+                    barConfig.buttons.menu.disabled = true;
+                    barConfig.buttons.close.disabled = false;
+                    await Modal.Render({
+                      id,
+                      barConfig,
+                      title: html`${renderViewTitle({
+                        icon: html`<i class="fas fa-language mini-title"></i>`,
+                        text: Translate.Render('select lang'),
+                      })}`,
+                      html: () => html``,
+                      titleClass: 'mini-title',
+                      style: {
+                        resize: 'none',
+                        'max-width': '300px',
+                        height: '150px !important',
+                        'z-index': 7,
+                      },
+                      dragDisabled: true,
+                      maximize: true,
+                      heightBottomBar: 0,
+                      heightTopBar: originHeightTopBar,
+                      barMode: options.barMode,
+                    });
+
+                    // Move title inside the bar container to align with control buttons
+                    Modal.MoveTitleToBar(id);
+
+                    // Position the language selection modal relative to the language button
+                    Modal.positionRelativeToAnchor({
+                      modalSelector: `.${id}`,
+                      anchorSelector: '.action-btn-lang',
+                      align: 'right',
+                      offset: { x: 0, y: 6 },
+                      autoVertical: true,
+                    });
+
+                    // Hover/focus controller uses the button as input anchor
+                    const hoverFocusCtl = EventsUI.HoverFocusController({
+                      inputSelector: `.action-btn-lang`,
+                      panelSelector: `.${id}`,
+                      onDismiss: () => Modal.removeModal(id),
+                    });
+                    hoverFocusCtl.bind();
+                    const unbindDoc = EventsUI.bindDismissOnDocumentClick({
+                      shouldStay: hoverFocusCtl.shouldStay,
+                      onDismiss: () => Modal.removeModal(id),
+                      anchors: [`.action-btn-lang`, `.${id}`],
+                    });
+                    Modal.Data[id].onCloseListener[`unbind-doc-${id}`] = () => unbindDoc();
+                  },
+                  { context: 'modal', noGate: true, noLoading: true },
+                );
               }
 
               {
@@ -1348,9 +1425,7 @@ const Modal = {
         this.onHomeRouterEvent = async () => {
           for (const keyModal of Object.keys(this.Data)) {
             if (
-              ![idModal, 'main-body-top', 'main-body']
-                .concat(options?.homeModals ? options.homeModals : [])
-                .includes(keyModal)
+              ![idModal, 'main-body-top', 'main-body'].concat(this.Data[idModal]?.homeModals || []).includes(keyModal)
             )
               s(`.btn-close-${keyModal}`).click();
             backMenuButtonEvent();
@@ -1429,42 +1504,139 @@ const Modal = {
       default:
         break;
     }
+    // Track drag position for consistency
+    let dragPosition = { x: 0, y: 0 };
+
+    // Initialize drag options with proper bounds and smooth transitions
     let dragOptions = {
-      // disabled: true,
-      handle,
-      onDragStart: (data) => {
-        if (!s(`.${idModal}`)) return;
-        // logger.info('Dragging started', data);
-        s(`.${idModal}`).style.transition = null;
+      handle: handle,
+      bounds: {
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+      },
+      preventDefault: true,
+      position: { x: 0, y: 0 },
+      onDragStart: () => {
+        const modal = s(`.${idModal}`);
+        if (!modal) return false; // Prevent drag if modal not found
+
+        // Store current position
+        const computedStyle = window.getComputedStyle(modal);
+        const matrix = new DOMMatrixReadOnly(computedStyle.transform);
+        dragPosition = {
+          x: matrix.m41 || 0,
+          y: matrix.m42 || 0,
+        };
+
+        modal.style.transition = 'none';
+        modal.style.willChange = 'transform';
+        return true; // Allow drag to start
       },
       onDrag: (data) => {
-        if (!s(`.${idModal}`)) return;
-        // logger.info('Dragging', data);
+        // Update position based on drag delta
+        dragPosition = { x: data.x, y: data.y };
       },
-      onDragEnd: (data) => {
-        if (!s(`.${idModal}`)) return;
-        // logger.info('Dragging stopped', data);
-        s(`.${idModal}`).style.transition = transition;
-        Object.keys(this.Data[idModal].onDragEndListener).map((keyListener) =>
-          this.Data[idModal].onDragEndListener[keyListener](),
-        );
+      onDragEnd: () => {
+        const modal = s(`.${idModal}`);
+        if (!modal) return;
+
+        modal.style.willChange = '';
+        modal.style.transition = transition;
+
+        // Update drag instance with current position
+        if (dragInstance) {
+          dragInstance.updateOptions({
+            position: dragPosition,
+          });
+        }
+
+        // Notify listeners
+        Object.keys(this.Data[idModal].onDragEndListener || {}).forEach((keyListener) => {
+          this.Data[idModal].onDragEndListener[keyListener]?.();
+        });
       },
     };
-    let dragInstance;
-    // new Draggable(s(`.${idModal}`), { disabled: true });
-    const setDragInstance = () => (options?.dragDisabled ? null : new Draggable(s(`.${idModal}`), dragOptions));
+
+    let dragInstance = null;
+
+    // Initialize or update drag instance
+    const setDragInstance = () => {
+      if (options?.dragDisabled) {
+        if (dragInstance) {
+          dragInstance.destroy();
+          dragInstance = null;
+        }
+        return null;
+      }
+
+      const modal = s(`.${idModal}`);
+      if (!modal) {
+        console.warn(`Modal element .${idModal} not found for drag initialization`);
+        return null;
+      }
+
+      // Ensure the modal has position: absolute for proper dragging
+      if (window.getComputedStyle(modal).position !== 'absolute') {
+        modal.style.position = 'absolute';
+      }
+
+      // Clean up existing instance
+      if (dragInstance) {
+        dragInstance.destroy();
+      }
+
+      try {
+        // Create new instance with updated options
+        dragInstance = new Draggable(modal, dragOptions);
+        return dragInstance;
+      } catch (error) {
+        console.error('Failed to initialize draggable:', error);
+        return null;
+      }
+    };
+
+    // Expose method to update drag options
     this.Data[idModal].setDragInstance = (updateDragOptions) => {
-      dragOptions = {
-        ...dragOptions,
-        ...updateDragOptions,
-      };
+      if (updateDragOptions) {
+        dragOptions = { ...dragOptions, ...updateDragOptions };
+      }
       dragInstance = setDragInstance();
       this.Data[idModal].dragInstance = dragInstance;
       this.Data[idModal].dragOptions = dragOptions;
     };
-    s(`.${idModal}`).style.transition = '0.15s';
-    setTimeout(() => (s(`.${idModal}`).style.opacity = '1'));
-    setTimeout(() => (s(`.${idModal}`).style.transition = transition), 150);
+    // Initialize modal with proper transitions
+    const modal = s(`.${idModal}`);
+    if (modal) {
+      // Initial state
+      modal.style.transition = 'opacity 0.15s ease, transform 0.3s ease';
+      modal.style.opacity = '0';
+
+      // Trigger fade-in after a small delay to allow initial render
+      requestAnimationFrame(() => {
+        if (!modal) return;
+        modal.style.opacity = '1';
+
+        // Set final transition after initial animation completes
+        setTimeout(() => {
+          if (modal) {
+            modal.style.transition = transition;
+
+            // Initialize drag after transitions are set
+            if (!options.dragDisabled) {
+              setDragInstance();
+              if (!options.mode) {
+                dragInstance.updateOptions({
+                  position: { x: 0, y: 0 },
+                  disabled: false, // Ensure drag is enabled after restore
+                });
+              }
+            }
+          }
+        }, 150);
+      });
+    }
 
     const btnCloseEvent = () => {
       Object.keys(this.Data[idModal].onCloseListener).map((keyListener) =>
@@ -1490,13 +1662,13 @@ const Modal = {
               for (const subIdModal of Object.keys(this.Data).reverse()) {
                 if (this.Data[subIdModal].options.route) {
                   newPath = `${newPath}${this.Data[subIdModal].options.route}`;
-                  // console.warn('SET MODAL URI', newPath);
+                  console.warn('------------> SET MODAL URI', newPath);
                   setPath(newPath);
                   this.setTopModalCallback(subIdModal);
                   return setDocTitle({ ...options.RouterInstance, route: this.Data[subIdModal].options.route });
                 }
               }
-              // console.warn('SET MODAL URI', newPath);
+              console.warn('-------------> SET MODAL URI', newPath);
               setPath(`${newPath}${Modal.homeCid ? `?cid=${Modal.homeCid}` : ''}`);
               return setDocTitle({ ...options.RouterInstance, route: '' });
             }
@@ -1505,37 +1677,110 @@ const Modal = {
     };
     s(`.btn-close-${idModal}`).onclick = btnCloseEvent;
 
+    // Minimize button handler
     s(`.btn-minimize-${idModal}`).onclick = () => {
-      if (options.slideMenu) delete this.Data[idModal].slideMenu;
-      s(`.${idModal}`).style.transition = '0.3s';
+      const modal = s(`.${idModal}`);
+      if (!modal) return;
+
+      if (options.slideMenu) {
+        delete this.Data[idModal].slideMenu;
+      }
+
+      // Keep drag enabled when minimized
+      if (dragInstance) {
+        dragInstance.updateOptions({ disabled: false });
+      }
+
+      // Set up transition
+      modal.style.transition = 'height 0.3s ease, transform 0.3s ease';
+
+      // Update button states
       s(`.btn-minimize-${idModal}`).style.display = 'none';
       s(`.btn-maximize-${idModal}`).style.display = null;
       s(`.btn-restore-${idModal}`).style.display = null;
-      s(`.${idModal}`).style.height = `${s(`.bar-default-modal-${idModal}`).clientHeight}px`;
-      setTimeout(() => (s(`.${idModal}`).style.transition = transition), 300);
+
+      // Collapse to header height
+      const header = s(`.bar-default-modal-${idModal}`);
+      if (header) {
+        modal.style.height = `${header.clientHeight}px`;
+        modal.style.overflow = 'hidden';
+      }
+
+      // Restore transition after animation
+      setTimeout(() => {
+        if (modal) {
+          modal.style.transition = transition;
+        }
+      }, 300);
     };
+    // Restore button handler
     s(`.btn-restore-${idModal}`).onclick = () => {
-      if (options.slideMenu) delete this.Data[idModal].slideMenu;
-      s(`.${idModal}`).style.transition = '0.3s';
+      const modal = s(`.${idModal}`);
+      if (!modal) return;
+
+      if (options.slideMenu) {
+        delete this.Data[idModal].slideMenu;
+      }
+
+      // Re-enable dragging
+      if (dragInstance) {
+        dragInstance.updateOptions({ disabled: false });
+      }
+
+      // Set up transition
+      modal.style.transition = 'all 0.3s ease';
+
+      // Update button states
       s(`.btn-restore-${idModal}`).style.display = 'none';
       s(`.btn-minimize-${idModal}`).style.display = null;
       s(`.btn-maximize-${idModal}`).style.display = null;
-      s(`.${idModal}`).style.transform = null;
-      s(`.${idModal}`).style.height = null;
-      s(`.${idModal}`).style.width = null;
-      setCenterRestore();
-      s(`.${idModal}`).style.top = top;
-      s(`.${idModal}`).style.left = left;
-      dragInstance = setDragInstance();
-      setTimeout(() => (s(`.${idModal}`).style.transition = transition), 300);
+
+      // Restore original dimensions and position
+      modal.style.transform = '';
+      modal.style.height = '';
+      left = 0;
+      width = 300;
+      modal.style.left = `${left}px`;
+      modal.style.width = `${width}px`;
+      modal.style.overflow = '';
+
+      // Reset drag position
+      dragPosition = { x: 0, y: 0 };
+
+      // Set new position
+      modal.style.transform = `translate(0, 0)`;
+
+      // Adjust top position based on top bar visibility
+      const heightDefaultTopBar = 40; // Default top bar height if not specified
+      s(`.${idModal}`).style.top = s(`.main-body-btn-ui-close`).classList.contains('hide')
+        ? `0px`
+        : `${options.heightTopBar ? options.heightTopBar : heightDefaultTopBar}px`;
+
+      // Re-enable drag after restore
+      if (dragInstance) {
+        dragInstance.updateOptions({
+          position: { x: 0, y: 0 },
+          disabled: false, // Ensure drag is enabled after restore
+        });
+      }
+      setTimeout(() => (s(`.${idModal}`) ? (s(`.${idModal}`).style.transition = transition) : null), 300);
     };
     s(`.btn-maximize-${idModal}`).onclick = () => {
-      s(`.${idModal}`).style.transition = '0.3s';
-      setTimeout(() => (s(`.${idModal}`).style.transition = transition), 300);
+      const modal = s(`.${idModal}`);
+      if (!modal) return;
+
+      // Disable drag when maximizing
+      if (dragInstance) {
+        dragInstance.updateOptions({ disabled: true });
+      }
+
+      modal.style.transition = '0.3s';
+      setTimeout(() => (modal ? (modal.style.transition = transition) : null), 300);
+
       s(`.btn-maximize-${idModal}`).style.display = 'none';
       s(`.btn-restore-${idModal}`).style.display = null;
       s(`.btn-minimize-${idModal}`).style.display = null;
-      s(`.${idModal}`).style.transform = null;
+      modal.style.transform = null;
 
       if (options.slideMenu) {
         const idSlide = this.Data[options.slideMenu]['slide-menu']
@@ -1769,6 +2014,105 @@ const Modal = {
         resolve({ status: 'confirm' });
       };
     });
+  },
+  // Move modal title element into the bar's render container so it aligns with control buttons
+  /**
+   * Position a modal relative to an anchor element
+   * @param {Object} options - Positioning options
+   * @param {string} options.modalSelector - CSS selector for the modal element
+   * @param {string} options.anchorSelector - CSS selector for the anchor element
+   * @param {Object} [options.offset={x: 0, y: 6}] - Offset from anchor
+   * @param {string} [options.align='right'] - Horizontal alignment ('left' or 'right')
+   * @param {boolean} [options.autoVertical=true] - Whether to automatically determine vertical position
+   * @param {boolean} [options.placeAbove] - Force position above/below anchor (overrides autoVertical)
+   */
+  positionRelativeToAnchor({
+    modalSelector,
+    anchorSelector,
+    offset = { x: 0, y: 6 },
+    align = 'right',
+    autoVertical = true,
+    placeAbove,
+  }) {
+    try {
+      const modal = s(modalSelector);
+      const anchor = s(anchorSelector);
+
+      if (!modal || !anchor || !anchor.getBoundingClientRect) return;
+
+      // First, position the modal near its final position but off-screen
+      const arect = anchor.getBoundingClientRect();
+      const vh = window.innerHeight;
+      const vw = window.innerWidth;
+      const safeMargin = 6;
+
+      // Determine vertical position
+      let finalPlaceAbove = placeAbove;
+      if (autoVertical && placeAbove === undefined) {
+        const inBottomBar = anchor.closest && anchor.closest('.bottom-bar');
+        const inTopBar = anchor.closest && anchor.closest('.slide-menu-top-bar');
+
+        if (inBottomBar) finalPlaceAbove = true;
+        else if (inTopBar) finalPlaceAbove = false;
+        else finalPlaceAbove = arect.top > vh / 2; // heuristic fallback
+      }
+
+      // Set initial position (slightly offset from final position)
+      const initialOffset = finalPlaceAbove ? 20 : -20;
+      modal.style.position = 'fixed';
+      modal.style.opacity = '0';
+      modal.style.transition = 'opacity 150ms ease-out, transform 150ms ease-out';
+
+      // Position near the anchor but slightly offset
+      modal.style.top = `${finalPlaceAbove ? arect.top - 40 : arect.bottom + 20}px`;
+      modal.style.left = `${align === 'right' ? arect.right - 200 : arect.left}px`;
+      modal.style.transform = 'translateY(0)';
+
+      // Force reflow to ensure initial styles are applied
+      modal.offsetHeight;
+
+      // Now calculate final position
+      const mrect = modal.getBoundingClientRect();
+
+      // Calculate final top position
+      const top = finalPlaceAbove ? arect.top - mrect.height - offset.y : arect.bottom + offset.y;
+
+      // Calculate final left position based on alignment
+      let left;
+      if (align === 'right') {
+        left = arect.right - mrect.width - offset.x; // align right edges
+      } else {
+        left = arect.left + offset.x; // align left edges
+      }
+
+      // Ensure modal stays within viewport bounds
+      left = Math.max(safeMargin, Math.min(left, vw - mrect.width - safeMargin));
+      const finalTop = Math.max(safeMargin, Math.min(top, vh - mrect.height - safeMargin));
+
+      // Apply final position with smooth transition
+      requestAnimationFrame(() => {
+        modal.style.top = `${Math.round(finalTop)}px`;
+        modal.style.left = `${Math.round(left)}px`;
+        modal.style.opacity = '1';
+      });
+    } catch (e) {
+      console.error('Error positioning modal:', e);
+    }
+  },
+
+  MoveTitleToBar(idModal) {
+    try {
+      const titleEl = s(`.title-modal-${idModal}`);
+      const container = s(`.btn-bar-modal-container-render-${idModal}`);
+      if (!titleEl || !container) return;
+      const titleNode = titleEl.cloneNode(true);
+      titleEl.remove();
+      container.classList.add('in');
+      container.classList.add('fll');
+      container.appendChild(titleNode);
+    } catch (e) {
+      // non-fatal: keep default placement if structure not present
+    }
   },
   headerTitleHeight: 40,
   actionBtnCenter: function () {

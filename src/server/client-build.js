@@ -577,9 +577,6 @@ Sitemap: https://${host}${path === '/' ? '' : path}/sitemap.xml`,
         fs.mkdirSync(coverageBuildPath, { recursive: true });
         fs.copySync(`./coverage`, coverageBuildPath);
 
-        // uml
-        // shellExec(`node bin/deploy uml ${host} ${path}`);
-
         // https://swagger-autogen.github.io/docs/
 
         const basePath = path === '/' ? `${process.env.BASE_API}` : `/${process.env.BASE_API}`;
@@ -667,10 +664,6 @@ Sitemap: https://${host}${path === '/' ? '' : path}/sitemap.xml`,
           },
         };
 
-        // plantuml
-        logger.info('copy plantuml', `${rootClientPath}/docs/plantuml`);
-        fs.copySync(`./src/client/public/default/plantuml`, `${rootClientPath}/docs/plantuml`);
-
         logger.warn('build swagger api docs', doc.info);
 
         const outputFile = `./public/${host}${path === '/' ? path : `${path}/`}swagger-output.json`;
@@ -683,19 +676,6 @@ Sitemap: https://${host}${path === '/' ? '' : path}/sitemap.xml`,
 root file where the route starts, such as index.js, app.js, routes.js, etc ... */
 
         await swaggerAutoGen({ openapi: '3.0.0' })(outputFile, routes, doc);
-
-        const htmlFiles = await fs.readdir(`./public/${host}/docs/engine/${Underpost.version.replace('v', '')}`);
-        for (const htmlFile of htmlFiles) {
-          if (htmlFile.match('.html')) {
-            fs.writeFileSync(
-              `./public/${host}/docs/engine/${Underpost.version.replace('v', '')}/${htmlFile}`,
-              fs
-                .readFileSync(`./public/${host}/docs/engine/${Underpost.version.replace('v', '')}/${htmlFile}`, 'utf8')
-                .replaceAll('Tutorials', 'References'),
-              'utf8',
-            );
-          }
-        }
       }
 
       if (client) {
