@@ -2,7 +2,7 @@
     "type": "module",
     "main": "src/index.js",
     "name": "underpost",
-    "version": "2.8.844",
+    "version": "2.8.845",
     "description": "pwa api rest template",
     "scripts": {
         "start": "env-cmd -f .env.production node --max-old-space-size=8192 src/server",
@@ -105,7 +105,6 @@
         "rrule": "^2.8.1",
         "sharp": "^0.32.5",
         "shelljs": "^0.8.5",
-        "simple-icons": "^13.9.0",
         "sitemap": "^7.1.1",
         "socket.io": "^4.8.0",
         "sortablejs": "^1.15.0",
