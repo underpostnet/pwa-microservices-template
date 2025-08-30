@@ -243,8 +243,17 @@ const Modal = {
                     style="top: ${options.heightTopBar + 50}px; z-index: 9; ${true ||
                     (options.mode && options.mode.match('right'))
                       ? 'right'
-                      : 'left'}: 50px; width: 50px; height: 100px; transition: .3s"
+                      : 'left'}: 50px; width: 50px; height: 150px; transition: .3s"
                   >
+                    <div
+                      class="abs main-body-btn main-body-btn-ui"
+                      style="top: 0px; ${true || (options.mode && options.mode.match('right')) ? 'right' : 'left'}: 0px"
+                    >
+                      <div class="abs center">
+                        <i class="fas fa-caret-down main-body-btn-ui-open hide"></i>
+                        <i class="fas fa-caret-up main-body-btn-ui-close"></i>
+                      </div>
+                    </div>
                     <div
                       class="abs main-body-btn main-body-btn-menu"
                       style="top: 50px; ${true || (options.mode && options.mode.match('right'))
@@ -257,21 +266,38 @@ const Modal = {
                       </div>
                     </div>
                     <div
-                      class="abs main-body-btn main-body-btn-ui"
-                      style="top: 0px; ${true || (options.mode && options.mode.match('right')) ? 'right' : 'left'}: 0px"
+                      class="abs main-body-btn main-body-btn-bar-custom ${options?.slideMenuTopBarFix ? '' : 'hide'}"
+                      style="top: 100px; ${true || (options.mode && options.mode.match('right'))
+                        ? 'right'
+                        : 'left'}: 0px"
                     >
                       <div class="abs center">
-                        <i class="fas fa-caret-down main-body-btn-ui-open hide"></i>
-                        <i class="fas fa-caret-up main-body-btn-ui-close"></i>
+                        <i class="fa-solid fa-magnifying-glass main-body-btn-ui-bar-custom-open"></i>
+                        <i class="fa-solid fa-home hide main-body-btn-ui-bar-custom-close"></i>
                       </div>
                     </div>
-                    <div class="main-body-btn-container-custom"></div>
                   </div>
                 `,
               );
 
               s(`.main-body-btn-menu`).onclick = () => {
                 Modal.actionBtnCenter();
+              };
+
+              s(`.main-body-btn-bar-custom`).onclick = () => {
+                if (s(`.main-body-btn-ui-close`).classList.contains('hide')) {
+                  s(`.main-body-btn-ui`).click();
+                }
+                if (s(`.main-body-btn-ui-bar-custom-open`).classList.contains('hide')) {
+                  s(`.main-body-btn-ui-bar-custom-open`).classList.remove('hide');
+                  s(`.main-body-btn-ui-bar-custom-close`).classList.add('hide');
+                  s(`.slide-menu-top-bar-fix`).style.top = '0px';
+                } else {
+                  s(`.main-body-btn-ui-bar-custom-open`).classList.add('hide');
+                  s(`.main-body-btn-ui-bar-custom-close`).classList.remove('hide');
+                  s(`.slide-menu-top-bar-fix`).style.top = '-100px';
+                  s(`.top-bar-search-box-container`).click();
+                }
               };
 
               let _heightTopBar, _heightBottomBar, _topMenu;
@@ -404,7 +430,10 @@ const Modal = {
                   </div>
                 </div>
                 ${options?.slideMenuTopBarFix
-                  ? html`<div class="abs modal slide-menu-top-bar-fix" style="height: ${options.heightTopBar}px">
+                  ? html`<div
+                      class="abs modal slide-menu-top-bar-fix"
+                      style="height: ${options.heightTopBar}px; top: 0px"
+                    >
                       ${await options.slideMenuTopBarFix()}
                     </div>`
                   : ''}
@@ -598,7 +627,16 @@ const Modal = {
                   Modal.removeModal(searchBoxHistoryId);
                   return;
                 }
-                setTimeout(() => getResultSearchBox(validatorData));
+                setTimeout(() => {
+                  getResultSearchBox(validatorData);
+
+                  if (
+                    s(`.slide-menu-top-bar-fix`) &&
+                    !s(`.main-body-btn-ui-bar-custom-open`).classList.contains('hide')
+                  ) {
+                    s(`.main-body-btn-bar-custom`).click();
+                  }
+                });
               };
 
               const getDefaultSearchBoxSelector = () => `.search-result-btn-${currentKeyBoardSearchBoxIndex}`;
@@ -691,7 +729,6 @@ const Modal = {
                   Modal.MoveTitleToBar(id);
 
                   prepend(`.btn-bar-modal-container-${id}`, html`<div class="hide">${inputInfoNode.outerHTML}</div>`);
-                  if (s(`.slide-menu-top-bar-fix`)) s(`.slide-menu-top-bar-fix`).classList.add('hide');
                 }
               };
 
@@ -711,7 +748,6 @@ const Modal = {
                   } catch (e) {}
                 }
                 Modal.removeModal(searchBoxHistoryId);
-                if (s(`.slide-menu-top-bar-fix`)) s(`.slide-menu-top-bar-fix`).classList.remove('hide');
               };
               s('.top-bar-search-box').onblur = () => {
                 hoverFocusCtl.checkDismiss();
@@ -1435,7 +1471,8 @@ const Modal = {
           setDocTitle({ ...options.RouterInstance, route: '' });
         };
         s(`.main-btn-home`).onclick = async () => {
-          await this.onHomeRouterEvent();
+          // await this.onHomeRouterEvent();
+          s(`.action-btn-home`).click();
         };
         EventsUI.onClick(`.btn-icon-menu-back`, backMenuButtonEvent);
         EventsUI.onClick(`.btn-icon-menu-mode`, () => {
