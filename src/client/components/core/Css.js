@@ -854,6 +854,18 @@ const imageShimmer = () => html`<div
   </div>
 </div>`;
 
+const renderChessPattern = () => `background: repeating-conic-gradient(#808080 0 25%, #0000 0 50%) 50% / 20px 20px`;
+
+const extractBackgroundImageUrl = (element) => {
+  const style = window.getComputedStyle(element);
+  const imageString = style.backgroundImage;
+  const foundUrlRaw = imageString.match(/^url\(?(.+)\)$/i)[1];
+  if (!foundUrlRaw) return null;
+  const foundUrl = foundUrlRaw.replace(/^['|"| ]*/, '').replace(/['" ]*$/, '');
+  if (!foundUrl) return null;
+  return foundUrl;
+};
+
 const simpleIconsRender = (selector) => {
   sa(selector).forEach((el) => {
     el.src = `https://cdn.simpleicons.org/coveralls/${rgbToHex(window.getComputedStyle(s('html')).color)}`;
@@ -893,4 +905,6 @@ export {
   cssEffect,
   imageShimmer,
   simpleIconsRender,
+  extractBackgroundImageUrl,
+  renderChessPattern,
 };
