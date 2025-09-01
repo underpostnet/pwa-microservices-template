@@ -53,7 +53,9 @@ if (process.argv.includes('conf')) {
     fs.removeSync(toPath);
     fs.mkdirSync(toPath, { recursive: true });
     fs.copySync(`./engine-private/conf/${_confName}`, toPath);
-    if (fs.existsSync(`./engine-private/replica`)) {
+    if (process.argv.includes('remove-replica') && fs.existsSync(`../${privateRepoName}/replica`)) {
+      fs.removeSync(`../${privateRepoName}/replica`);
+    } else if (fs.existsSync(`./engine-private/replica`)) {
       const replicas = await fs.readdir(`./engine-private/replica`);
       for (const replica of replicas)
         if (replica.match(_confName))
@@ -187,4 +189,8 @@ const { DefaultConf } = await import(`../conf.${confName}.js`);
 
   fs.copyFileSync(`./.github/workflows/${repoName}.ci.yml`, `${basePath}/.github/workflows/${repoName}.ci.yml`);
   fs.copyFileSync(`./.github/workflows/${repoName}.cd.yml`, `${basePath}/.github/workflows/${repoName}.cd.yml`);
+
+  if (fs.existsSync(`./src/ws/${confName.split('-')[1]}`)) {
+    fs.copySync(`./src/ws/${confName.split('-')[1]}`, `${basePath}/src/ws/${confName.split('-')[1]}`);
+  }
 }
