@@ -139,6 +139,71 @@ const Modal = {
         case 'slide-menu-right':
         case 'slide-menu-left':
           (async () => {
+            if (!options.slideMenuTopBarBannerFix) {
+              options.slideMenuTopBarBannerFix = async () => {
+                let style = html``;
+                if (options.barMode === 'top-bottom-bar') {
+                  style = html`<style>
+                    .default-slide-menu-top-bar-fix-logo-container {
+                      width: 50px;
+                      height: 50px;
+                    }
+                    .default-slide-menu-top-bar-fix-logo {
+                      width: 40px;
+                      height: 40px;
+                      padding: 5px;
+                    }
+                    .default-slide-menu-top-bar-fix-title-container-text {
+                      font-size: 26px;
+                      top: 8px;
+                      color: ${darkTheme ? '#ffffff' : '#000000'};
+                    }
+                  </style>`;
+                } else {
+                  style = html`<style>
+                    .default-slide-menu-top-bar-fix-logo-container {
+                      width: 100px;
+                      height: 100px;
+                    }
+                    .default-slide-menu-top-bar-fix-logo {
+                      width: 80px;
+                      height: 80px;
+                      padding: 10px;
+                    }
+                    .default-slide-menu-top-bar-fix-title-container-text {
+                      font-size: 30px;
+                      top: 30px;
+                      color: ${darkTheme ? '#ffffff' : '#000000'};
+                    }
+                  </style>`;
+                }
+                setTimeout(() => {
+                  if (s(`.top-bar-app-icon`) && s(`.top-bar-app-icon`).src) {
+                    s(`.default-slide-menu-top-bar-fix-logo`).src = s(`.top-bar-app-icon`).src;
+                    if (s(`.top-bar-app-icon`).classList.contains('negative-color'))
+                      s(`.default-slide-menu-top-bar-fix-logo`).classList.add('negative-color');
+                    htmls(
+                      `.default-slide-menu-top-bar-fix-title-container`,
+                      html`
+                        <div class="inl default-slide-menu-top-bar-fix-title-container-text">
+                          ${options.RouterInstance.NameApp}
+                        </div>
+                      `,
+                    );
+                  } else
+                    htmls(
+                      `.default-slide-menu-top-bar-fix-logo-container`,
+                      html`<div class="abs center">${s(`.action-btn-app-icon-render`).innerHTML}</div>`,
+                    );
+                });
+
+                return html`${style}
+                  <div class="in fll default-slide-menu-top-bar-fix-logo-container">
+                    <img class="default-slide-menu-top-bar-fix-logo in fll" />
+                  </div>
+                  <div class="in fll default-slide-menu-top-bar-fix-title-container"></div>`;
+              };
+            }
             const { barConfig } = options;
             options.style = {
               position: 'absolute',
@@ -266,7 +331,9 @@ const Modal = {
                       </div>
                     </div>
                     <div
-                      class="abs main-body-btn main-body-btn-bar-custom ${options?.slideMenuTopBarFix ? '' : 'hide'}"
+                      class="abs main-body-btn main-body-btn-bar-custom ${options?.slideMenuTopBarBannerFix
+                        ? ''
+                        : 'hide'}"
                       style="top: 100px; ${true || (options.mode && options.mode.match('right'))
                         ? 'right'
                         : 'left'}: 0px"
@@ -345,6 +412,7 @@ const Modal = {
                   );
                 }
               };
+              Modal.setTopBannerLink();
             });
 
             const inputSearchBoxId = `top-bar-search-box`;
@@ -429,12 +497,12 @@ const Modal = {
                     })}
                   </div>
                 </div>
-                ${options?.slideMenuTopBarFix
+                ${options?.slideMenuTopBarBannerFix
                   ? html`<div
                       class="abs modal slide-menu-top-bar-fix"
                       style="height: ${options.heightTopBar}px; top: 0px"
                     >
-                      ${await options.slideMenuTopBarFix()}
+                      <a class="a-link-top-banner"> ${await options.slideMenuTopBarBannerFix()}</a>
                     </div>`
                   : ''}
               </div>`,
@@ -1072,11 +1140,18 @@ const Modal = {
               }
 
               {
-                ThemeEvents['action-btn-theme'] = () => {
+                ThemeEvents['action-btn-theme'] = async () => {
                   htmls(
                     `.action-btn-theme-render`,
                     html` ${darkTheme ? html` <i class="fas fa-moon"></i>` : html`<i class="far fa-sun"></i>`}`,
                   );
+                  if (s(`.slide-menu-top-bar-fix`)) {
+                    htmls(
+                      `.slide-menu-top-bar-fix`,
+                      html`<a class="a-link-top-banner">${await options.slideMenuTopBarBannerFix()}</a>`,
+                    );
+                    Modal.setTopBannerLink();
+                  }
                 };
                 ThemeEvents['action-btn-theme']();
 
@@ -2136,6 +2211,16 @@ const Modal = {
       container.appendChild(titleNode);
     } catch (e) {
       // non-fatal: keep default placement if structure not present
+    }
+  },
+  setTopBannerLink: function () {
+    if (s(`.a-link-top-banner`)) {
+      s(`.a-link-top-banner`).setAttribute('href', `${location.origin}${getProxyPath()}`);
+      EventsUI.onClick(`.a-link-top-banner`, (e) => {
+        if (location.pathname === '/') return location.reload();
+        e.preventDefault();
+        s(`.action-btn-home`).click();
+      });
     }
   },
   headerTitleHeight: 40,

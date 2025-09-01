@@ -206,12 +206,13 @@ class UnderpostRun {
       const currentTraffic = UnderpostDeploy.API.getCurrentTraffic(deployId);
       const targetTraffic = currentTraffic === 'blue' ? 'green' : 'blue';
       const env = 'production';
+      const ignorePods = UnderpostDeploy.API.get(`${deployId}-${env}-${targetTraffic}`).map((p) => p.NAME);
       shellExec(`sudo kubectl rollout restart deployment/${deployId}-${env}-${targetTraffic}`);
 
       let secondsElapsed = 0;
       logger.info('Deployment init', { deployId, env, targetTraffic });
 
-      while (!UnderpostDeploy.API.checkDeploymentReadyStatus(deployId, env, targetTraffic).ready) {
+      while (!UnderpostDeploy.API.checkDeploymentReadyStatus(deployId, env, targetTraffic, ignorePods).ready) {
         await timer(1000);
         secondsElapsed++;
         logger.info(`Deployment in progress, seconds elapsed: ${secondsElapsed}`);

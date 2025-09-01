@@ -835,6 +835,12 @@ ${shellExec(`git log | grep Author: | sort -u`, { stdout: true }).split(`\n`).jo
     }
 
     case 'ssh': {
+      // only import + start
+      // node bin/deploy ssh root@<host> <password> import
+
+      // generate + import + start
+      // node bin/deploy ssh root@<host> <password>
+
       const host = process.argv[3] ?? `root@${await ip.public.ipv4()}`;
       const domain = host.split('@')[1];
       const user = 'root'; // host.split('@')[0];
@@ -907,7 +913,7 @@ EOF`);
         // shellExec(`sudo echo "" > ~/.ssh/known_hosts`);
 
         // ssh-copy-id -i ~/.ssh/id_rsa.pub -p <port_number> <username>@<host>
-        shellExec(`ssh-copy-id -i ~/.ssh/id_rsa.pub -p ${port} ${host}`);
+        // shellExec(`ssh-copy-id -i ~/.ssh/id_rsa.pub -p ${port} ${host}`);
         // debug:
         // shellExec(`ssh -vvv ${host}`);
 

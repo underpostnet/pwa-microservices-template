@@ -17,8 +17,8 @@ const CssCommonCore = async () => {
   await AgGrid.RenderStyle();
   return html`<style>
       .top-bar-app-icon {
-        width: 35px;
-        height: 35px;
+        width: 40px;
+        height: 40px;
       }
       .mini-title {
         font-size: 15px;
@@ -51,7 +51,6 @@ const CssCommonCore = async () => {
         cursor: grabbing !important;
       }
       .btn-label-content {
-        height: 100%;
         top: 15px;
       }
       .badge {
