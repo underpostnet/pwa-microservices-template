@@ -166,9 +166,9 @@ const Modal = {
                       height: 100px;
                     }
                     .default-slide-menu-top-bar-fix-logo {
-                      width: 80px;
-                      height: 80px;
-                      padding: 10px;
+                      width: 50px;
+                      height: 50px;
+                      padding: 24px;
                     }
                     .default-slide-menu-top-bar-fix-title-container-text {
                       font-size: 30px;
@@ -502,7 +502,9 @@ const Modal = {
                       class="abs modal slide-menu-top-bar-fix"
                       style="height: ${options.heightTopBar}px; top: 0px"
                     >
-                      <a class="a-link-top-banner"> ${await options.slideMenuTopBarBannerFix()}</a>
+                      <a class="a-link-top-banner">
+                        <div class="inl">${await options.slideMenuTopBarBannerFix()}</div></a
+                      >
                     </div>`
                   : ''}
               </div>`,
@@ -711,6 +713,9 @@ const Modal = {
 
               const updateSearchBoxValue = (selector) => {
                 if (!selector) selector = getDefaultSearchBoxSelector();
+                // check exist childNodes
+                if (!s(selector) || !s(selector).hasChildNodes()) return;
+
                 if (s(selector).childNodes) {
                   if (
                     s(selector).childNodes[s(selector).childNodes.length - 1] &&
@@ -734,6 +739,10 @@ const Modal = {
 
               const setSearchValue = (selector) => {
                 if (!selector) selector = getDefaultSearchBoxSelector();
+
+                // check exist childNodes
+                if (!s(selector) || !s(selector).hasChildNodes()) return;
+
                 historySearchBox = historySearchBox.filter(
                   (h) => h.routerId !== results[currentKeyBoardSearchBoxIndex].routerId,
                 );
@@ -1538,10 +1547,10 @@ const Modal = {
             if (
               ![idModal, 'main-body-top', 'main-body'].concat(this.Data[idModal]?.homeModals || []).includes(keyModal)
             )
-              s(`.btn-close-${keyModal}`).click();
+              if (s(`.btn-close-${keyModal}`)) s(`.btn-close-${keyModal}`).click();
             backMenuButtonEvent();
           }
-          s(`.btn-close-modal-menu`).click();
+          if (s(`.btn-close-modal-menu`)) s(`.btn-close-modal-menu`).click();
           setPath(getProxyPath());
           setDocTitle({ ...options.RouterInstance, route: '' });
         };
@@ -2217,7 +2226,6 @@ const Modal = {
     if (s(`.a-link-top-banner`)) {
       s(`.a-link-top-banner`).setAttribute('href', `${location.origin}${getProxyPath()}`);
       EventsUI.onClick(`.a-link-top-banner`, (e) => {
-        if (location.pathname === '/') return location.reload();
         e.preventDefault();
         s(`.action-btn-home`).click();
       });

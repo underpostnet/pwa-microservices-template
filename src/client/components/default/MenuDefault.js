@@ -1,7 +1,16 @@
 import { Account } from '../core/Account.js';
 import { BtnIcon } from '../core/BtnIcon.js';
 import { getId, newInstance } from '../core/CommonJs.js';
-import { Css, darkTheme, extractBackgroundImageUrl, ThemeEvents, Themes } from '../core/Css.js';
+import {
+  borderChar,
+  boxShadow,
+  Css,
+  darkTheme,
+  extractBackgroundImageUrl,
+  renderCssAttr,
+  ThemeEvents,
+  Themes,
+} from '../core/Css.js';
 import { EventsUI } from '../core/EventsUI.js';
 import { LogIn } from '../core/LogIn.js';
 import { LogOut } from '../core/LogOut.js';
@@ -35,6 +44,7 @@ const MenuDefault = {
     await Modal.Render({
       id: 'modal-menu',
       html: html`
+        <div class="style-lading-render"></div>
         <div class="fl menu-btn-container">
           ${await BtnIcon.Render({
             class: 'in wfa main-btn-menu main-btn-home main-btn-menu-active',
@@ -106,17 +116,6 @@ const MenuDefault = {
             tooltipHtml: await Badge.Render(buildBadgeToolTipMenuOption('settings')),
           })}
           ${await BtnIcon.Render({
-            class: 'in wfa main-btn-menu main-btn-docs hide',
-            label: renderMenuLabel({
-              icon: html`<i class="fas fa-book"></i>`,
-              text: html`<span class="menu-label-text">${Translate.Render('docs')}</span>`,
-            }),
-            attrs: `data-id="docs"`,
-            tabHref: `${getProxyPath()}docs`,
-            handleContainerClass: 'handle-btn-container',
-            tooltipHtml: await Badge.Render(buildBadgeToolTipMenuOption('docs')),
-          })}
-          ${await BtnIcon.Render({
             class: 'in wfa main-btn-menu main-btn-recover hide',
             label: renderMenuLabel({
               icon: html`<i class="fa-solid fa-arrow-rotate-left"></i>`,
@@ -166,21 +165,67 @@ const MenuDefault = {
       title: NameApp,
       // titleClass: 'hide',
       titleRender: () => {
-        setTimeout(() => {
-          htmls(`.action-btn-app-icon-render`, html`APP`);
-        });
+        ThemeEvents['titleRender'] = () => {
+          const srcLogo = `${getProxyPath()}apple-touch-icon-114x114-precomposed.png`;
+
+          htmls(
+            '.action-btn-app-icon-render',
+            html`<img class="inl top-bar-app-icon ${darkTheme ? 'negative-color' : ''}" src="${srcLogo}" />`,
+          );
+        };
+        setTimeout(ThemeEvents['titleRender']);
         return '';
       },
       mode: 'slide-menu',
       RouterInstance,
       heightTopBar,
       heightBottomBar,
-      htmlMainBody: options?.htmlMainBody ? options.htmlMainBody : undefined,
+      htmlMainBody: async () => {
+        setTimeout(() => {
+          EventsUI.onClick('.get-started-button', (e) => {
+            e.preventDefault();
+            location.href = `https://www.nexodev.org/docs/?cid=src`;
+          });
+        });
+        return html`
+          <div class="landing-container">
+            <div class="content-wrapper">
+              <h1 class="animated-text">
+                <span class="greeting">Hello, World!</span>
+                <span class="subtitle">Welcome to Our Platform</span>
+              </h1>
+
+              <div class="features">
+                <div class="feature-card">
+                  <i class="icon">🚀</i>
+                  <h3>Fast & Reliable</h3>
+                  <p>Lightning-fast performance with 99.9% uptime</p>
+                </div>
+                <div class="feature-card">
+                  <i class="icon">🎨</i>
+                  <h3>Beautiful UI</h3>
+                  <p>Modern and intuitive user interface</p>
+                </div>
+                <div class="feature-card">
+                  <i class="icon">⚡</i>
+                  <h3>Powerful Features</h3>
+                  <p>Everything you need in one place</p>
+                </div>
+              </div>
+
+              <button class="cta-button get-started-button">
+                Get Started
+                <span class="button-icon">→</span>
+              </button>
+            </div>
+          </div>
+        `;
+      },
     });
 
-    ThemeEvents['ssr-background-image'] = () => {
+    ThemeEvents['main-theme-handler'] = () => {
       if (darkTheme) {
-        const backgroundImage = `${getProxyPath()}assets/background/dark.jpg`;
+        const backgroundImage = `${getProxyPath()}assets/background/dark.svg`;
         htmls(
           `.style-ssr-background-image`,
           css`
@@ -200,9 +245,186 @@ const MenuDefault = {
           `,
         );
       }
+      htmls(
+        `.style-lading-render`,
+        html` <style>
+          .landing-container {
+            min-height: calc(100vh - ${heightTopBar + heightBottomBar}px);
+            display: flex;
+            /*    align-items: center; */
+            justify-content: center;
+
+            padding: 2rem;
+            color: ${darkTheme ? '#fff' : '#333'};
+            transition: all 0.3s ease;
+          }
+
+          .content-wrapper {
+            text-align: center;
+            max-width: 1200px;
+            width: 100%;
+            padding: 2rem;
+            animation: fadeIn 1s ease-out;
+          }
+
+          .animated-text {
+            margin-bottom: 3rem;
+          }
+
+          .greeting {
+            display: block;
+            font-size: 3.5rem;
+            font-weight: 700;
+            margin-bottom: 1rem;
+            background: linear-gradient(90deg, #4f46e5, #7c3aed);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: slideIn 1s ease-out;
+          }
+
+          .subtitle {
+            display: block;
+            font-size: 1.5rem;
+            color: ${darkTheme ? '#a0aec0' : '#4a5568'};
+            margin-top: 1rem;
+            opacity: 0;
+            animation: fadeInUp 0.8s ease-out 0.3s forwards;
+          }
+
+          .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 2rem;
+            margin: 4rem 0;
+          }
+
+          .feature-card {
+            background: ${darkTheme ? 'rgba(255, 255, 255, 0.05)' : 'white'};
+            padding: 2rem;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            opacity: 0;
+            animation: fadeInUp 0.6s ease-out forwards;
+          }
+
+          .feature-card:nth-child(1) {
+            animation-delay: 0.5s;
+          }
+          .feature-card:nth-child(2) {
+            animation-delay: 0.7s;
+          }
+          .feature-card:nth-child(3) {
+            animation-delay: 0.9s;
+          }
+
+          .feature-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 10px 15px rgba(0, 0, 0, 0.1);
+          }
+
+          .feature-card .icon {
+            font-size: 2.5rem;
+            margin-bottom: 1rem;
+            display: inline-block;
+          }
+
+          .feature-card h3 {
+            font-size: 1.25rem;
+            margin-bottom: 0.75rem;
+            color: ${darkTheme ? '#e2e8f0' : '#2d3748'};
+          }
+
+          .feature-card p {
+            color: ${darkTheme ? '#a0aec0' : '#4a5568'};
+            line-height: 1.6;
+          }
+
+          .cta-button {
+            background: linear-gradient(90deg, #4f46e5, #7c3aed);
+            color: white;
+            border: none;
+            padding: 1rem 2.5rem;
+            font-size: 1.1rem;
+            border-radius: 50px;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(79, 70, 229, 0.3);
+            opacity: 0;
+            animation: fadeIn 0.8s ease-out 1.2s forwards;
+          }
+
+          .cta-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(79, 70, 229, 0.4);
+            background: linear-gradient(90deg, #3e38b4, #602bbc);
+            color: white;
+          }
+
+          .cta-button:active {
+            transform: translateY(0);
+          }
+
+          .button-icon {
+            transition: transform 0.3s ease;
+          }
+
+          .cta-button:hover .button-icon {
+            transform: translateX(4px);
+          }
+
+          @keyframes fadeIn {
+            from {
+              opacity: 0;
+            }
+            to {
+              opacity: 1;
+            }
+          }
+
+          @keyframes fadeInUp {
+            from {
+              opacity: 0;
+              transform: translateY(20px);
+            }
+            to {
+              opacity: 1;
+              transform: translateY(0);
+            }
+          }
+
+          @keyframes slideIn {
+            from {
+              opacity: 0;
+              transform: translateX(-30px);
+            }
+            to {
+              opacity: 1;
+              transform: translateX(0);
+            }
+          }
+
+          @media (max-width: 768px) {
+            .greeting {
+              font-size: 2.5rem;
+            }
+
+            .subtitle {
+              font-size: 1.25rem;
+            }
+
+            .features {
+              grid-template-columns: 1fr;
+            }
+          }
+        </style>`,
+      );
     };
 
-    setTimeout(ThemeEvents['ssr-background-image']);
+    setTimeout(ThemeEvents['main-theme-handler']);
 
     this.Data[id].sortable = new Sortable(s(`.menu-btn-container`), {
       animation: 150,
@@ -360,35 +582,6 @@ const MenuDefault = {
         RouterInstance,
         heightTopBar,
         heightBottomBar,
-      });
-    });
-
-    EventsUI.onClick(`.main-btn-docs`, async () => {
-      const { barConfig } = await Themes[Css.currentTheme]();
-      await Modal.Render({
-        id: 'modal-docs',
-        route: 'docs',
-        barConfig,
-        title: renderViewTitle({
-          icon: html`<i class="fas fa-book"></i>`,
-          text: Translate.Render('docs'),
-        }),
-        html: async () =>
-          await Docs.Init({
-            idModal: 'modal-docs',
-            modalOptions: {
-              barMode: undefined,
-            },
-          }),
-        handleType: 'bar',
-        observer: true,
-        maximize: true,
-        mode: 'view',
-        slideMenu: 'modal-menu',
-        RouterInstance,
-        heightTopBar,
-        heightBottomBar,
-        barMode,
       });
     });
 
