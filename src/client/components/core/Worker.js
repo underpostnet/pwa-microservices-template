@@ -12,8 +12,8 @@ const logger = loggerFactory(import.meta);
 const Worker = {
   devMode: () => location.origin.match('localhost') || location.origin.match('127.0.0.1'),
   instance: async function ({ router, render }) {
-    this.title = `${s('title').innerHTML}`;
-    logger.info('Init app', this.title);
+    Worker.title = `${s('title').textContent}`;
+    // logger.warn('Init worker', Worker.title);
     window.ononline = async () => {
       logger.warn('ononline');
     };
@@ -82,6 +82,7 @@ const Worker = {
     }
     window.serviceWorkerReady = true;
   },
+
   // Get the current service worker registration.
   getRegistration: async function () {
     return await navigator.serviceWorker.getRegistration();
