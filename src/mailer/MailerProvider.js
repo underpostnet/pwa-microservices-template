@@ -48,6 +48,43 @@ const MailerProvider = {
         ...options,
         transporter,
         templates: await EmailRender.getTemplates(options),
+        translateTemplates: {
+          confirmEmail: {
+            H1: {
+              en: 'Confirm Your Email',
+              es: 'Confirma tu correo electrónico',
+            },
+            P1: {
+              en: `Email confirmed! Thanks.
+               <br />
+             <span style="font-size: 12px; color: gray"> 
+                If it is not automatically verified, 
+                please allow the image to be seen, thank you.
+             </span>
+              `,
+              es: `Correo electrónico confirmado! Gracias.
+              <br />
+              <span style="font-size: 12px; color: gray"> 
+               Si no se verifica automáticamente, por favor permita que se vea la imagen, gracias.
+              </span>
+              `,
+            },
+          },
+          recoverEmail: {
+            H1: {
+              en: 'Recover your account',
+              es: 'Recupera tu cuenta',
+            },
+            P1: {
+              en: 'To recover your account, please click the button below:',
+              es: 'Para recuperar tu cuenta, haz click en el botón de abajo:',
+            },
+            BTN_LABEL: {
+              en: 'Recover Password',
+              es: 'Recuperar Contraseña',
+            },
+          },
+        },
       };
 
       return this.instance[id];

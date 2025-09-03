@@ -1026,7 +1026,8 @@ const imageShimmer = () => html`<div
   </div>
 </div>`;
 
-const renderChessPattern = () => `background: repeating-conic-gradient(#808080 0 25%, #0000 0 50%) 50% / 20px 20px`;
+const renderChessPattern = (patternSize = 20) =>
+  `background: repeating-conic-gradient(#808080 0 25%, #0000 0 50%) 50% / ${patternSize}px ${patternSize}px`;
 
 const extractBackgroundImageUrl = (element) => {
   const style = window.getComputedStyle(element);
@@ -1043,6 +1044,8 @@ const simpleIconsRender = (selector) => {
     el.src = `https://cdn.simpleicons.org/coveralls/${rgbToHex(window.getComputedStyle(s('html')).color)}`;
   });
 };
+
+const styleFactory = (payload, plain = '') => `style="${renderCssAttr({ style: payload })} ${plain}"`;
 
 export {
   Css,
@@ -1083,4 +1086,5 @@ export {
   lightenHex,
   darkenHex,
   adjustHex,
+  styleFactory,
 };

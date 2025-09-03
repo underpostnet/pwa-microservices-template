@@ -28,7 +28,7 @@ import { setDocTitle, closeModalRouteChangeEvent, handleModalViewRoute } from '.
 import { NotificationManager } from './NotificationManager.js';
 import { EventsUI } from './EventsUI.js';
 import { Translate } from './Translate.js';
-import { Input } from './Input.js';
+import { Input, isTextInputFocused } from './Input.js';
 import { Validator } from './Validator.js';
 import { DropDown } from './DropDown.js';
 import { Keyboard } from './Keyboard.js';
@@ -186,7 +186,7 @@ const Modal = {
                       `.default-slide-menu-top-bar-fix-title-container`,
                       html`
                         <div class="inl default-slide-menu-top-bar-fix-title-container-text">
-                          ${options.RouterInstance.NameApp}
+                          ${options.RouterInstance.BannerAppTemplate}
                         </div>
                       `,
                     );
@@ -608,6 +608,7 @@ const Modal = {
                     }),
                   );
                   s(`.search-result-btn-${result.routerId}`).onclick = () => {
+                    if (!s(`.html-${searchBoxHistoryId}`) || !s(`.html-${searchBoxHistoryId}`).hasChildNodes()) return;
                     s(`.html-${searchBoxHistoryId}`).childNodes[currentKeyBoardSearchBoxIndex].classList.remove(
                       `main-btn-menu-active`,
                     );
@@ -621,6 +622,7 @@ const Modal = {
               };
 
               const getResultSearchBox = (validatorData) => {
+                if (!s(`.html-${searchBoxHistoryId}`) || !s(`.html-${searchBoxHistoryId}`).hasChildNodes()) return;
                 const { model, id } = validatorData;
                 switch (model) {
                   case 'search-box':
@@ -998,6 +1000,7 @@ const Modal = {
                     ['Alt', 'k'],
                   ],
                   eventCallBack: () => {
+                    if (isTextInputFocused()) return;
                     if (s(`.top-bar-search-box`)) {
                       if (s(`.main-body-btn-ui-close`).classList.contains('hide')) {
                         s(`.main-body-btn-ui-open`).click();

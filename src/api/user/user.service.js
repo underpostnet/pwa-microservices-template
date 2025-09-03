@@ -31,20 +31,10 @@ const UserService = {
       const token = hashJWT({ email: req.body.email }, '15m');
       const payloadToken = hashJWT({ email: req.body.email }, '15m');
       const id = `${options.host}${options.path}`;
-      const translate = {
-        H1: {
-          en: 'Recover your account',
-          es: 'Recupera tu cuenta',
-        },
-        P1: {
-          en: 'To recover your account, please click the button below:',
-          es: 'Para recuperar tu cuenta, haz click en el botón de abajo:',
-        },
-        BTN_LABEL: {
-          en: 'Recover Password',
-          es: 'Recuperar Contraseña',
-        },
-      };
+      const translate = MailerProvider.instance[id].translateTemplates.recoverEmail;
+      const recoverUrl = `${process.env.NODE_ENV === 'development' ? 'http://' : 'https://'}${req.hostname}${
+        req.body.proxyPath
+      }recover?payload=${payloadToken}`;
       const sendResult = await MailerProvider.send({
         id,
         sendOptions: {
@@ -55,13 +45,8 @@ const UserService = {
             .replace('{{H1}}', translate.H1[req.lang])
             .replace('{{P1}}', translate.P1[req.lang])
             .replace('{{TOKEN}}', token)
-            .replace(`{{COMPANY}}`, options.host) // html body
-            .replace(
-              '{{RECOVER_WEB_URL}}',
-              `${process.env === 'development' ? 'http://' : 'https://'}${options.host}${options.path}${
-                options.path === '/' ? 'recover' : `/recover`
-              }?payload=${payloadToken}`,
-            )
+            .replace(`{{COMPANY}}`, req.hostname) // html body
+            .replace('{{RECOVER_WEB_URL}}', recoverUrl)
             .replace('{{RECOVER_BTN_LABEL}}', translate.BTN_LABEL[req.lang]),
 
           attachments: [
@@ -98,18 +83,7 @@ const UserService = {
           },
         );
       }
-      const translate = {
-        H1: {
-          en: 'Confirm Your Email',
-          zh: '请确认您的电子邮箱',
-          es: 'Confirma tu correo electrónico',
-        },
-        P1: {
-          en: 'Email confirmed! Thanks.',
-          zh: '电子邮箱已确认！感谢。',
-          es: 'Correo electrónico confirmado! Gracias.',
-        },
-      };
+      const translate = MailerProvider.instance[id].translateTemplates.confirmEmail;
       const sendResult = await MailerProvider.send({
         id,
         sendOptions: {
@@ -120,7 +94,7 @@ const UserService = {
             .replace('{{H1}}', translate.H1[req.lang])
             .replace('{{P1}}', translate.P1[req.lang])
             .replace('{{TOKEN}}', token)
-            .replace(`{{COMPANY}}`, options.host), // html body
+            .replace(`{{COMPANY}}`, req.hostname), // html body
           attachments: [
             // {
             //   filename: 'logo.png',
