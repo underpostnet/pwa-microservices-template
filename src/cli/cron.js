@@ -50,7 +50,7 @@ class UnderpostCron {
     callback: async function (
       deployList = 'default',
       jobList = Object.keys(UnderpostCron.JOB),
-      options = { itc: false, init: false, git: false, dashboardUpdate: false },
+      options = { itc: false, init: false, git: false },
     ) {
       if (options.init === true) {
         UnderpostCron.NETWORK = [];
@@ -61,7 +61,7 @@ class UnderpostCron {
           for (const job of Object.keys(confCronConfig.jobs)) {
             const name = `${jobDeployId}-${job}`;
             let deployId;
-            if (!options.dashboardUpdate) shellExec(Cmd.delete(name));
+            shellExec(Cmd.delete(name));
             switch (job) {
               case 'dns':
                 deployId = jobDeployId;
@@ -71,8 +71,7 @@ class UnderpostCron {
                 deployId = deployList;
                 break;
             }
-            if (!options.dashboardUpdate)
-              shellExec(Cmd.cron(deployId, job, name, confCronConfig.jobs[job].expression, options));
+            shellExec(Cmd.cron(deployId, job, name, confCronConfig.jobs[job].expression, options));
             UnderpostCron.NETWORK.push({
               deployId,
               jobId: job,
@@ -80,39 +79,12 @@ class UnderpostCron {
             });
           }
         }
-        if (options.dashboardUpdate === true) await UnderpostCron.API.updateDashboardData();
         if (fs.existsSync(`./tmp/await-deploy`)) fs.remove(`./tmp/await-deploy`);
         return;
       }
       for (const _jobId of jobList.split(',')) {
         const jobId = _jobId.trim();
         if (UnderpostCron.JOB[jobId]) await UnderpostCron.JOB[jobId].callback(deployList, options);
-      }
-    },
-    async updateDashboardData() {
-      try {
-        const deployId = process.env.DEFAULT_DEPLOY_ID;
-        const host = process.env.DEFAULT_DEPLOY_HOST;
-        const path = process.env.DEFAULT_DEPLOY_PATH;
-        const confServerPath = `./engine-private/conf/${deployId}/conf.server.json`;
-        const confServer = JSON.parse(fs.readFileSync(confServerPath, 'utf8'));
-        const { db } = confServer[host][path];
-
-        await DataBaseProvider.load({ apis: ['cron'], host, path, db });
-
-        /** @type {import('../api/cron/cron.model.js').CronModel} */
-        const Cron = DataBaseProvider.instance[`${host}${path}`].mongoose.models.Cron;
-
-        await Cron.deleteMany();
-
-        for (const cronInstance of UnderpostCron.NETWORK) {
-          logger.info('save', cronInstance);
-          await new Cron(cronInstance).save();
-        }
-
-        await DataBaseProvider.instance[`${host}${path}`].mongoose.close();
-      } catch (error) {
-        logger.error(error, error.stack);
       }
     },
   };

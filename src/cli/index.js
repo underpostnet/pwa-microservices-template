@@ -155,7 +155,6 @@ program
     '--build-manifest',
     'Builds Kubernetes YAML manifests, including deployments, services, proxies, and secrets.',
   )
-  .option('--dashboard-update', 'Updates dashboard instance data with the current router configuration.')
   .option('--replicas <replicas>', 'Sets a custom number of replicas for deployments.')
   .option('--versions <deployment-versions>', 'A comma-separated list of custom deployment versions.')
   .option('--traffic <traffic-versions>', 'A comma-separated list of custom deployment traffic weights.')
@@ -163,10 +162,6 @@ program
   .option('--info-traffic', 'Retrieves traffic configuration from current resource deployments.')
   .option('--kubeadm', 'Enables the kubeadm context for deployment operations.')
   .option('--restore-hosts', 'Restores default `/etc/hosts` entries.')
-  .option(
-    '--rebuild-clients-bundle',
-    'Inside the container, rebuilds client bundles (only static public or storage client files).',
-  )
   .description('Manages application deployments, defaulting to deploying development pods.')
   .action(Underpost.deploy.callback);
 
@@ -240,6 +235,18 @@ program
   .description('Manages database operations, including import, export, and collection management.')
   .action(Underpost.db.callback);
 
+program
+  .command('metadata')
+  .argument('[deploy-id]', 'The deployment ID to manage metadata.')
+  .argument('[host]', 'The host to manage metadata.')
+  .argument('[path]', 'The path to manage metadata.')
+  .option('--import', 'Imports from local storage.')
+  .option('--export', 'Exports to local storage.')
+  .option('--crons', 'Apply to cron data collection')
+  .option('--instances', 'Apply to instance data collection')
+  .description('Manages cluster metadata operations, including import and export.')
+  .action(Underpost.db.clusterMetadataBackupCallback);
+
 // 'script' command: Execute scripts
 program
   .command('script')
@@ -268,7 +275,6 @@ program
   .option('--itc', 'Executes cron jobs within the container execution context.')
   .option('--init', 'Initializes cron jobs for the default deployment ID.')
   .option('--git', 'Uploads cron job configurations to GitHub.')
-  .option('--dashboard-update', 'Updates dashboard cron data with the current job configurations.')
   .description('Manages cron jobs, including initialization, execution, and configuration updates.')
   .action(Underpost.cron.callback);
 

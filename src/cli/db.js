@@ -3,6 +3,7 @@ import { loggerFactory } from '../server/logger.js';
 import { shellExec } from '../server/process.js';
 import fs from 'fs-extra';
 import UnderpostDeploy from './deploy.js';
+import UnderpostCron from './cron.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -214,6 +215,129 @@ class UnderpostDB {
             disableLog: true,
           });
         }
+      }
+    },
+    async updateDashboardData(
+      deployId = process.env.DEFAULT_DEPLOY_ID,
+      host = process.env.DEFAULT_DEPLOY_HOST,
+      path = process.env.DEFAULT_DEPLOY_PATH,
+    ) {
+      try {
+        deployId = deployId ?? process.env.DEFAULT_DEPLOY_ID;
+        host = host ?? process.env.DEFAULT_DEPLOY_HOST;
+        path = path ?? process.env.DEFAULT_DEPLOY_PATH;
+
+        const { db } = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8'))[host][
+          path
+        ];
+
+        await DataBaseProvider.load({ apis: ['instance'], host, path, db });
+
+        /** @type {import('../api/instance/instance.model.js').InstanceModel} */
+        const Instance = DataBaseProvider.instance[`${host}${path}`].mongoose.models.Instance;
+
+        await Instance.deleteMany();
+
+        for (const _deployId of deployList.split(',')) {
+          const deployId = _deployId.trim();
+          if (!deployId) continue;
+          const confServer = loadReplicas(
+            JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8')),
+            'proxy',
+          );
+          const router = await UnderpostDeploy.API.routerFactory(deployId, env);
+          const pathPortAssignmentData = pathPortAssignmentFactory(router, confServer);
+
+          for (const host of Object.keys(confServer)) {
+            for (const { path, port } of pathPortAssignmentData[host]) {
+              if (!confServer[host][path]) continue;
+
+              const { client, runtime, apis } = confServer[host][path];
+
+              const body = {
+                deployId,
+                host,
+                path,
+                port,
+                client,
+                runtime,
+                apis,
+              };
+
+              logger.info('save', body);
+
+              await new Instance(body).save();
+            }
+          }
+        }
+
+        await DataBaseProvider.instance[`${host}${path}`].mongoose.close();
+      } catch (error) {
+        logger.error(error, error.stack);
+      }
+
+      try {
+        const confServerPath = `./engine-private/conf/${deployId}/conf.server.json`;
+        const confServer = JSON.parse(fs.readFileSync(confServerPath, 'utf8'));
+        const { db } = confServer[host][path];
+
+        await DataBaseProvider.load({ apis: ['cron'], host, path, db });
+
+        /** @type {import('../api/cron/cron.model.js').CronModel} */
+        const Cron = DataBaseProvider.instance[`${host}${path}`].mongoose.models.Cron;
+
+        await Cron.deleteMany();
+
+        for (const cronInstance of UnderpostCron.NETWORK) {
+          logger.info('save', cronInstance);
+          await new Cron(cronInstance).save();
+        }
+
+        await DataBaseProvider.instance[`${host}${path}`].mongoose.close();
+      } catch (error) {
+        logger.error(error, error.stack);
+      }
+    },
+    clusterMetadataBackupCallback(
+      deployId = process.env.DEFAULT_DEPLOY_ID,
+      host = process.env.DEFAULT_DEPLOY_HOST,
+      path = process.env.DEFAULT_DEPLOY_PATH,
+      options = {
+        import: false,
+        export: false,
+        instances: false,
+        crons: false,
+      },
+    ) {
+      deployId = deployId ?? process.env.DEFAULT_DEPLOY_ID;
+      host = host ?? process.env.DEFAULT_DEPLOY_HOST;
+      path = path ?? process.env.DEFAULT_DEPLOY_PATH;
+
+      if (options.instances === true) {
+        const outputPath = './engine-private/instances';
+        if (fs.existsSync(outputPath)) fs.mkdirSync(outputPath, { recursive: true });
+        const collection = 'instances';
+        if (options.export === true)
+          shellExec(
+            `node bin db --export --collections ${collection} --out-path ${outputPath} --hosts ${host} --paths '${path}' ${deployId}`,
+          );
+        if (options.import === true)
+          shellExec(
+            `node bin db --import --drop --preserveUUID --out-path ${outputPath} --hosts ${host} --paths '${path}' ${deployId}`,
+          );
+      }
+      if (options.crons === true) {
+        const outputPath = './engine-private/crons';
+        if (fs.existsSync(outputPath)) fs.mkdirSync(outputPath, { recursive: true });
+        const collection = 'crons';
+        if (options.export === true)
+          shellExec(
+            `node bin db --export --collections ${collection} --out-path ${outputPath} --hosts ${host} --paths '${path}' ${deployId}`,
+          );
+        if (options.import === true)
+          shellExec(
+            `node bin db --import --drop --preserveUUID --out-path ${outputPath} --hosts ${host} --paths '${path}' ${deployId}`,
+          );
       }
     },
   };
