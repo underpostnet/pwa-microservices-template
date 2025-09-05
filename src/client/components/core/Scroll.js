@@ -1,131 +1,76 @@
-import { borderChar } from './Css.js';
-import { Modal } from './Modal.js';
-import { append, s } from './VanillaJs.js';
+import { s } from './VanillaJs.js';
 
-const Scroll = {
-  data: {},
-  init: function (selector) {
-    s(selector).addEventListener('scroll', Scroll.scrollHandler);
-    Scroll.data[selector] = {
-      element: s(selector),
+class Scroll {
+  /**
+   * Attach scroll listener to an element (resolved with s(selector)).
+   * @param {string} selector - selector passed to s(selector)
+   * @param {function} [callback] - callback function to be called on scroll
+   * @param {object} options
+   * @param {number} [options.threshold=1] - px margin to treat as bottom
+   * @param {number} [options.precision=3] - decimal places for percentages
+   */
+  static setEvent(selector, callback = async () => {}, options = { threshold: 1, precision: 3 }) {
+    const el = s(selector);
+    if (!el) return;
+
+    const threshold = options.threshold ?? 1; // px tolerance for bottom detection
+    const precision = options.precision ?? 3;
+    let ticking = false;
+
+    const round = (v) => {
+      const m = Math.pow(10, precision);
+      return Math.round(v * m) / m;
     };
-    return Scroll.data[selector];
-  },
-  getScrollPosition: function (selector) {
-    // Scroll.data[selector].element.clientHeight -
-    return Scroll.data[selector].element.scrollTop;
-  },
-  scrollHandler: async function () {
-    for (const selector in Scroll.data) await Scroll.data[selector].callback(Scroll.getScrollPosition(selector));
-  },
-  addEvent: function (selector = '', callback = (position = 0) => {}) {
-    Scroll.data[selector].callback = callback;
-  },
-  removeEvent: function (selector) {
-    delete Scroll.data[selector];
-  },
-  to: function (elector = '', options = { top: 100, left: 100, behavior: 'smooth' }) {
-    Scroll.data[selector].element.scrollTo({
-      top: options.top || Scroll.getScrollPosition(selector),
-      left: options.left || 0,
-      behavior: options.behavior || 'smooth',
-    });
-  },
-  topRefreshEvents: {},
-  addTopRefreshEvent: function (options = { id: '', callback: () => {}, condition: () => {} }) {
-    this.topRefreshEvents[options.id] = options;
-  },
-  removeTopRefreshEvent: function (id = '') {
-    delete this.topRefreshEvents[id];
-  },
-  pullTopRefresh: function () {
-    return;
-    append(
-      'body',
-      html` <style>
-          .pull-refresh-icon-container {
-            height: 60px;
-            width: 100%;
-            z-index: 10;
-            transition: 0.3s;
-            left: 0px;
-          }
-          .pull-refresh-icon {
-            width: 60px;
-            height: 60px;
-            margin: auto;
-            color: white;
-            font-size: 30px;
-          }
-        </style>
-        ${borderChar(2, 'black', [' .pull-refresh-icon-container'])}
-        <div style="top: -60px" class="abs pull-refresh-icon-container">
-          <div class="in pull-refresh-icon">
-            <div class="abs center"><i class="fa-solid fa-arrows-rotate"></i></div>
-          </div>
-        </div>`,
-    );
 
-    let touchstartY = 0;
-    let reload = false;
-    const minHeightDragReload = 3;
-    const maxHeightDragReload = 20;
+    const listener = (event) => {
+      if (ticking) return;
+      ticking = true;
 
-    document.addEventListener('touchstart', (e) => {
-      touchstartY = e.touches[0].clientY;
-      // console.warn('touchstart', touchstartY);
-    });
+      requestAnimationFrame(() => {
+        const scrollHeight = el.scrollHeight;
+        const clientHeight = el.clientHeight;
+        const scrollTop = el.scrollTop;
 
-    document.addEventListener('touchmove', (e) => {
-      if (
-        !Object.keys(Scroll.topRefreshEvents).find((event) => Scroll.topRefreshEvents[event].condition()) ||
-        (!s(`.btn-bar-center-icon-close`).classList.contains('hide') &&
-          !s(
-            `.btn-icon-menu-mode-${Modal.Data['modal-menu'].options.mode !== 'slide-menu-right' ? 'left' : 'right'}`,
-          ).classList.contains('hide'))
-      )
-        return;
+        // pixels left to scroll (clamped to >= 0)
+        const remaining = Math.max(0, scrollHeight - clientHeight - scrollTop);
 
-      const touchY = e.touches[0].clientY;
-      const touchDiff = touchY - touchstartY;
+        // maximum possible remaining (0 if content fits without scrolling)
+        const maxRemaining = Math.max(0, scrollHeight - clientHeight);
 
-      // console.warn('touchDiff', touchDiff, maxHeightDragReload);
+        // percentRemaining: 1 = top (all remaining), 0 = bottom (none remaining)
+        let percentRemaining = maxRemaining === 0 ? 0 : remaining / maxRemaining;
+        percentRemaining = Math.max(0, Math.min(1, percentRemaining));
 
-      if (touchDiff > maxHeightDragReload)
-        s(`.pull-refresh-icon-container`).style.top = 60 + maxHeightDragReload + 'px';
-      else s(`.pull-refresh-icon-container`).style.top = 60 + touchDiff + 'px';
+        // percentScrolled: complementary value (0 = top, 1 = bottom)
+        let percentScrolled = 1 - percentRemaining;
+        percentScrolled = Math.max(0, Math.min(1, percentScrolled));
 
-      if (touchDiff > minHeightDragReload && window.scrollY === 0) {
-        reload = true;
-      } else {
-        reload = false;
-      }
-    });
-    document.addEventListener('touchend', (e) => {
-      // console.warn('touchend');
-      s(`.pull-refresh-icon-container`).style.top = '-60px';
-      if (reload) {
-        for (const event of Object.keys(Scroll.topRefreshEvents))
-          if (Scroll.topRefreshEvents[event].condition()) Scroll.topRefreshEvents[event].callback();
-      }
-      reload = false;
-    });
-    Scroll.addTopRefreshEvent({
-      id: 'main-body',
-      callback: () => {
-        location.reload();
-      },
-      condition: () => {
-        return (
-          s('.main-body') &&
-          s('.main-body').scrollTop === 0 &&
-          !Object.keys(Modal.Data).find(
-            (idModal) => !['modal-menu', 'main-body', 'bottom-bar', 'main-body-top'].includes(idModal),
-          )
-        );
-      },
-    });
-  },
-};
+        const payload = {
+          scrollHeight,
+          clientHeight,
+          scrollTop,
+          remaining, // px left (>= 0)
+          scrollBottom: remaining <= threshold ? 0 : remaining,
+          atBottom: remaining <= threshold,
+          percentRemaining: round(percentRemaining), // 0..1
+          percentScrolled: round(percentScrolled), // 0..1
+        };
+
+        // replace this with an event dispatch or callback if you prefer
+        // console.warn('scroll', event, JSON.stringify(payload, null, 2));
+        callback(payload);
+
+        ticking = false;
+      });
+    };
+
+    el.addEventListener('scroll', listener, { passive: true });
+
+    return {
+      removeEvent: () => el.removeEventListener('scroll', listener),
+    };
+  }
+}
 
 export { Scroll };
+export default Scroll;
