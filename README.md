@@ -1,16 +1,10 @@
 <p align="center">
-  <img src="https://underpost.net/assets/splash/apple-touch-icon-precomposed.png" alt="underpost.net"/>
+  <img src="https://underpost.net/assets/splash/apple-touch-icon-precomposed.png" alt="underpost engine core server"/>
 </p>
 
 <div align="center">
 
-### underpost.net
-
-</div>
-
-<div align="center">
-
-template
+<h1>underpost</h1>
 
 </div>
 
@@ -24,40 +18,6 @@ template
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 <!-- badges -->
 
 
@@ -68,47 +28,13 @@ template
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 </div>
 
 <div align="center">
 
 #### Base template for pwa/api-rest projects.
 
-Develop, build, deploy, test, monitor, and manage multiple runtime applications on virtual machines or container instances.
+<div style="font-size: 20px;"><em>End2end</em> continuous integration and continuous deployment cloud to applications federation tools. Develop, build, deploy, test, monitor, and manage multiple runtime applications on virtual machines or container instances.</div>
 
 </div>
 
