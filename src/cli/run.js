@@ -54,6 +54,9 @@ class UnderpostRun {
         }`,
       );
     },
+    'underpost-config': (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      UnderpostDeploy.API.configMap(path ?? 'production');
+    },
     'gpu-env': (path, options = UnderpostRun.DEFAULT_OPTION) => {
       shellExec(
         `node bin cluster --dev --reset && node bin cluster --dev --dedicated-gpu --kubeadm && kubectl get pods --all-namespaces -o wide -w`,
@@ -127,6 +130,16 @@ class UnderpostRun {
     ide: (path, options = UnderpostRun.DEFAULT_OPTION) => {
       const { underpostRoot } = options;
       shellExec(`node ${underpostRoot}/bin/vs ${path}`);
+    },
+    'dev-client': (_path, options = UnderpostRun.DEFAULT_OPTION) => {
+      let [deployId, hostpath, subConf, lite] = _path.split(',');
+      let [host, path] = hostpath.split('/');
+      if (!path) path = '/';
+      shellExec(`npm run dev-client ${deployId} ${host} ${path} ${subConf} static${lite === 'l' ? ' l' : ''}`);
+    },
+    'dev-api': (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      let [deployId, subConf] = path.split(',');
+      shellExec(`npm run dev-api ${deployId} ${subConf}`);
     },
     monitor: (path, options = UnderpostRun.DEFAULT_OPTION) => {
       const pid = getTerminalPid();

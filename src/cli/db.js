@@ -4,6 +4,8 @@ import { shellExec } from '../server/process.js';
 import fs from 'fs-extra';
 import UnderpostDeploy from './deploy.js';
 import UnderpostCron from './cron.js';
+import { DataBaseProvider } from '../db/DataBaseProvider.js';
+import { loadReplicas, pathPortAssignmentFactory } from '../server/conf.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -217,28 +219,29 @@ class UnderpostDB {
         }
       }
     },
-    async updateDashboardData(
+    async clusterMetadataFactory(
       deployId = process.env.DEFAULT_DEPLOY_ID,
       host = process.env.DEFAULT_DEPLOY_HOST,
       path = process.env.DEFAULT_DEPLOY_PATH,
     ) {
+      deployId = deployId ?? process.env.DEFAULT_DEPLOY_ID;
+      host = host ?? process.env.DEFAULT_DEPLOY_HOST;
+      path = path ?? process.env.DEFAULT_DEPLOY_PATH;
+      const env = 'production';
+      const deployList = fs.readFileSync('./engine-private/deploy/dd.router', 'utf8').split(',');
+
+      const { db } = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8'))[host][
+        path
+      ];
       try {
-        deployId = deployId ?? process.env.DEFAULT_DEPLOY_ID;
-        host = host ?? process.env.DEFAULT_DEPLOY_HOST;
-        path = path ?? process.env.DEFAULT_DEPLOY_PATH;
-
-        const { db } = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8'))[host][
-          path
-        ];
-
-        await DataBaseProvider.load({ apis: ['instance'], host, path, db });
+        await DataBaseProvider.load({ apis: ['instance', 'cron'], host, path, db });
 
         /** @type {import('../api/instance/instance.model.js').InstanceModel} */
         const Instance = DataBaseProvider.instance[`${host}${path}`].mongoose.models.Instance;
 
         await Instance.deleteMany();
 
-        for (const _deployId of deployList.split(',')) {
+        for (const _deployId of deployList) {
           const deployId = _deployId.trim();
           if (!deployId) continue;
           const confServer = loadReplicas(
@@ -252,34 +255,45 @@ class UnderpostDB {
             for (const { path, port } of pathPortAssignmentData[host]) {
               if (!confServer[host][path]) continue;
 
-              const { client, runtime, apis } = confServer[host][path];
+              const { client, runtime, apis, peer } = confServer[host][path];
+              {
+                const body = {
+                  deployId,
+                  host,
+                  path,
+                  port,
+                  client,
+                  runtime,
+                  apis,
+                };
 
-              const body = {
-                deployId,
-                host,
-                path,
-                port,
-                client,
-                runtime,
-                apis,
-              };
+                logger.info('Instance save', body);
+                await new Instance(body).save();
+              }
 
-              logger.info('save', body);
+              if (peer) {
+                const body = {
+                  deployId,
+                  host,
+                  path: path === '/' ? '/peer' : `${path}/peer`,
+                  port: port + 1,
+                  runtime: 'nodejs',
+                };
 
-              await new Instance(body).save();
+                logger.info('Instance save', body);
+                await new Instance(body).save();
+              }
             }
           }
         }
-
-        await DataBaseProvider.instance[`${host}${path}`].mongoose.close();
       } catch (error) {
         logger.error(error, error.stack);
       }
 
       try {
-        const confServerPath = `./engine-private/conf/${deployId}/conf.server.json`;
-        const confServer = JSON.parse(fs.readFileSync(confServerPath, 'utf8'));
-        const { db } = confServer[host][path];
+        const cronDeployId = fs.readFileSync('./engine-private/deploy/dd.cron', 'utf8').trim();
+        const confCronPath = `./engine-private/conf/${cronDeployId}/conf.cron.json`;
+        const confCron = JSON.parse(fs.readFileSync(confCronPath, 'utf8'));
 
         await DataBaseProvider.load({ apis: ['cron'], host, path, db });
 
@@ -288,21 +302,28 @@ class UnderpostDB {
 
         await Cron.deleteMany();
 
-        for (const cronInstance of UnderpostCron.NETWORK) {
-          logger.info('save', cronInstance);
-          await new Cron(cronInstance).save();
+        for (const jobId of Object.keys(confCron.jobs)) {
+          const body = {
+            jobId,
+            deployId: UnderpostCron.API.getRelatedDeployId(jobId),
+            expression: confCron.jobs[jobId].expression,
+            enabled: confCron.jobs[jobId].enabled,
+          };
+          logger.info('Cron save', body);
+          await new Cron(body).save();
         }
-
-        await DataBaseProvider.instance[`${host}${path}`].mongoose.close();
       } catch (error) {
         logger.error(error, error.stack);
       }
+      await DataBaseProvider.instance[`${host}${path}`].mongoose.close();
     },
     clusterMetadataBackupCallback(
       deployId = process.env.DEFAULT_DEPLOY_ID,
       host = process.env.DEFAULT_DEPLOY_HOST,
       path = process.env.DEFAULT_DEPLOY_PATH,
       options = {
+        generate: false,
+        itc: false,
         import: false,
         export: false,
         instances: false,
@@ -312,6 +333,10 @@ class UnderpostDB {
       deployId = deployId ?? process.env.DEFAULT_DEPLOY_ID;
       host = host ?? process.env.DEFAULT_DEPLOY_HOST;
       path = path ?? process.env.DEFAULT_DEPLOY_PATH;
+
+      if (options.generate === true) {
+        UnderpostDB.API.clusterMetadataFactory(deployId, host, path);
+      }
 
       if (options.instances === true) {
         const outputPath = './engine-private/instances';
