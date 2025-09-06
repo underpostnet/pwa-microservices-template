@@ -5,6 +5,7 @@ import UnderpostBaremetal from './baremetal.js';
 import UnderpostDeploy from './deploy.js';
 import UnderpostTest from './test.js';
 import os from 'os';
+import fs from 'fs-extra';
 
 const logger = loggerFactory(import.meta);
 
@@ -33,12 +34,13 @@ class UnderpostCluster {
      * @param {string} [options.nsUse=''] - Set the current kubectl namespace.
      * @param {boolean} [options.infoCapacity=false] - Display resource capacity information for the cluster.
      * @param {boolean} [options.infoCapacityPod=false] - Display resource capacity information for pods.
-     * @param {boolean} [options.istio=false] - Deploy Istio service mesh.
      * @param {boolean} [options.pullImage=false] - Pull necessary Docker images before deployment.
      * @param {boolean} [options.dedicatedGpu=false] - Configure for dedicated GPU usage (e.g., NVIDIA GPU Operator).
      * @param {boolean} [options.kubeadm=false] - Initialize the cluster using Kubeadm.
      * @param {boolean} [options.k3s=false] - Initialize the cluster using K3s.
      * @param {boolean} [options.initHost=false] - Perform initial host setup (install Docker, Podman, Kind, Kubeadm, Helm).
+     * @param {boolean} [options.grafana=false] - Initialize the cluster with a Grafana deployment.
+     * @param {string} [options.prom=''] - Initialize the cluster with a Prometheus Operator deployment and monitor scrap for specified hosts.
      * @param {boolean} [options.uninstallHost=false] - Uninstall all host components.
      * @param {boolean} [options.config=false] - Apply general host configuration (SELinux, containerd, sysctl, firewalld).
      * @param {boolean} [options.worker=false] - Configure as a worker node (for Kubeadm or K3s join).
@@ -63,12 +65,13 @@ class UnderpostCluster {
         nsUse: '',
         infoCapacity: false,
         infoCapacityPod: false,
-        istio: false,
         pullImage: false,
         dedicatedGpu: false,
         kubeadm: false,
         k3s: false,
         initHost: false,
+        grafana: false,
+        prom: '',
         uninstallHost: false,
         config: false,
         worker: false,
@@ -258,6 +261,42 @@ class UnderpostCluster {
         shellExec(
           `node ${underpostRoot}/bin/deploy kubeflow-spark-operator${options.kubeadm === true ? ' kubeadm' : ''}`,
         );
+      }
+
+      if (options.grafana === true) {
+        shellExec(`kubectl delete deployment grafana --ignore-not-found`);
+        shellExec(`kubectl apply -k ${underpostRoot}/manifests/grafana`);
+      }
+
+      if (options.prom && typeof options.prom === 'string') {
+        shellExec(`kubectl delete deployment prometheus --ignore-not-found`);
+        shellExec(`kubectl delete configmap prometheus-config --ignore-not-found`);
+        shellExec(`kubectl delete service prometheus --ignore-not-found`);
+        // Prometheus server host: http://<prometheus-cluster-ip>:9090
+        const yaml = `${fs.readFileSync(`${underpostRoot}/manifests/prometheus/deployment.yaml`, 'utf8').replace(
+          '- targets: []',
+          `- targets: [${options.prom
+            .split(',')
+            .map((host) => `'${host}'`)
+            .join(',')}]`,
+        )}`;
+        console.log(yaml);
+        shellExec(`kubectl apply -f - <<EOF
+${yaml}
+EOF
+`);
+
+        // https://grafana.com/docs/grafana-cloud/monitor-infrastructure/kubernetes-monitoring/configuration/config-other-methods/prometheus/prometheus-operator/
+        // shellExec(
+        //   `kubectl create -f https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/master/bundle.yaml`,
+        // );
+        // shellExec(`kubectl apply -f ${underpostRoot}/manifests/prometheus/prometheus-cr.yaml`);
+        // shellExec(`kubectl rollout status sts prometheus-prometheus -n default`);
+        // shellExec(`kubectl apply -f ${underpostRoot}/manifests/prometheus/prometheus-server.yaml`);
+        // shellExec(`helm repo add prometheus-community https://prometheus-community.github.io/helm-charts`);
+        // shellExec(`helm repo update`);
+        // shellExec(`helm install prometheus prometheus-community/prometheus`);
+        // shellExec(`kubectl rollout status deployment prometheus-server -n default`);
       }
 
       if (options.full === true || options.valkey === true) {
