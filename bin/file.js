@@ -60,6 +60,8 @@ try {
         else {
           shellExec(`cd ${toPath} && git reset && git checkout . && git clean -f -d`);
           shellExec(`underpost pull ${toPath} underpostnet/pwa-microservices-template`);
+          shellExec(`sudo rm -rf ${toPath}/engine-private`);
+          shellExec(`sudo rm -rf ${toPath}/logs`);
         }
       } else {
         fs.removeSync(toPath);
@@ -94,6 +96,7 @@ try {
           './manifests/deployment/dd-template-development',
           'bin/web3.js',
           'bin/cyberia.js',
+          'bin/cyberia0.js',
         ]) {
           if (fs.existsSync(deletePath)) fs.removeSync('../pwa-microservices-template/' + deletePath);
         }

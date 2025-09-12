@@ -48,17 +48,17 @@ const Config = {
     if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
     fs.writeFileSync(
       `${folder}/.env.production`,
-      fs.readFileSync('./.env.production', 'utf8').replace('dd-default', deployId),
+      fs.readFileSync('./.env.production', 'utf8').replaceAll('dd-default', deployId),
       'utf8',
     );
     fs.writeFileSync(
       `${folder}/.env.development`,
-      fs.readFileSync('./.env.development', 'utf8').replace('dd-default', deployId),
+      fs.readFileSync('./.env.development', 'utf8').replaceAll('dd-default', deployId),
       'utf8',
     );
     fs.writeFileSync(
       `${folder}/.env.test`,
-      fs.readFileSync('./.env.test', 'utf8').replace('dd-default', deployId),
+      fs.readFileSync('./.env.test', 'utf8').replaceAll('dd-default', deployId),
       'utf8',
     );
     fs.writeFileSync(`${folder}/package.json`, fs.readFileSync('./package.json', 'utf8'), 'utf8');
@@ -562,16 +562,24 @@ const buildPortProxyRouter = (port, proxyRouter) => {
   // build router
   Object.keys(hosts).map((hostKey) => {
     let { host, path, target, proxy, peer } = hosts[hostKey];
-    if (process.argv.includes('localhost') && process.env.NODE_ENV === 'development') host = `localhost`;
+    if (process.env.NODE_ENV === 'development') host = `localhost`;
 
-    if (!proxy.includes(port)) return;
+    if (!proxy.includes(port)) {
+      logger.warn('Proxy port not set on conf', { port, host, path, proxy, target });
+      if (process.env.NODE_ENV === 'production') {
+        logger.warn('Omitting host', { host, path, target });
+        return;
+      }
+    }
+
     const absoluteHost = [80, 443].includes(port)
       ? `${host}${path === '/' ? '' : path}`
       : `${host}:${port}${path === '/' ? '' : path}`;
 
-    if (process.argv.includes('localhost')) {
-      if (!(absoluteHost in router)) router[absoluteHost] = target;
-    } else router[absoluteHost] = target;
+    if (absoluteHost in router)
+      logger.warn('Overwrite: Absolute host already exists on router', { absoluteHost, target });
+
+    router[absoluteHost] = target;
   }); // order router
 
   if (Object.keys(router).length === 0) return router;
