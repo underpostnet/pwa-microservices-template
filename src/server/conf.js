@@ -27,67 +27,84 @@ dotenv.config();
 
 const logger = loggerFactory(import.meta);
 
-// monitoring: https://app.pm2.io/
-
 const Config = {
   default: DefaultConf,
-  build: async function (options = { folder: '' }, deployContext, deployList, subConf) {
-    if (!deployContext) deployContext = process.argv[2];
+  build: async function (deployContext = 'dd-default', deployList, subConf) {
+    if (typeof process.argv[2] === 'string' && process.argv[2].startsWith('dd-')) deployContext = process.argv[2];
     if (!fs.existsSync(`./tmp`)) fs.mkdirSync(`./tmp`, { recursive: true });
     fs.writeFileSync(`./tmp/await-deploy`, '', 'utf8');
     if (fs.existsSync(`./engine-private/replica/${deployContext}`))
       return loadConf(deployContext, process.env.NODE_ENV, subConf);
     else if (deployContext.startsWith('dd-')) return loadConf(deployContext, process.env.NODE_ENV, subConf);
+    if (deployContext === 'proxy') Config.buildProxy(deployContext, deployList, subConf);
+  },
+  deployIdFactory: function (deployId = 'dd-default') {
+    if (!deployId.startsWith('dd-')) deployId = `dd-${deployId}`;
 
-    if (deployContext === 'deploy') return;
+    logger.info('Build deployId', deployId);
 
-    if (deployContext === 'proxy') {
-      if (!deployList) deployList = process.argv[3];
-      if (!subConf) subConf = process.argv[4];
-      this.default.server = {};
-      for (const deployId of deployList.split(',')) {
-        let confPath = `./engine-private/conf/${deployId}/conf.server.json`;
-        const privateConfDevPath = fs.existsSync(`./engine-private/replica/${deployId}/conf.server.json`)
-          ? `./engine-private/replica/${deployId}/conf.server.json`
-          : `./engine-private/conf/${deployId}/conf.server.dev.${subConf}.json`;
-        const confDevPath = fs.existsSync(privateConfDevPath)
-          ? privateConfDevPath
-          : `./engine-private/conf/${deployId}/conf.server.dev.json`;
+    const folder = `./engine-private/conf/${deployId}`;
 
-        if (process.env.NODE_ENV === 'development' && fs.existsSync(confDevPath)) confPath = confDevPath;
-        const serverConf = JSON.parse(fs.readFileSync(confPath, 'utf8'));
+    if (!fs.existsSync(folder)) fs.mkdirSync(folder);
+    fs.writeFileSync(
+      `${folder}/.env.production`,
+      fs.readFileSync('./.env.production', 'utf8').replace('dd-default', deployId),
+      'utf8',
+    );
+    fs.writeFileSync(
+      `${folder}/.env.development`,
+      fs.readFileSync('./.env.development', 'utf8').replace('dd-default', deployId),
+      'utf8',
+    );
+    fs.writeFileSync(
+      `${folder}/.env.test`,
+      fs.readFileSync('./.env.test', 'utf8').replace('dd-default', deployId),
+      'utf8',
+    );
+    fs.writeFileSync(`${folder}/package.json`, fs.readFileSync('./package.json', 'utf8'), 'utf8');
 
-        for (const host of Object.keys(loadReplicas(serverConf, deployContext, subConf))) {
-          if (serverConf[host]['/'])
-            this.default.server[host] = {
-              ...this.default.server[host],
-              ...serverConf[host],
-            };
-          else
-            this.default.server[host] = {
-              ...serverConf[host],
-              ...this.default.server[host],
-            };
-        }
+    this.buildTmpConf(folder);
+
+    return { deployIdFolder: folder, deployId };
+  },
+  buildTmpConf: function (folder = './conf') {
+    for (const confType of Object.keys(this.default))
+      fs.writeFileSync(`${folder}/conf.${confType}.json`, JSON.stringify(this.default[confType], null, 4), 'utf8');
+  },
+  buildProxy: function (deployContext = 'dd-default', deployList, subConf) {
+    if (!deployList) deployList = process.argv[3];
+    if (!subConf) subConf = process.argv[4];
+    this.default.server = {};
+    for (const deployId of deployList.split(',')) {
+      let confPath = `./engine-private/conf/${deployId}/conf.server.json`;
+      const privateConfDevPath = fs.existsSync(`./engine-private/replica/${deployId}/conf.server.json`)
+        ? `./engine-private/replica/${deployId}/conf.server.json`
+        : `./engine-private/conf/${deployId}/conf.server.dev.${subConf}.json`;
+      const confDevPath = fs.existsSync(privateConfDevPath)
+        ? privateConfDevPath
+        : `./engine-private/conf/${deployId}/conf.server.dev.json`;
+
+      if (process.env.NODE_ENV === 'development' && fs.existsSync(confDevPath)) confPath = confDevPath;
+      const serverConf = JSON.parse(fs.readFileSync(confPath, 'utf8'));
+
+      for (const host of Object.keys(loadReplicas(serverConf, deployContext, subConf))) {
+        if (serverConf[host]['/'])
+          this.default.server[host] = {
+            ...this.default.server[host],
+            ...serverConf[host],
+          };
+        else
+          this.default.server[host] = {
+            ...serverConf[host],
+            ...this.default.server[host],
+          };
       }
     }
-    if (!options || !options.folder)
-      options = {
-        ...options,
-        folder: `./conf`,
-      };
-    if (!fs.existsSync(options.folder)) fs.mkdirSync(options.folder, { recursive: true });
-    for (const confType of Object.keys(this.default)) {
-      fs.writeFileSync(
-        `${options.folder}/conf.${confType}.json`,
-        JSON.stringify(this.default[confType], null, 4),
-        'utf8',
-      );
-    }
+    this.buildTmpConf();
   },
 };
 
-const loadConf = (deployId, envInput, subConf) => {
+const loadConf = (deployId = 'dd-default', envInput, subConf) => {
   if (deployId === 'current') {
     console.log(process.env.DEPLOY_ID);
     return;
@@ -103,22 +120,15 @@ const loadConf = (deployId, envInput, subConf) => {
     shellExec(`git checkout ${path}/package-lock.json`);
     return;
   }
-  if (!deployId.startsWith('dd-')) deployId = 'dd-default';
   const folder = fs.existsSync(`./engine-private/replica/${deployId}`)
     ? `./engine-private/replica/${deployId}`
     : `./engine-private/conf/${deployId}`;
+  if (!fs.existsSync(folder)) Config.deployIdFactory(deployId);
   if (!fs.existsSync(`./conf`)) fs.mkdirSync(`./conf`);
-  if (!fs.existsSync(`./tmp`)) fs.mkdirSync(`./tmp`, { recursive: true });
-  const isValidDeployId = fs.existsSync(`${folder}`);
-  if (!isValidDeployId) {
-    logger.info(`Save new deploy conf: '${deployId}'`);
-    shellExec(`node bin/deploy save ${deployId}`);
-    return loadConf(deployId);
-  }
+  if (!fs.existsSync(`./tmp`)) fs.mkdirSync(`./tmp`);
+
   for (const typeConf of Object.keys(Config.default)) {
-    let srcConf = isValidDeployId
-      ? fs.readFileSync(`${folder}/conf.${typeConf}.json`, 'utf8')
-      : JSON.stringify(Config.default[typeConf]);
+    let srcConf = fs.readFileSync(`${folder}/conf.${typeConf}.json`, 'utf8');
     if (process.env.NODE_ENV === 'development' && typeConf === 'server') {
       if (!subConf) subConf = process.argv[3];
       const devConfPath = `${folder}/conf.${typeConf}.dev${subConf ? `.${subConf}` : ''}.json`;
@@ -493,15 +503,6 @@ const buildProxyRouter = () => {
       }
     }
   }
-  if (process.argv.includes('maintenance'))
-    (async () => {
-      globalThis.defaultHtmlSrcMaintenance = (await ssrFactory())({
-        title: 'Site in maintenance',
-        ssrPath: '/',
-        ssrHeadComponents: '',
-        ssrBodyComponents: (await ssrFactory(`./src/client/ssr/offline/Maintenance.js`))(),
-      });
-    })();
 
   return proxyRouter;
 };
@@ -635,7 +636,6 @@ const getDataDeploy = (
     deployGroupId: '',
     deployId: '',
     disableSyncEnvPort: false,
-    deployIdConcat: [],
   },
 ) => {
   let dataDeploy =
@@ -647,8 +647,6 @@ const getDataDeploy = (
     .split(',')
     .map((deployId) => deployId.trim())
     .filter((deployId) => deployId);
-
-  if (options.deployIdConcat) dataDeploy = dataDeploy.concat(options.deployIdConcat);
 
   if (options.deployId) dataDeploy = dataDeploy.filter((d) => d === options.deployId);
 
@@ -774,12 +772,6 @@ const awaitDeployMonitor = async (init = false, deltaMs = 1000) => {
   if (init) fs.writeFileSync(`./tmp/await-deploy`, '', 'utf8');
   await timer(deltaMs);
   if (fs.existsSync(`./tmp/await-deploy`)) return await awaitDeployMonitor();
-};
-
-const getDeployId = () => {
-  const deployIndexArg = process.argv.findIndex((a) => a.match(`deploy-id:`));
-  if (deployIndexArg > -1) return process.argv[deployIndexArg].split(':')[1].trim();
-  return 'dd-default';
 };
 
 const getCronBackUpFolder = (host = '', path = '') => {
@@ -998,7 +990,6 @@ export {
   buildReplicaId,
   getCronBackUpFolder,
   mergeFile,
-  getDeployId,
   getPathsSSR,
   buildKindPorts,
   buildPortProxyRouter,

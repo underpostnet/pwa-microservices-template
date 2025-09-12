@@ -39,31 +39,6 @@ const [exe, dir, operator] = process.argv;
 
 try {
   switch (operator) {
-    case 'save':
-      {
-        let deployId = process.argv[3] ?? 'dd-default';
-        if (!deployId.startsWith('dd-')) deployId = 'dd-default';
-        const folder = `./engine-private/conf/${deployId}`;
-        if (fs.existsSync(folder)) fs.removeSync(folder);
-        await Config.build({ folder });
-        fs.writeFileSync(
-          `${folder}/.env.production`,
-          fs.readFileSync('./.env.production', 'utf8').replace('dd-default', deployId),
-          'utf8',
-        );
-        fs.writeFileSync(
-          `${folder}/.env.development`,
-          fs.readFileSync('./.env.development', 'utf8').replace('dd-default', deployId),
-          'utf8',
-        );
-        fs.writeFileSync(
-          `${folder}/.env.test`,
-          fs.readFileSync('./.env.test', 'utf8').replace('dd-default', deployId),
-          'utf8',
-        );
-        fs.writeFileSync(`${folder}/package.json`, fs.readFileSync('./package.json', 'utf8'), 'utf8');
-      }
-      break;
     case 'add-nodejs-app-client-conf':
       {
         const toOptions = {
@@ -283,23 +258,20 @@ try {
       for (const deployIdObj of dataDeploy) {
         const { deployId, replicaHost } = deployIdObj;
         if (replicaHost && !singleReplicaHosts.includes(replicaHost)) singleReplicaHosts.push(replicaHost);
-        const proxyInstance = deployId.match('proxy') || deployId.match('cron');
         const baseConfPath = fs.existsSync(`./engine-private/replica/${deployId}`)
           ? `./engine-private/replica`
           : `./engine-private/conf`;
         for (const envInstanceObj of dataEnv) {
           const envPath = `${baseConfPath}/${deployId}/.env.${envInstanceObj.env}`;
           const envObj = dotenv.parse(fs.readFileSync(envPath, 'utf8'));
-          envObj.PORT = proxyInstance
-            ? envInstanceObj.port
-            : envInstanceObj.port + port - singleReplicaHosts.length - (replicaHost ? 1 : 0);
+          envObj.PORT = envInstanceObj.port + port - singleReplicaHosts.length - (replicaHost ? 1 : 0);
 
           writeEnv(envPath, envObj);
         }
         const serverConf = loadReplicas(
           JSON.parse(fs.readFileSync(`${baseConfPath}/${deployId}/conf.server.json`, 'utf8')),
         );
-        if (!proxyInstance) for (const host of Object.keys(serverConf)) port += Object.keys(serverConf[host]).length;
+        for (const host of Object.keys(serverConf)) port += Object.keys(serverConf[host]).length;
       }
       break;
 
@@ -399,6 +371,7 @@ try {
       shellCd(`/home/dd/engine`);
       const originPackageJson = JSON.parse(fs.readFileSync(`package.json`, 'utf8'));
       const newVersion = process.argv[3] ?? originPackageJson.version;
+      const node = process.argv[4] ?? 'kind-control-plane';
       const { version } = originPackageJson;
       originPackageJson.version = newVersion;
       fs.writeFileSync(`package.json`, JSON.stringify(originPackageJson, null, 4), 'utf8');
@@ -456,8 +429,10 @@ try {
       shellExec(`node bin/deploy update-dependencies`);
       shellExec(`auto-changelog`);
       shellExec(`node bin/build dd`);
-      shellExec(`node bin deploy --kubeadm --build-manifest --sync --info-router --replicas 1 dd`);
-      shellExec(`node bin deploy --kubeadm --build-manifest --sync --info-router --replicas 1 dd production`);
+      shellExec(`node bin deploy --kubeadm --build-manifest --sync --info-router --replicas 1 --node ${node} dd`);
+      shellExec(
+        `node bin deploy --kubeadm --build-manifest --sync --info-router --replicas 1 --node ${node} dd production`,
+      );
       break;
     }
 
