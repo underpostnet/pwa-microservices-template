@@ -2,7 +2,7 @@
     "type": "module",
     "main": "src/index.js",
     "name": "underpost",
-    "version": "2.8.87",
+    "version": "2.8.871",
     "description": "pwa api rest template",
     "scripts": {
         "start": "env-cmd -f .env.production node --max-old-space-size=8192 src/server",
@@ -80,7 +80,6 @@
         "jimp": "^0.22.12",
         "json-colorizer": "^2.2.2",
         "jsonwebtoken": "^9.0.2",
-        "keyword-extractor": "^0.0.28",
         "mariadb": "^3.2.2",
         "marked": "^12.0.2",
         "mocha": "^10.8.2",
