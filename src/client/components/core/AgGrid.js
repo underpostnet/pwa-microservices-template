@@ -2,8 +2,8 @@
 // https://www.ag-grid.com/javascript-data-grid/themes/
 
 import { ThemeEvents, darkTheme } from './Css.js';
-import { append, getProxyPath, htmls, s } from './VanillaJs.js';
-import * as agGrid from 'ag-grid-community';
+import { append, htmls, s } from './VanillaJs.js';
+import { getProxyPath } from './Router.js';
 
 const AgGrid = {
   grids: {},
