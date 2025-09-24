@@ -20,7 +20,7 @@ import {
   handleModalViewRoute,
   getProxyPath,
   setPath,
-  setQueryPath,
+  coreUI,
 } from './Router.js';
 import { NotificationManager } from './NotificationManager.js';
 import { EventsUI } from './EventsUI.js';
@@ -779,8 +779,7 @@ const Modal = {
                     dragDisabled: true,
                     maximize: true,
                     heightBottomBar: 0,
-                    heightTopBar: originHeightTopBar,
-                    barMode: options.barMode,
+                    heightTopBar: options.heightTopBar,
                   });
 
                   // Bind hover/focus and click-outside to dismiss
@@ -1747,13 +1746,8 @@ const Modal = {
         if (!s(`.${idModal}`)) return;
         this.removeModal(idModal);
         // Handle modal route change
-
-        if (options.route && options.query) {
-          setQueryPath({ path: options.route, queryPath: '' });
-          history.back();
-        } else {
-          closeModalRouteChangeEvent({ closedId: idModal, homeCid: Modal.homeCid });
-        }
+        closeModalRouteChangeEvent({ closedId: idModal });
+        // history.back();
       }, 300);
     };
     s(`.btn-close-${idModal}`).onclick = btnCloseEvent;
@@ -1953,7 +1947,7 @@ const Modal = {
       const modal = Modal.Data[idModal];
       if (!modal) return false;
       // Don't close the core UI elements
-      const coreUI = ['modal-menu', 'main-body', 'main-body-top', 'bottom-bar', 'board-notification'];
+
       if (coreUI.find((id) => idModal.startsWith(id))) {
         return false;
       }
@@ -1966,7 +1960,7 @@ const Modal = {
     });
 
     // 2. Navigate to home first, creating a new history entry.
-    setPath(getProxyPath());
+    setPath(`${getProxyPath()}${location.search ?? ''}${location.hash ?? ''}`);
     setDocTitle();
 
     // 3. Close the modals without them affecting the URL.

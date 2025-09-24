@@ -420,10 +420,8 @@ const PanelForm = {
     let firsUpdateEvent = false;
     let lastCid;
     let lastUserId;
-    closeModalRouteChangeEvents[idPanel] = (newPath) => {
-      if (newPath.split('?')[0] === '/' && PanelForm.Data[idPanel].data && PanelForm.Data[idPanel].data.length === 0) {
-        this.Data[idPanel].updatePanel();
-      }
+    closeModalRouteChangeEvents[idPanel] = () => {
+      this.Data[idPanel].updatePanel();
     };
     this.Data[idPanel].updatePanel = async () => {
       const cid = getQueryParams().cid ? getQueryParams().cid : '';
@@ -431,7 +429,6 @@ const PanelForm = {
       if (lastCid === cid && !forceUpdate) return;
       lastUserId = newInstance(Elements.Data.user.main.model.user._id);
       lastCid = cid;
-      if (options.route === 'home') Modal.homeCid = newInstance(cid);
       htmls(`.${options.parentIdModal ? 'html-' + options.parentIdModal : 'main-body'}`, await renderSrrPanelData());
       await getPanelData();
       htmls(
