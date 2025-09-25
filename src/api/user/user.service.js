@@ -2,12 +2,12 @@ import { loggerFactory } from '../../server/logger.js';
 import {
   hashPassword,
   verifyPassword,
-  hashJWT,
   verifyJWT,
   createSessionAndUserToken,
   createUserAndSession,
   refreshSessionAndToken,
   hashToken,
+  jwtSign,
 } from '../../server/auth.js';
 import { MailerProvider } from '../../mailer/MailerProvider.js';
 import { CoreWsMailerManagement } from '../../ws/core/management/core.ws.mailer.js';
@@ -36,8 +36,8 @@ const UserService = {
 
       if (!user) throw new Error('Email address does not exist');
 
-      const token = hashJWT({ email: req.body.email });
-      const payloadToken = hashJWT({ email: req.body.email });
+      const token = jwtSign({ email: req.body.email });
+      const payloadToken = jwtSign({ email: req.body.email });
       const id = `${options.host}${options.path}`;
       const translate = MailerProvider.instance[id].translateTemplates.recoverEmail;
       const recoverUrl = `${process.env.NODE_ENV === 'development' ? 'http://' : 'https://'}${req.body.hostname}${
@@ -74,7 +74,7 @@ const UserService = {
     if (req.path.startsWith('/mailer') && req.params.id === 'verify-email') {
       if (!validator.isEmail(req.body.email)) throw { message: 'invalid email' };
 
-      const token = hashJWT({ email: req.body.email });
+      const token = jwtSign({ email: req.body.email });
       const id = `${options.host}${options.path}`;
       const user = await User.findById(req.auth.user._id);
 
@@ -157,7 +157,16 @@ const UserService = {
 
                 const { sessionId } = await createSessionAndUserToken(user, User, req, res);
                 return {
-                  token: hashJWT(UserDto.auth.payload(user, sessionId, req.ip, req.headers['user-agent'])),
+                  token: jwtSign(
+                    UserDto.auth.payload(
+                      user,
+                      sessionId,
+                      req.ip,
+                      req.headers['user-agent'],
+                      options.host,
+                      options.path,
+                    ),
+                  ),
                   user,
                 };
               } else throw new Error(accountLocketMessage());
@@ -204,15 +213,17 @@ const UserService = {
             } catch (error) {
               logger.error(error, { params: req.params, body: req.body });
             }
-            throw new Error(`invalid email or password, remaining attempts: ${5 - user.failedLoginAttempts}`);
+            throw new Error(`Invalid credentials. Remaining attempts: ${5 - user.failedLoginAttempts}`);
           }
-        } else throw new Error('invalid email or password');
+        } else throw new Error('Invalid credentials');
 
       case 'guest': {
         const user = await ValkeyAPI.valkeyObjectFactory(options, 'user');
         await ValkeyAPI.setValkeyObject(options, user.email, user);
         return {
-          token: hashJWT(UserDto.auth.payload(user, null, req.ip, req.headers['user-agent'])),
+          token: jwtSign(
+            UserDto.auth.payload(user, null, req.ip, req.headers['user-agent'], options.host, options.path),
+          ),
           user: selectDtoFactory(user, UserDto.select.get()),
         };
       }
@@ -482,7 +493,7 @@ const UserService = {
   refreshToken: async (req, res, options) => {
     /** @type {import('./user.model.js').UserModel} */
     const User = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.models.User;
-    return await refreshSessionAndToken(req, res, User);
+    return await refreshSessionAndToken(req, res, User, options);
   },
 };
 

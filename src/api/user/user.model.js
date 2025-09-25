@@ -79,14 +79,19 @@ const UserDto = {
     },
   },
   auth: {
-    payload: (user, sessionId, ip, userAgent) => ({
-      _id: user._id.toString(),
-      role: user.role,
-      email: user.email,
-      jti: sessionId, // JWT ID
-      ip,
-      userAgent,
-    }),
+    payload: (user, sessionId, ip, userAgent, host, path) => {
+      const tokenPayload = {
+        _id: user._id.toString(),
+        role: user.role,
+        email: user.email,
+        ip,
+        userAgent,
+        host,
+        path,
+      };
+      if (sessionId) tokenPayload.jti = sessionId; // JWT ID
+      return tokenPayload;
+    },
   },
 };
 
