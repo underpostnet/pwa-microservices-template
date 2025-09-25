@@ -5,6 +5,7 @@ import { UserController } from './user.controller.js';
 import express from 'express';
 import { DataBaseProvider } from '../../db/DataBaseProvider.js';
 import { FileFactory } from '../file/file.service.js';
+import { s4 } from '../../client/components/core/CommonJs.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -15,8 +16,9 @@ const UserRouter = (options) => {
     // admin user seed
     try {
       const models = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.models;
+      let adminUser;
       if (models.User) {
-        const adminUser = await models.User.findOne({ role: 'admin' });
+        adminUser = await models.User.findOne({ role: 'admin' });
         if (!adminUser) {
           const defaultPassword = process.env.DEFAULT_ADMIN_PASSWORD || 'changethis';
           const hashedPassword = hashPassword(defaultPassword);
@@ -27,6 +29,7 @@ const UserRouter = (options) => {
             password: hashedPassword,
             role: 'admin',
             emailConfirmed: true,
+            secret: s4() + s4() + s4() + s4(),
             publicKey: [],
           });
           logger.warn('Default admin user created. Please change the default password immediately!', result._doc);
@@ -90,6 +93,13 @@ const UserRouter = (options) => {
       #swagger.ignore = true
     */
     return await UserController.get(req, res, options);
+  });
+
+  router.post('/refresh-token', async (req, res) => {
+    /*  
+      #swagger.ignore = true
+    */
+    return await UserController.refreshToken(req, res, options);
   });
 
   router.post(`/:id`, async (req, res) => {

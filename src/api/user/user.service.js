@@ -1,5 +1,14 @@
 import { loggerFactory } from '../../server/logger.js';
-import { hashPassword, verifyPassword, hashJWT, verifyJWT, validatePasswordMiddleware } from '../../server/auth.js';
+import {
+  hashPassword,
+  verifyPassword,
+  hashJWT,
+  verifyJWT,
+  createSessionAndUserToken,
+  createUserAndSession,
+  refreshSessionAndToken,
+  hashToken,
+} from '../../server/auth.js';
 import { MailerProvider } from '../../mailer/MailerProvider.js';
 import { CoreWsMailerManagement } from '../../ws/core/management/core.ws.mailer.js';
 import { CoreWsEmit } from '../../ws/core/core.ws.emit.js';
@@ -27,8 +36,8 @@ const UserService = {
 
       if (!user) throw new Error('Email address does not exist');
 
-      const token = hashJWT({ email: req.body.email }, '15m');
-      const payloadToken = hashJWT({ email: req.body.email }, '15m');
+      const token = hashJWT({ email: req.body.email });
+      const payloadToken = hashJWT({ email: req.body.email });
       const id = `${options.host}${options.path}`;
       const translate = MailerProvider.instance[id].translateTemplates.recoverEmail;
       const recoverUrl = `${process.env.NODE_ENV === 'development' ? 'http://' : 'https://'}${req.body.hostname}${
@@ -145,8 +154,10 @@ const UserService = {
                     runValidators: true,
                   },
                 );
+
+                const { sessionId } = await createSessionAndUserToken(user, User, req, res);
                 return {
-                  token: hashJWT({ user: UserDto.auth.payload(user) }),
+                  token: hashJWT(UserDto.auth.payload(user, sessionId, req.ip, req.headers['user-agent'])),
                   user,
                 };
               } else throw new Error(accountLocketMessage());
@@ -201,25 +212,13 @@ const UserService = {
         const user = await ValkeyAPI.valkeyObjectFactory(options, 'user');
         await ValkeyAPI.setValkeyObject(options, user.email, user);
         return {
-          token: hashJWT({ user: UserDto.auth.payload(user) }),
+          token: hashJWT(UserDto.auth.payload(user, null, req.ip, req.headers['user-agent'])),
           user: selectDtoFactory(user, UserDto.select.get()),
         };
       }
 
       default: {
-        const validatePassword = validatePasswordMiddleware(req.body.password);
-        if (validatePassword.status === 'error') throw new Error(validatePassword.message);
-        req.body.password = await hashPassword(req.body.password);
-        req.body.role = req.body.role === 'guest' ? 'guest' : 'user';
-        req.body.profileImageId = await options.getDefaultProfileImageId(File);
-        const { _id } = await new User(req.body).save();
-        if (_id) {
-          const user = await User.findOne({ _id }).select(UserDto.select.get());
-          return {
-            token: hashJWT({ user: UserDto.auth.payload(user) }),
-            user,
-          };
-        } else throw new Error('failed to create user');
+        return await createUserAndSession(req, res, User, File, options);
       }
     }
   },
@@ -254,7 +253,7 @@ const UserService = {
           _id,
           { recoverTimeOut: new Date(+new Date() + 1000 * 60 * 15) },
           { runValidators: true },
-        ); // 15m
+        );
         options.png.header(res);
         return options.png.buffer['recover'];
       } else {
@@ -295,20 +294,22 @@ const UserService = {
 
     switch (req.params.id) {
       case 'all': {
-        const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 10;
-        const skip = (page - 1) * limit;
+        if (req.auth.user.role === 'admin') {
+          const page = parseInt(req.query.page) || 1;
+          const limit = parseInt(req.query.limit) || 10;
+          const skip = (page - 1) * limit;
 
-        const data = await User.find().select(UserDto.select.get()).skip(skip).limit(limit);
-        const total = await User.countDocuments();
+          const data = await User.find().select(UserDto.select.get()).skip(skip).limit(limit);
+          const total = await User.countDocuments();
 
-        return {
-          data,
-          page,
-          limit,
-          total,
-          totalPages: Math.ceil(total / limit),
-        };
+          return {
+            data,
+            page,
+            limit,
+            total,
+            totalPages: Math.ceil(total / limit),
+          };
+        } else throw new Error(`Invalid token user id`);
       }
 
       case 'auth': {
@@ -360,6 +361,20 @@ const UserService = {
   delete: async (req, res, options) => {
     /** @type {import('./user.model.js').UserModel} */
     const User = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.models.User;
+
+    if (req.params.id === 'logout') {
+      const refreshToken = req.cookies?.refreshToken;
+      if (refreshToken) {
+        const hashedToken = hashToken(refreshToken);
+        await User.updateOne(
+          { 'activeSessions.tokenHash': hashedToken },
+          { $pull: { activeSessions: { tokenHash: hashedToken } } },
+        );
+      }
+      res.clearCookie('refreshToken');
+      return { message: 'Logged out successfully' };
+    }
+
     switch (req.params.id) {
       default: {
         const user = await User.findOne({
@@ -463,6 +478,11 @@ const UserService = {
         }
       }
     }
+  },
+  refreshToken: async (req, res, options) => {
+    /** @type {import('./user.model.js').UserModel} */
+    const User = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.models.User;
+    return await refreshSessionAndToken(req, res, User);
   },
 };
 

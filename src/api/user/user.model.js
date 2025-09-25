@@ -1,6 +1,6 @@
 import { Schema, model } from 'mongoose';
 import validator from 'validator';
-import { userRoleEnum } from '../../client/components/core/CommonJs.js';
+import { s4, userRoleEnum } from '../../client/components/core/CommonJs.js';
 
 // https://mongoosejs.com/docs/2.7.x/docs/schematypes.html
 
@@ -21,7 +21,19 @@ const UserSchema = new Schema(
     failedLoginAttempts: { type: Number, default: 0 },
     password: { type: String, trim: true, required: 'Password is required' },
     username: { type: String, trim: true, unique: true, required: 'Username is required' },
+    secret: { type: String, default: () => s4() + s4() + s4() + s4() },
     role: { type: String, enum: userRoleEnum, default: 'guest' },
+    activeSessions: {
+      type: [
+        {
+          tokenHash: { type: String, required: true },
+          ip: { type: String },
+          userAgent: { type: String },
+          expiresAt: { type: Date, required: true },
+        },
+      ],
+      default: [],
+    },
     profileImageId: { type: Schema.Types.ObjectId, ref: 'File' },
     phoneNumbers: [
       {
@@ -67,11 +79,14 @@ const UserDto = {
     },
   },
   auth: {
-    // TODO: -> set login device, location, ip, fingerprint
-    //          and validate on authorization middleware
-    //       -> dynamic refresh 100 tokens per session with 12h interval
-    //       -> back secret per user, registrarion user model -> secret: { type: String }
-    payload: (user) => ({ _id: user._id.toString(), role: user.role, email: user.email }),
+    payload: (user, sessionId, ip, userAgent) => ({
+      _id: user._id.toString(),
+      role: user.role,
+      email: user.email,
+      jti: sessionId, // JWT ID
+      ip,
+      userAgent,
+    }),
   },
 };
 

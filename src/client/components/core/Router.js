@@ -1,5 +1,5 @@
 /**
- * Vanilla JavaScript module for manipulating the DOM.
+ * Router module for handling routing in a PWA application.
  * @module src/client/components/core/Router.js
  * @namespace PwaRouter
  */
@@ -245,7 +245,8 @@ const closeModalRouteChangeEvent = (options = {}) => {
 
   for (const event of Object.keys(closeModalRouteChangeEvents)) closeModalRouteChangeEvents[event]();
   if (topModalId) Modal.setTopModalCallback(topModalId);
-  setPath(`${getProxyPath()}${Modal.Data[topModalId]?.options?.route || 'home'}`);
+  setPath(`${getProxyPath()}${Modal.Data[topModalId]?.options?.route ?? ''}`);
+  setDocTitle(Modal.Data[topModalId]?.options?.route ?? '');
 };
 
 /**

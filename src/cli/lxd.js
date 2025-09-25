@@ -1,3 +1,9 @@
+/**
+ * LXD module for managing LXD virtual machines and networks.
+ * @module src/cli/lxd.js
+ * @namespace UnderpostLxd
+ */
+
 import { getNpmRootPath } from '../server/conf.js';
 import { getLocalIPv4Address } from '../server/dns.js';
 import { pbcopy, shellExec } from '../server/process.js';
@@ -32,6 +38,7 @@ class UnderpostLxd {
      * @param {string} [options.deleteExpose=''] - Delete exposed ports from a VM (format: 'vmName:port1,port2').
      * @param {string} [options.test=''] - Test health, status and network connectivity for a VM.
      * @param {string} [options.autoExposeK8sPorts=''] - Automatically expose common Kubernetes ports for the VM.
+     * @memberof UnderpostLxd
      */
     async callback(
       options = {

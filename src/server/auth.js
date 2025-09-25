@@ -8,8 +8,14 @@ import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import { loggerFactory } from './logger.js';
 import crypto from 'crypto';
-import { userRoleEnum } from '../api/user/user.model.js';
+import { UserDto, userRoleEnum } from '../api/user/user.model.js';
 import { commonAdminGuard, commonModeratorGuard, validatePassword } from '../client/components/core/CommonJs.js';
+
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
+import slowDown from 'express-slow-down';
+import cors from 'cors';
+import cookieParser from 'cookie-parser';
 
 dotenv.config();
 
@@ -49,6 +55,16 @@ function verifyPassword(password, combined) {
   return hash === originalHash;
 }
 
+/**
+ * @param {String} token - token to hash
+ * @returns {String} the sha256 hash of the token
+ * @memberof Auth
+ */
+function hashToken(token) {
+  if (!token) return null;
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
 // jwt middleware
 
 /**
@@ -62,7 +78,9 @@ function verifyPassword(password, combined) {
  * @memberof Auth
  */
 const hashJWT = (payload, expire) =>
-  jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: expire !== undefined ? expire : `${process.env.EXPIRE}h` });
+  jwt.sign(payload, process.env.JWT_SECRET, {
+    expiresIn: expire !== undefined ? expire : `${process.env.EXPIRE}h`,
+  });
 
 /**
  * The function `verifyJWT` is used to verify a JSON Web Token (JWT) using a secret key stored in the
@@ -125,7 +143,24 @@ const authMiddleware = (req, res, next) => {
     const token = getBearerToken(req);
     if (token) {
       const payload = verifyJWT(token);
-      req.auth = payload;
+
+      // Security enhancement: Validate IP and User-Agent
+      if (
+        payload &&
+        payload.role !== 'guest' &&
+        (payload.ip !== req.ip || payload.userAgent !== req.headers['user-agent'])
+      ) {
+        logger.warn(
+          `JWT validation failed for user ${payload._id}: IP or User-Agent mismatch. ` +
+            `JWT IP: ${payload.ip}, Request IP: ${req.ip}. ` +
+            `JWT UA: ${payload.userAgent}, Request UA: ${req.headers['user-agent']}`,
+        );
+        return res.status(401).json({
+          status: 'error',
+          message: 'unauthorized: invalid token credentials',
+        });
+      }
+      req.auth = { user: payload };
       return next();
     } else
       return res.status(401).json({
@@ -221,10 +256,237 @@ const validatePasswordMiddleware = (req, password) => {
     };
 };
 
+/**
+ * Creates a new user session, saves it, and sets the refresh token cookie.
+ * @param {import('../api/user/user.model.js').UserModel} user - The user mongoose instance.
+ * @param {import('../api/user/user.model.js').UserModel} User - The user mongoose model.
+ * @param {import('express').Request} req - The Express request object.
+ * @param {import('express').Response} res - The Express response object.
+ * @returns {Promise<{sessionId: string}>} The session ID.
+ * @memberof Auth
+ */
+async function createSessionAndUserToken(user, User, req, res) {
+  const refreshToken = crypto.randomBytes(48).toString('hex');
+  const newSession = {
+    tokenHash: hashToken(refreshToken),
+    ip: req.ip,
+    userAgent: req.headers['user-agent'],
+    expiresAt: new Date(Date.now() + process.env.REFRESH_EXPIRE * 60 * 60 * 1000),
+  };
+  if (!user.activeSessions) {
+    user.activeSessions = [];
+    user._doc.activeSessions = [];
+  }
+  const updatedUser = await User.findByIdAndUpdate(user._id, { $push: { activeSessions: newSession } }, { new: true });
+
+  const sessionId = updatedUser.activeSessions[updatedUser.activeSessions.length - 1]._id.toString();
+
+  res.cookie('refreshToken', refreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV !== 'development',
+    sameSite: 'lax',
+    maxAge: process.env.REFRESH_EXPIRE * 60 * 60 * 1000,
+  });
+
+  return { sessionId };
+}
+
+/**
+ * Creates a new user, saves it, and returns a JWT and user data.
+ * @param {import('express').Request} req - The Express request object.
+ * @param {import('../api/user/user.model.js').UserModel} User - The Mongoose User model.
+ * @param {import('../api/file/file.model.js').FileModel} File - The Mongoose File model.
+ * @param {Object} options - Service options.
+ * @returns {Promise<{token: string, user: object}>} The JWT and user object.
+ * @memberof Auth
+ */
+async function createUserAndSession(req, res, User, File, options) {
+  const validatePassword = validatePasswordMiddleware(req);
+  if (validatePassword.status === 'error') throw new Error(validatePassword.message);
+
+  req.body.password = await hashPassword(req.body.password);
+  req.body.role = req.body.role === 'guest' ? 'guest' : 'user';
+  req.body.profileImageId = await options.getDefaultProfileImageId(File);
+
+  const { _id } = await new User(req.body).save();
+
+  if (_id) {
+    const user = await User.findOne({ _id }).select(UserDto.select.get());
+    const { sessionId } = await createSessionAndUserToken(user, User, req, res);
+    return {
+      token: hashJWT(UserDto.auth.payload(user, sessionId, req.ip, req.headers['user-agent'])),
+      user,
+    };
+  }
+
+  throw new Error('failed to create user');
+}
+
+/**
+ * Refreshes a user session using a refresh token, rotates the token, and issues a new access token.
+ * @param {import('express').Request} req - The Express request object.
+ * @param {import('express').Response} res - The Express response object.
+ * @param {import('../api/user/user.model.js').UserModel} User - The Mongoose User model.
+ * @returns {Promise<{token: string}>} A new access token.
+ * @memberof Auth
+ */
+async function refreshSessionAndToken(req, res, User) {
+  const refreshToken = req.cookies?.refreshToken;
+  if (!refreshToken) throw new Error('Refresh token missing');
+
+  const hashedToken = hashToken(refreshToken);
+
+  const user = await User.findOne({ 'activeSessions.tokenHash': hashedToken });
+
+  if (!user) {
+    throw new Error('Invalid refresh token');
+  }
+
+  const session = user.activeSessions.find((s) => s.tokenHash === hashedToken);
+
+  if (!session || session.expiresAt < new Date()) {
+    if (session) {
+      user.activeSessions.pull({ _id: session._id });
+      await user.save({ validateBeforeSave: false });
+    }
+    throw new Error('Refresh token expired or invalid');
+  }
+
+  // Rotate token
+  const newRefreshToken = crypto.randomBytes(48).toString('hex');
+  session.tokenHash = hashToken(newRefreshToken);
+  session.expiresAt = new Date(Date.now() + process.env.REFRESH_EXPIRE * 60 * 60 * 1000);
+  session.ip = req.ip;
+  session.userAgent = req.headers['user-agent'];
+
+  await user.save({ validateBeforeSave: false });
+
+  res.cookie('refreshToken', newRefreshToken, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV !== 'development',
+    sameSite: 'lax',
+    maxAge: process.env.REFRESH_EXPIRE * 60 * 60 * 1000,
+  });
+
+  const accessToken = hashJWT(UserDto.auth.payload(user, session._id.toString(), req.ip, req.headers['user-agent']));
+  return { token: accessToken };
+}
+
+/**
+ * applySecurity(app, opts)
+ * - app: express() instance
+ * - opts: {
+ *     origin: string|array,  // allowed CORS origin(s)
+ *     rate: { windowMs, max },
+ *     slowDown: { windowMs, delayAfter, delayMs },
+ *     cookie: { secret, secure, sameSite }
+ *   }
+ */
+export function applySecurity(app, opts = {}) {
+  const {
+    origin,
+    rate = { windowMs: 15 * 60 * 1000, max: 100 }, // 100 requests per 15min by default
+    slowdown = { windowMs: 15 * 60 * 1000, delayAfter: 50, delayMs: 500 },
+    cookie = { secure: process.env.NODE_ENV === 'production', sameSite: 'Strict' },
+    frameAncestors = ["'self'"],
+  } = opts;
+
+  // Remove/disable identifying headers
+  app.disable('x-powered-by'); // don't reveal Express
+
+  // Basic header hardening with Helmet
+  app.use(
+    helmet({
+      // We'll customize CSP below because many apps need tailored directives
+      crossOriginEmbedderPolicy: true,
+      crossOriginOpenerPolicy: { policy: 'same-origin' },
+      crossOriginResourcePolicy: { policy: 'same-origin' },
+      originAgentCluster: false,
+      // Permissions-Policy (formerly Feature-Policy) — limit powerful features
+      permissionsPolicy: {
+        // example: disable geolocation, camera, microphone, payment
+        features: {
+          fullscreen: ["'self'"],
+          geolocation: [],
+          camera: [],
+          microphone: [],
+          payment: [],
+        },
+      },
+    }),
+  );
+
+  // Strict HSTS (only enable in production over TLS)
+  // maxAge in seconds (e.g. 31536000 = 1 year). Use includeSubDomains and preload carefully.
+  if (process.env.NODE_ENV === 'production') {
+    app.use(
+      helmet.hsts({
+        maxAge: 31536000,
+        includeSubDomains: true,
+        preload: true,
+      }),
+    );
+  }
+
+  // Other helpful Helmet policies
+  app.use(helmet.noSniff()); // X-Content-Type-Options: nosniff
+  app.use(helmet.frameguard({ action: 'deny' })); // X-Frame-Options: DENY
+  app.use(helmet.referrerPolicy({ policy: 'no-referrer-when-downgrade' }));
+
+  app.use(
+    helmet.contentSecurityPolicy({
+      directives: {
+        defaultSrc: ["'self'"],
+        baseUri: ["'self'"],
+        blockAllMixedContent: [],
+        fontSrc: ["'self'", 'https:', 'data:'],
+        frameAncestors: frameAncestors,
+        imgSrc: ["'self'", 'data:', 'https:'],
+        objectSrc: ["'none'"],
+        scriptSrc: ["'self'"],
+        scriptSrcElem: ["'self'"],
+        styleSrc: ["'self'", 'https:', "'unsafe-inline'"], // try to remove 'unsafe-inline' by using hashes/nonces
+      },
+    }),
+  );
+
+  // CORS - be explicit. Avoid open wildcard in production for credentials.
+  app.use(
+    cors({
+      origin,
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      credentials: true,
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
+      maxAge: 600,
+    }),
+  );
+
+  // Rate limiting + slow down to mitigate brute force and DoS
+  const limiter = rateLimit({
+    windowMs: rate.windowMs,
+    max: rate.max,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many requests, please try again later.' },
+  });
+  app.use(limiter);
+
+  const speedLimiter = slowDown({
+    windowMs: slowdown.windowMs,
+    delayAfter: slowdown.delayAfter,
+    delayMs: () => slowdown.delayMs,
+  });
+  app.use(speedLimiter);
+
+  // Cookie parsing and CSRF protection
+  app.use(cookieParser(process.env.JWT_SECRET));
+}
+
 export {
   authMiddleware,
   hashPassword,
   verifyPassword,
+  hashToken,
   hashJWT,
   adminGuard,
   moderatorGuard,
@@ -232,4 +494,7 @@ export {
   validatePasswordMiddleware,
   getBearerToken,
   getPayloadJWT,
+  createSessionAndUserToken,
+  createUserAndSession,
+  refreshSessionAndToken,
 };
