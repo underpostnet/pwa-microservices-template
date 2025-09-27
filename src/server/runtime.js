@@ -1,27 +1,24 @@
 import fs from 'fs-extra';
 import express from 'express';
-import cors from 'cors';
 import dotenv from 'dotenv';
 import fileUpload from 'express-fileupload';
 import swaggerUi from 'swagger-ui-express';
 import * as promClient from 'prom-client';
 import compression from 'compression';
 
-import { createServer } from 'http';
-import { getRootDirectory } from './process.js';
 import UnderpostStartUp from './start.js';
+import { createServer } from 'http';
 import { loggerFactory, loggerMiddleware } from './logger.js';
 import { getCapVariableName, newInstance } from '../client/components/core/CommonJs.js';
-import { Xampp } from '../runtime/xampp/Xampp.js';
 import { MailerProvider } from '../mailer/MailerProvider.js';
 import { DataBaseProvider } from '../db/DataBaseProvider.js';
-// import { createProxyMiddleware } from 'http-proxy-middleware';
 import { createPeerServer } from './peer.js';
 import { Lampp } from '../runtime/lampp/Lampp.js';
-import { JSONweb, ssrFactory } from './client-formatted.js';
-import Underpost from '../index.js';
+import { Xampp } from '../runtime/xampp/Xampp.js';
 import { createValkeyConnection } from './valkey.js';
-import { applySecurity } from './auth.js';
+import { applySecurity, authMiddlewareFactory } from './auth.js';
+import { getInstanceContext } from './conf.js';
+import { ssrMiddlewareFactory } from './ssr.js';
 
 dotenv.config();
 
@@ -39,8 +36,6 @@ const buildRuntime = async () => {
     labelNames: ['instance', 'method', 'status_code'],
   };
 
-  // logger.info('promCounterOption', promCounterOption);
-
   const requestCounter = new promClient.Counter(promCounterOption);
   const initPort = parseInt(process.env.PORT) + 1;
   let currentPort = initPort;
@@ -48,9 +43,8 @@ const buildRuntime = async () => {
   const confSSR = JSON.parse(fs.readFileSync(`./conf/conf.ssr.json`, 'utf8'));
   const singleReplicaHosts = [];
   for (const host of Object.keys(confServer)) {
-    if (singleReplicaHosts.length > 0 && !singleReplicaHosts.includes(host)) {
+    if (singleReplicaHosts.length > 0)
       currentPort += singleReplicaHosts.reduce((accumulator, currentValue) => accumulator + currentValue.replicas, 0);
-    }
     const rootHostPath = `/public/${host}`;
     for (const path of Object.keys(confServer[host])) {
       confServer[host][path].port = newInstance(currentPort);
@@ -71,7 +65,14 @@ const buildRuntime = async () => {
         valkey,
       } = confServer[host][path];
 
-      if (singleReplica && replicas && replicas.length > 0 && !singleReplicaHosts.includes(host)) {
+      const { redirectTarget, singleReplicaHost } = await getInstanceContext({
+        redirect,
+        singleReplicaHosts,
+        singleReplica,
+        replicas,
+      });
+
+      if (singleReplicaHost) {
         singleReplicaHosts.push({
           host,
           replicas: replicas.length,
@@ -88,161 +89,7 @@ const buildRuntime = async () => {
         apis,
       };
 
-      const redirectTarget = redirect
-        ? redirect[redirect.length - 1] === '/'
-          ? redirect.slice(0, -1)
-          : redirect
-        : undefined;
-
-      // if (redirect) logger.info('redirect', new URL(redirect));
-
       switch (runtime) {
-        case 'lampp':
-          if (!Lampp.enabled()) continue;
-          if (!Lampp.ports.includes(port)) Lampp.ports.push(port);
-          if (currentPort === initPort) Lampp.removeRouter();
-          Lampp.appendRouter(`
-            
-        Listen ${port}
-
-        <VirtualHost *:${port}>    
-            DocumentRoot "${directory ? directory : `${getRootDirectory()}${rootHostPath}`}"
-            ServerName ${host}:${port}
-
-            <Directory "${directory ? directory : `${getRootDirectory()}${rootHostPath}`}">
-              Options Indexes FollowSymLinks MultiViews
-              AllowOverride All
-              Require all granted
-            </Directory>
-
-              ${
-                redirect
-                  ? `
-                  RewriteEngine on
-                  
-                  RewriteCond %{REQUEST_URI} !^/.well-known/acme-challenge
-                  RewriteRule ^(.*)$ ${redirectTarget}%{REQUEST_URI} [R=302,L]
-              `
-                  : ''
-              }
-
-            ErrorDocument 400 ${path === '/' ? '' : path}/400.html
-            ErrorDocument 404 ${path === '/' ? '' : path}/400.html
-            ErrorDocument 500 ${path === '/' ? '' : path}/500.html
-            ErrorDocument 502 ${path === '/' ? '' : path}/500.html
-            ErrorDocument 503 ${path === '/' ? '' : path}/500.html
-            ErrorDocument 504 ${path === '/' ? '' : path}/500.html
-
-          </VirtualHost>
-            
-                          `);
-          // ERR too many redirects:
-          // Check: SELECT * FROM database.wp_options where option_name = 'siteurl' or option_name = 'home';
-          // Check: wp-config.php
-          // if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
-          //   $_SERVER['HTTPS'] = 'on';
-          // }
-          // For plugins:
-          // define( 'FS_METHOD', 'direct' );
-
-          // ErrorDocument 404 /custom_404.html
-          // ErrorDocument 500 /custom_50x.html
-          // ErrorDocument 502 /custom_50x.html
-          // ErrorDocument 503 /custom_50x.html
-          // ErrorDocument 504 /custom_50x.html
-
-          // Respond When Error Pages are Directly Requested
-
-          // <Files "custom_404.html">
-          //     <If "-z %{ENV:REDIRECT_STATUS}">
-          //         RedirectMatch 404 ^/custom_404.html$
-          //     </If>
-          // </Files>
-
-          // <Files "custom_50x.html">
-          //     <If "-z %{ENV:REDIRECT_STATUS}">
-          //         RedirectMatch 404 ^/custom_50x.html$
-          //     </If>
-          // </Files>
-
-          // Add www or https with htaccess rewrite
-
-          // Options +FollowSymLinks
-          // RewriteEngine On
-          // RewriteCond %{HTTP_HOST} ^ejemplo.com [NC]
-          // RewriteRule ^(.*)$ http://ejemplo.com/$1 [R=301,L]
-
-          // Redirect http to https with htaccess rewrite
-
-          // RewriteEngine On
-          // RewriteCond %{SERVER_PORT} 80
-          // RewriteRule ^(.*)$ https://www.ejemplo.com/$1 [R,L]
-
-          // Redirect to HTTPS with www subdomain
-
-          // RewriteEngine On
-          // RewriteCond %{HTTPS} off [OR]
-          // RewriteCond %{HTTP_HOST} ^www\. [NC]
-          // RewriteCond %{HTTP_HOST} ^(?:www\.)?(.+)$ [NC]
-          // RewriteRule ^ https://%1%{REQUEST_URI} [L,NE,R=301]
-
-          await UnderpostStartUp.API.listenPortController(
-            UnderpostStartUp.API.listenServerFactory(),
-            port,
-            runningData,
-          );
-          break;
-        case 'xampp':
-          if (!Xampp.enabled()) continue;
-          if (!Xampp.ports.includes(port)) Xampp.ports.push(port);
-          if (currentPort === initPort) Xampp.removeRouter();
-          Xampp.appendRouter(`
-            
-        Listen ${port}
-
-        <VirtualHost *:${port}>    
-            DocumentRoot "${directory ? directory : `${getRootDirectory()}${rootHostPath}`}"
-            ServerName ${host}:${port}
-
-            <Directory "${directory ? directory : `${getRootDirectory()}${rootHostPath}`}">
-              Options Indexes FollowSymLinks MultiViews
-              AllowOverride All
-              Require all granted
-            </Directory>
-
-            ${
-              redirect
-                ? `
-                RewriteEngine on
-                
-                RewriteCond %{REQUEST_URI} !^/.well-known/acme-challenge
-                RewriteRule ^(.*)$ ${redirectTarget}%{REQUEST_URI} [R=302,L]
-            `
-                : ''
-            }
-
-            ErrorDocument 400 ${path === '/' ? '' : path}/400.html
-            ErrorDocument 404 ${path === '/' ? '' : path}/400.html
-            ErrorDocument 500 ${path === '/' ? '' : path}/500.html
-            ErrorDocument 502 ${path === '/' ? '' : path}/500.html
-            ErrorDocument 503 ${path === '/' ? '' : path}/500.html
-            ErrorDocument 504 ${path === '/' ? '' : path}/500.html
-
-          </VirtualHost>
-            
-                          `);
-          // ERR too many redirects:
-          // Check: SELECT * FROM database.wp_options where option_name = 'siteurl' or option_name = 'home';
-          // Check: wp-config.php
-          // if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https') {
-          //   $_SERVER['HTTPS'] = 'on';
-          // }
-          await UnderpostStartUp.API.listenPortController(
-            UnderpostStartUp.API.listenServerFactory(),
-            port,
-            runningData,
-          );
-          break;
         case 'nodejs':
           const app = express();
 
@@ -373,73 +220,22 @@ const buildRuntime = async () => {
             });
           }
           if (apis) {
+            const authMiddleware = authMiddlewareFactory({ host, path });
+
             const apiPath = `${path === '/' ? '' : path}/${process.env.BASE_API}`;
             for (const api of apis)
               await (async () => {
                 const { ApiRouter } = await import(`../api/${api}/${api}.router.js`);
-                const router = ApiRouter({ host, path, apiPath, mailer, db });
+                const router = ApiRouter({ host, path, apiPath, mailer, db, authMiddleware });
                 // router.use(cors({ origin: origins }));
                 // logger.info('Load api router', { host, path: apiPath, api });
                 app.use(`${apiPath}/${api}`, router);
               })();
           }
 
-          const Render = await ssrFactory();
-          const ssrPath = path === '/' ? path : `${path}/`;
-
-          const defaultHtmlSrc404 = Render({
-            title: '404 Not Found',
-            ssrPath,
-            ssrHeadComponents: '',
-            ssrBodyComponents: (await ssrFactory(`./src/client/ssr/body/404.js`))(),
-            renderPayload: {
-              apiBasePath: process.env.BASE_API,
-              version: Underpost.version,
-            },
-            renderApi: {
-              JSONweb,
-            },
-          });
-          const path404 = `${directory ? directory : `${getRootDirectory()}${rootHostPath}`}/404/index.html`;
-          const page404 = fs.existsSync(path404) ? `${path === '/' ? '' : path}/404` : undefined;
-          app.use(function (req, res, next) {
-            // if /<path>/home redirect to /<path>
-            const homeRedirectPath = `${path === '/' ? '' : path}/home`;
-            if (req.url.startsWith(homeRedirectPath)) {
-              const redirectUrl = req.url.replace('/home', '');
-              return res.redirect(redirectUrl.startsWith('/') ? redirectUrl : `/${redirectUrl}`);
-            }
-
-            if (page404) return res.status(404).redirect(page404);
-            else {
-              res.set('Content-Type', 'text/html');
-              return res.status(404).send(defaultHtmlSrc404);
-            }
-          });
-
-          const defaultHtmlSrc500 = Render({
-            title: '500 Server Error',
-            ssrPath,
-            ssrHeadComponents: '',
-            ssrBodyComponents: (await ssrFactory(`./src/client/ssr/body/500.js`))(),
-            renderPayload: {
-              apiBasePath: process.env.BASE_API,
-              version: Underpost.version,
-            },
-            renderApi: {
-              JSONweb,
-            },
-          });
-          const path500 = `${directory ? directory : `${getRootDirectory()}${rootHostPath}`}/500/index.html`;
-          const page500 = fs.existsSync(path500) ? `${path === '/' ? '' : path}/500` : undefined;
-          app.use(function (err, req, res, next) {
-            logger.error(err, err.stack);
-            if (page500) return res.status(500).redirect(page500);
-            else {
-              res.set('Content-Type', 'text/html');
-              return res.status(500).send(defaultHtmlSrc500);
-            }
-          });
+          // load ssr
+          const ssr = await ssrMiddlewareFactory({ app, directory, rootHostPath, path });
+          for (const [_, ssrMiddleware] of Object.entries(ssr)) app.use(ssrMiddleware);
 
           // instance server
           const server = createServer({}, app);
@@ -487,6 +283,45 @@ const buildRuntime = async () => {
 
           await UnderpostStartUp.API.listenPortController(server, port, runningData);
 
+          break;
+
+        case 'lampp':
+          {
+            const { disabled } = await Lampp.createApp({
+              port,
+              host,
+              path,
+              directory,
+              rootHostPath,
+              redirect,
+              redirectTarget,
+            });
+            if (disabled) continue;
+            await UnderpostStartUp.API.listenPortController(
+              UnderpostStartUp.API.listenServerFactory(),
+              port,
+              runningData,
+            );
+          }
+          break;
+        case 'xampp':
+          {
+            const { disabled } = await Xampp.createApp({
+              port,
+              host,
+              path,
+              directory,
+              rootHostPath,
+              redirect,
+              redirectTarget,
+            });
+            if (disabled) continue;
+            await UnderpostStartUp.API.listenPortController(
+              UnderpostStartUp.API.listenServerFactory(),
+              port,
+              runningData,
+            );
+          }
           break;
         default:
           break;

@@ -16,6 +16,7 @@ import rateLimit from 'express-rate-limit';
 import slowDown from 'express-slow-down';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
+import { DataBaseProvider } from '../db/DataBaseProvider.js';
 
 dotenv.config();
 const logger = loggerFactory(import.meta);
@@ -32,9 +33,6 @@ const config = {
   refreshTokenBytes: Number(process.env.REFRESH_TOKEN_BYTES) || 48,
   jwtAlgorithm: process.env.JWT_ALGORITHM || 'HS512', // consider RS256 with keys
 };
-
-const REFRESH_EXPIRE_HOURS = process.env.REFRESH_EXPIRE;
-const ACCESS_EXPIRE_HOURS = process.env.EXPIRE;
 
 // ---------- Password hashing (async) ----------
 /**
@@ -91,47 +89,69 @@ function generateRandomHex(bytes = config.refreshTokenBytes) {
   return crypto.randomBytes(bytes).toString('hex');
 }
 
+/**
+ * Generates a JWT issuer and audience based on the host and path.
+ * @param {object} options The options object.
+ * @param {string} options.host The host name.
+ * @param {string} options.path The path name.
+ * @returns {object} The issuer and audience.
+ * @memberof Auth
+ */
+function jwtIssuerAudienceFactory(options = { host: '', path: '' }) {
+  const audience = `${options.host}${options.path === '/' ? '' : options.path}`;
+  const issuer = `${audience}/api`;
+  return { issuer, audience };
+}
+
 // ---------- JWT helpers ----------
 /**
  * Signs a JWT payload.
  * @param {object} payload The payload to sign.
- * @param {number} [expireHours=ACCESS_EXPIRE_HOURS] The token expiration in hours.
  * @param {object} [options={}] Additional JWT sign options.
+ * @param {string} options.host The host name.
+ * @param {string} options.path The path name.
+ * @param {number} expireMinutes The token expiration in minutes.
  * @returns {string} The signed JWT.
  * @throws {Error} If JWT key is not configured.
  * @memberof Auth
  */
-function jwtSign(payload, expireHours = ACCESS_EXPIRE_HOURS, options = {}) {
+function jwtSign(payload, options = { host: '', path: '' }, expireMinutes = process.env.ACCESS_EXPIRE_MINUTES) {
+  const { issuer, audience } = jwtIssuerAudienceFactory(options);
   const signOptions = {
     algorithm: config.jwtAlgorithm,
-    expiresIn: `${expireHours}h`,
-    issuer: process.env.JWT_ISSUER || 'myapp',
-    audience: process.env.JWT_AUDIENCE || 'myapp-users',
-    ...options,
+    expiresIn: `${expireMinutes}m`,
+    issuer,
+    audience,
   };
 
-  if (!payload.jti) signOptions.jwtid = crypto.randomBytes(8).toString('hex');
+  if (!payload.jwtid) signOptions.jwtid = generateRandomHex();
 
-  const key = config.jwtAlgorithm.startsWith('RS') ? process.env.JWT_PRIVATE_KEY : process.env.JWT_SECRET;
-  if (!key) throw new Error('JWT key not configured');
-  return jwt.sign(payload, key, signOptions);
+  if (!process.env.JWT_SECRET) throw new Error('JWT key not configured');
+
+  logger.info('JWT signed', { payload, signOptions, expireMinutes });
+
+  return jwt.sign(payload, process.env.JWT_SECRET, signOptions);
 }
 
 /**
  * Verifies a JWT.
  * @param {string} token The JWT to verify.
+ * @param {object} [options={}] Additional JWT verify options.
+ * @param {string} options.host The host name.
+ * @param {string} options.path The path name.
  * @returns {object} The decoded payload.
  * @throws {jwt.JsonWebTokenError} If the token is invalid or expired.
  * @memberof Auth
  */
-function jwtVerify(token) {
+function jwtVerify(token, options = { host: '', path: '' }) {
   try {
-    const key = config.jwtAlgorithm.startsWith('RS') ? process.env.JWT_PUBLIC_KEY : process.env.JWT_SECRET;
-    return jwt.verify(token, key, {
+    const { issuer, audience } = jwtIssuerAudienceFactory(options);
+    const verifyOptions = {
       algorithms: [config.jwtAlgorithm],
-      issuer: process.env.JWT_ISSUER || 'myapp',
-      audience: process.env.JWT_AUDIENCE || 'myapp-users',
-    });
+      issuer,
+      audience,
+    };
+    return jwt.verify(token, process.env.JWT_SECRET, verifyOptions);
   } catch (err) {
     throw err;
   }
@@ -150,56 +170,89 @@ const getBearerToken = (req) => {
   return '';
 };
 
-/**
- * Verifies and returns the JWT payload from the request.
- * @param {import('express').Request} req The Express request object.
- * @returns {object|null} The decoded JWT payload, or null if no token is present.
- * @memberof Auth
- */
-const getPayloadJWT = (req) => {
-  const token = getBearerToken(req);
-  return token ? jwtVerify(token) : null;
-};
-
 // ---------- Middleware ----------
 /**
- * Express middleware to authenticate requests using a JWT Bearer token.
- * @param {import('express').Request} req The Express request object.
- * @param {import('express').Response} res The Express response object.
- * @param {import('express').NextFunction} next The next middleware function.
+ * Creates a middleware to authenticate requests using a JWT Bearer token.
+ * @param {object} options The options object.
+ * @param {string} options.host The host name.
+ * @param {string} options.path The path name.
+ * @returns {function} The middleware function.
  * @memberof Auth
  */
-const authMiddleware = async (req, res, next) => {
-  try {
-    const token = getBearerToken(req);
-    if (!token) return res.status(401).json({ status: 'error', message: 'unauthorized: token missing' });
+const authMiddlewareFactory = (options = { host: '', path: '' }) => {
+  /**
+   * Express middleware to authenticate requests using a JWT Bearer token.
+   * @param {import('express').Request} req The Express request object.
+   * @param {import('express').Response} res The Express response object.
+   * @param {import('express').NextFunction} next The next middleware function.
+   * @memberof Auth
+   */
+  const authMiddleware = async (req, res, next) => {
+    try {
+      const token = getBearerToken(req);
+      if (!token) return res.status(401).json({ status: 'error', message: 'unauthorized: token missing' });
 
-    const payload = jwtVerify(token);
+      const payload = jwtVerify(token, options);
 
-    // Validate IP and User-Agent to mitigate token theft
-    if (payload.ip && payload.ip !== req.ip) {
-      logger.warn(`IP mismatch for ${payload._id}: jwt(${payload.ip}) !== req(${req.ip})`);
-      return res.status(401).json({ status: 'error', message: 'unauthorized: ip mismatch' });
+      // Validate IP and User-Agent to mitigate token theft
+      if (payload.ip && payload.ip !== req.ip) {
+        logger.warn(`IP mismatch for ${payload._id}: jwt(${payload.ip}) !== req(${req.ip})`);
+        return res.status(401).json({ status: 'error', message: 'unauthorized: ip mismatch' });
+      }
+
+      if (payload.userAgent && payload.userAgent !== req.headers['user-agent']) {
+        logger.warn(`UA mismatch for ${payload._id}`);
+        return res.status(401).json({ status: 'error', message: 'unauthorized: user-agent mismatch' });
+      }
+
+      // Non-guest verify session exists
+      if (payload.jwtid && payload.role !== 'guest') {
+        const User = DataBaseProvider.instance[`${payload.host}${payload.path}`].mongoose.models.User;
+        const user = await User.findOne({ _id: payload._id, 'activeSessions._id': payload.jwtid }).lean();
+
+        if (!user) {
+          return res.status(401).json({ status: 'error', message: 'unauthorized: invalid session' });
+        }
+        const session = user.activeSessions.find((s) => s._id.toString() === payload.jwtid);
+
+        if (!session) {
+          return res.status(401).json({ status: 'error', message: 'unauthorized: invalid session' });
+        }
+
+        // check session ip
+        if (session.ip !== req.ip) {
+          logger.warn(`IP mismatch for ${payload._id}: jwt(${session.ip}) !== req(${req.ip})`);
+          return res.status(401).json({ status: 'error', message: 'unauthorized: ip mismatch' });
+        }
+
+        // check session userAgent
+        if (session.userAgent !== req.headers['user-agent']) {
+          logger.warn(`UA mismatch for ${payload._id}`);
+          return res.status(401).json({ status: 'error', message: 'unauthorized: user-agent mismatch' });
+        }
+
+        // compare payload host and path with session host and path
+        if (payload.host !== session.host || payload.path !== session.path) {
+          logger.warn(`Host or path mismatch for ${payload._id}`);
+          return res.status(401).json({ status: 'error', message: 'unauthorized: host or path mismatch' });
+        }
+
+        // check session expiresAt
+        const isRefreshTokenReq = req.method === 'GET' && req.params.id === 'auth';
+
+        if (!isRefreshTokenReq && session.expiresAt < new Date()) {
+          return res.status(401).json({ status: 'error', message: 'unauthorized: session expired' });
+        }
+      }
+
+      req.auth = { user: payload };
+      return next();
+    } catch (err) {
+      logger.warn('authMiddleware error', err && err.message);
+      return res.status(401).json({ status: 'error', message: 'unauthorized' });
     }
-
-    if (payload.userAgent && payload.userAgent !== req.headers['user-agent']) {
-      logger.warn(`UA mismatch for ${payload._id}`);
-      return res.status(401).json({ status: 'error', message: 'unauthorized: user-agent mismatch' });
-    }
-
-    // Optional: verify session exists for non-guest
-    if (payload.sessionId && payload.role !== 'guest') {
-      const User = DataBaseProvider.instance[`${payload.host}${payload.path}`].mongoose.models.User;
-      const user = await User.findOne({ _id: payload._id, 'activeSessions._id': payload.sessionId }).lean();
-      if (!user) return res.status(401).json({ status: 'error', message: 'unauthorized: invalid session' });
-    }
-
-    req.auth = { user: payload };
-    return next();
-  } catch (err) {
-    logger.warn('authMiddleware error', err && err.message);
-    return res.status(401).json({ status: 'error', message: 'unauthorized' });
-  }
+  };
+  return authMiddleware;
 };
 
 /**
@@ -259,19 +312,23 @@ const validatePasswordMiddleware = (req) => {
  * @param {import('mongoose').Model} User The Mongoose User model.
  * @param {import('express').Request} req The Express request object.
  * @param {import('express').Response} res The Express response object.
- * @returns {Promise<{sessionId: string}>} The session ID.
+ * @param {object} options Additional options.
+ * @param {string} options.host The host name.
+ * @param {string} options.path The path name.
+ * @returns {Promise<{jwtid: string}>} The session ID.
  * @memberof Auth
  */
-async function createSessionAndUserToken(user, User, req, res) {
-  const refreshToken = generateRandomHex();
-  const tokenHash = hashToken(refreshToken);
+async function createSessionAndUserToken(user, User, req, res, options = { host: '', path: '' }) {
+  const refreshToken = hashToken(generateRandomHex());
   const now = Date.now();
-  const expiresAt = new Date(now + REFRESH_EXPIRE_HOURS * 60 * 60 * 1000);
+  const expiresAt = new Date(now + parseInt(process.env.REFRESH_EXPIRE_MINUTES) * 60 * 1000);
 
   const newSession = {
-    tokenHash,
+    tokenHash: refreshToken,
     ip: req.ip,
     userAgent: req.headers['user-agent'],
+    host: options.host,
+    path: options.path,
     createdAt: new Date(now),
     expiresAt,
   };
@@ -279,18 +336,18 @@ async function createSessionAndUserToken(user, User, req, res) {
   // push session
   const updatedUser = await User.findByIdAndUpdate(user._id, { $push: { activeSessions: newSession } }, { new: true });
   const session = updatedUser.activeSessions[updatedUser.activeSessions.length - 1];
-  const sessionId = session._id.toString();
+  const jwtid = session._id.toString();
 
   // Secure cookie settings
   res.cookie('refreshToken', refreshToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'Lax',
-    maxAge: REFRESH_EXPIRE_HOURS * 60 * 60 * 1000,
+    maxAge: parseInt(process.env.REFRESH_EXPIRE_MINUTES) * 60 * 1000,
     path: '/',
   });
 
-  return { sessionId };
+  return { jwtid };
 }
 
 /**
@@ -301,11 +358,13 @@ async function createSessionAndUserToken(user, User, req, res) {
  * @param {import('mongoose').Model} File The Mongoose File model.
  * @param {object} [options={}] Additional options.
  * @param {Function} options.getDefaultProfileImageId Function to get the default profile image ID.
+ * @param {string} options.host The host name.
+ * @param {string} options.path The path name.
  * @returns {Promise<{token: string, user: object}>} The access token and user object.
  * @throws {Error} If password validation fails.
  * @memberof Auth
  */
-async function createUserAndSession(req, res, User, File, options = {}) {
+async function createUserAndSession(req, res, User, File, options = { host: '', path: '' }) {
   const pwdCheck = validatePasswordMiddleware(req);
   if (pwdCheck.status === 'error') throw new Error(pwdCheck.message);
 
@@ -316,9 +375,10 @@ async function createUserAndSession(req, res, User, File, options = {}) {
   const saved = await new User(req.body).save();
   const user = await User.findOne({ _id: saved._id }).select(UserDto.select.get());
 
-  const { sessionId } = await createSessionAndUserToken(user, User, req, res);
+  const { jwtid } = await createSessionAndUserToken(user, User, req, res, options);
   const token = jwtSign(
-    UserDto.auth.payload(user, sessionId, req.ip, req.headers['user-agent'], options.host, options.path),
+    UserDto.auth.payload(user, jwtid, req.ip, req.headers['user-agent'], options.host, options.path),
+    options,
   );
   return { token, user };
 }
@@ -330,18 +390,19 @@ async function createUserAndSession(req, res, User, File, options = {}) {
  * @param {import('express').Request} req The Express request object.
  * @param {import('express').Response} res The Express response object.
  * @param {import('mongoose').Model} User The Mongoose User model.
+ * @param {object} options Additional options.
+ * @param {string} options.host The host name.
+ * @param {string} options.path The path name.
  * @returns {Promise<{token: string}>} The new access token.
  * @throws {Error} If the refresh token is missing, invalid, or expired.
  * @memberof Auth
  */
-async function refreshSessionAndToken(req, res, User) {
-  const raw = req.cookies && req.cookies.refreshToken;
-  if (!raw) throw new Error('Refresh token missing');
-
-  const hashed = hashToken(raw);
+async function refreshSessionAndToken(req, res, User, options = { host: '', path: '' }) {
+  const currentRefreshToken = req.cookies.refreshToken;
+  if (!currentRefreshToken) throw new Error('Refresh token missing');
 
   // Find user owning that token
-  const user = await User.findOne({ 'activeSessions.tokenHash': hashed });
+  const user = await User.findOne({ 'activeSessions.tokenHash': currentRefreshToken });
 
   if (!user) {
     // Possible token reuse: look up user by some other signals? If not possible, log and throw.
@@ -352,7 +413,7 @@ async function refreshSessionAndToken(req, res, User) {
   }
 
   // Locate session
-  const session = user.activeSessions.find((s) => s.tokenHash === hashed);
+  const session = user.activeSessions.find((s) => s.tokenHash === currentRefreshToken);
   if (!session) {
     // Shouldn't happen, but safe-guard
     res.clearCookie('refreshToken', { path: '/' });
@@ -369,26 +430,27 @@ async function refreshSessionAndToken(req, res, User) {
   }
 
   // Rotate: generate new token, update stored hash and metadata
-  const newRaw = generateRandomHex();
-  const newHash = hashToken(newRaw);
-  session.tokenHash = newHash;
-  session.expiresAt = new Date(Date.now() + REFRESH_EXPIRE_HOURS * 60 * 60 * 1000);
+  const refreshToken = hashToken(generateRandomHex());
+  session.tokenHash = refreshToken;
+  session.expiresAt = new Date(Date.now() + parseInt(process.env.REFRESH_EXPIRE_MINUTES) * 60 * 1000);
   session.ip = req.ip;
   session.userAgent = req.headers['user-agent'];
   await user.save({ validateBeforeSave: false });
 
-  res.cookie('refreshToken', newRaw, {
+  logger.warn('Refreshed session for user ' + user.email);
+
+  res.cookie('refreshToken', refreshToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'Lax',
-    maxAge: REFRESH_EXPIRE_HOURS * 60 * 60 * 1000,
+    maxAge: parseInt(process.env.REFRESH_EXPIRE_MINUTES) * 60 * 1000,
     path: '/',
   });
 
-  const accessToken = jwtSign(
+  return jwtSign(
     UserDto.auth.payload(user, session._id.toString(), req.ip, req.headers['user-agent'], options.host, options.path),
+    options,
   );
-  return { token: accessToken };
 }
 
 // ---------- Security middleware composition ----------
@@ -406,13 +468,19 @@ async function refreshSessionAndToken(req, res, User) {
 function applySecurity(app, opts = {}) {
   const {
     origin,
-    rate = { windowMs: 15 * 60 * 1000, max: 100 },
+    rate = { windowMs: 15 * 60 * 1000, max: 500 },
     slowdown = { windowMs: 15 * 60 * 1000, delayAfter: 50, delayMs: () => 500 },
     cookie = { secure: process.env.NODE_ENV === 'production', sameSite: 'Strict' },
     frameAncestors = ["'self'"],
   } = opts;
 
   app.disable('x-powered-by');
+
+  // Generate nonce per request and attach to res.locals for templates
+  app.use((req, res, next) => {
+    res.locals.nonce = crypto.randomBytes(16).toString('base64');
+    next();
+  });
 
   // Basic header hardening with Helmet
   app.use(
@@ -453,8 +521,11 @@ function applySecurity(app, opts = {}) {
   app.use(helmet.frameguard({ action: 'deny' })); // X-Frame-Options: DENY
   app.use(helmet.referrerPolicy({ policy: 'no-referrer-when-downgrade' }));
 
+  // Content-Security-Policy: include nonce from res.locals
+  // Note: We avoid 'unsafe-inline' on script/style. Use nonces or hashes.
   app.use(
     helmet.contentSecurityPolicy({
+      useDefaults: true,
       directives: {
         defaultSrc: ["'self'"],
         baseUri: ["'self'"],
@@ -463,17 +534,22 @@ function applySecurity(app, opts = {}) {
         frameAncestors: frameAncestors,
         imgSrc: ["'self'", 'data:', 'https:'],
         objectSrc: ["'none'"],
-        scriptSrc: ["'self'"],
-        scriptSrcElem: ["'self'"],
-        styleSrc: ["'self'", 'https:', "'unsafe-inline'"], // try to remove 'unsafe-inline' by using hashes/nonces
+        // script-src and script-src-elem include dynamic nonce
+        scriptSrc: ["'self'", (req, res) => `'nonce-${res.locals.nonce}'`],
+        scriptSrcElem: ["'self'", (req, res) => `'nonce-${res.locals.nonce}'`],
+        // style-src: avoid 'unsafe-inline' when possible; if you must inline styles,
+        // use a nonce for them too (or hash).
+        styleSrc: ["'self'", 'https:', (req, res) => `'nonce-${res.locals.nonce}'`],
+        // deny plugins
+        objectSrc: ["'none'"],
       },
     }),
   );
 
-  // CORS - be explicit. Avoid open wildcard in production for credentials.
+  // CORS - be explicit. In production, pass allowed origin(s) as opts.origin
   app.use(
     cors({
-      origin,
+      origin: origin || false,
       methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       credentials: true,
       allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
@@ -481,7 +557,7 @@ function applySecurity(app, opts = {}) {
     }),
   );
 
-  // Rate limiting + slow down to mitigate brute force and DoS
+  // Rate limiting + slow down
   const limiter = rateLimit({
     windowMs: rate.windowMs,
     max: rate.max,
@@ -498,12 +574,12 @@ function applySecurity(app, opts = {}) {
   });
   app.use(speedLimiter);
 
-  // Cookie parsing and CSRF protection
+  // Cookie parsing
   app.use(cookieParser(process.env.JWT_SECRET));
 }
 
 export {
-  authMiddleware,
+  authMiddlewareFactory,
   hashPassword,
   verifyPassword,
   hashToken,
@@ -515,7 +591,6 @@ export {
   moderatorGuard,
   validatePasswordMiddleware,
   getBearerToken,
-  getPayloadJWT,
   createSessionAndUserToken,
   createUserAndSession,
   refreshSessionAndToken,

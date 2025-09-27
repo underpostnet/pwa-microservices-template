@@ -1,4 +1,4 @@
-import { authMiddleware, hashPassword } from '../../server/auth.js';
+import { hashPassword } from '../../server/auth.js';
 import fs from 'fs-extra';
 import { loggerFactory } from '../../server/logger.js';
 import { UserController } from './user.controller.js';
@@ -11,6 +11,7 @@ const logger = loggerFactory(import.meta);
 
 const UserRouter = (options) => {
   const router = express.Router();
+  const authMiddleware = options.authMiddleware;
 
   (async () => {
     // admin user seed
@@ -21,7 +22,7 @@ const UserRouter = (options) => {
         adminUser = await models.User.findOne({ role: 'admin' });
         if (!adminUser) {
           const defaultPassword = process.env.DEFAULT_ADMIN_PASSWORD || 'changethis';
-          const hashedPassword = hashPassword(defaultPassword);
+          const hashedPassword = await hashPassword(defaultPassword);
 
           const result = await models.User.create({
             username: 'admin',
@@ -29,7 +30,6 @@ const UserRouter = (options) => {
             password: hashedPassword,
             role: 'admin',
             emailConfirmed: true,
-            secret: s4() + s4() + s4() + s4(),
             publicKey: [],
           });
           logger.warn('Default admin user created. Please change the default password immediately!', result._doc);
@@ -93,13 +93,6 @@ const UserRouter = (options) => {
       #swagger.ignore = true
     */
     return await UserController.get(req, res, options);
-  });
-
-  router.post('/refresh-token', async (req, res) => {
-    /*  
-      #swagger.ignore = true
-    */
-    return await UserController.refreshToken(req, res, options);
   });
 
   router.post(`/:id`, async (req, res) => {

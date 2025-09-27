@@ -8,6 +8,7 @@ import {
   refreshSessionAndToken,
   hashToken,
   jwtSign,
+  getBearerToken,
 } from '../../server/auth.js';
 import { MailerProvider } from '../../mailer/MailerProvider.js';
 import { CoreWsMailerManagement } from '../../ws/core/management/core.ws.mailer.js';
@@ -36,8 +37,8 @@ const UserService = {
 
       if (!user) throw new Error('Email address does not exist');
 
-      const token = jwtSign({ email: req.body.email });
-      const payloadToken = jwtSign({ email: req.body.email });
+      const token = jwtSign({ email: req.body.email }, options, 15);
+      const payloadToken = jwtSign({ email: req.body.email }, options, 15);
       const id = `${options.host}${options.path}`;
       const translate = MailerProvider.instance[id].translateTemplates.recoverEmail;
       const recoverUrl = `${process.env.NODE_ENV === 'development' ? 'http://' : 'https://'}${req.body.hostname}${
@@ -74,7 +75,7 @@ const UserService = {
     if (req.path.startsWith('/mailer') && req.params.id === 'verify-email') {
       if (!validator.isEmail(req.body.email)) throw { message: 'invalid email' };
 
-      const token = jwtSign({ email: req.body.email });
+      const token = jwtSign({ email: req.body.email }, options, 15);
       const id = `${options.host}${options.path}`;
       const user = await User.findById(req.auth.user._id);
 
@@ -155,17 +156,11 @@ const UserService = {
                   },
                 );
 
-                const { sessionId } = await createSessionAndUserToken(user, User, req, res);
+                const { jwtid } = await createSessionAndUserToken(user, User, req, res, options);
                 return {
                   token: jwtSign(
-                    UserDto.auth.payload(
-                      user,
-                      sessionId,
-                      req.ip,
-                      req.headers['user-agent'],
-                      options.host,
-                      options.path,
-                    ),
+                    UserDto.auth.payload(user, jwtid, req.ip, req.headers['user-agent'], options.host, options.path),
+                    options,
                   ),
                   user,
                 };
@@ -223,6 +218,7 @@ const UserService = {
         return {
           token: jwtSign(
             UserDto.auth.payload(user, null, req.ip, req.headers['user-agent'], options.host, options.path),
+            options,
           ),
           user: selectDtoFactory(user, UserDto.select.get()),
         };
@@ -249,7 +245,7 @@ const UserService = {
     if (req.path.startsWith('/recover')) {
       let payload;
       try {
-        payload = verifyJWT(req.params.id);
+        payload = verifyJWT(req.params.id, options);
       } catch (error) {
         logger.error(error, { 'req.params.id': req.params.id });
         options.png.header(res);
@@ -276,7 +272,7 @@ const UserService = {
     if (req.path.startsWith('/mailer')) {
       let payload;
       try {
-        payload = verifyJWT(req.params.id);
+        payload = verifyJWT(req.params.id, options);
       } catch (error) {
         logger.error(error, { 'req.params.id': req.params.id });
         options.png.header(res);
@@ -333,6 +329,8 @@ const UserService = {
             _id: req.auth.user._id,
           });
 
+        if (!user) throw new Error('user not found');
+
         const file = await File.findOne({ _id: user.profileImageId });
 
         if (!file && !(await ValkeyAPI.getValkeyObject(options, req.auth.user.email))) {
@@ -344,11 +342,20 @@ const UserService = {
             },
           );
         }
-        return (await ValkeyAPI.getValkeyObject(options, req.auth.user.email))
-          ? selectDtoFactory(await ValkeyAPI.getValkeyObject(options, req.auth.user.email), UserDto.select.get())
-          : await User.findOne({
-              _id: req.auth.user._id,
-            }).select(UserDto.select.get());
+
+        const guestUser = await ValkeyAPI.getValkeyObject(options, req.auth.user.email);
+        if (guestUser)
+          return {
+            user: selectDtoFactory(guestUser, UserDto.select.get()),
+            token: getBearerToken(req),
+          };
+
+        return {
+          token: await refreshSessionAndToken(req, res, User, options),
+          user: await User.findOne({
+            _id: req.auth.user._id,
+          }).select(UserDto.select.get()),
+        };
       }
 
       default: {
@@ -441,7 +448,7 @@ const UserService = {
     }
 
     if (req.path.startsWith('/recover')) {
-      const payload = verifyJWT(req.params.id);
+      const payload = verifyJWT(req.params.id, options);
       const user = await User.findOne({
         email: payload.email,
       });
@@ -489,11 +496,6 @@ const UserService = {
         }
       }
     }
-  },
-  refreshToken: async (req, res, options) => {
-    /** @type {import('./user.model.js').UserModel} */
-    const User = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.models.User;
-    return await refreshSessionAndToken(req, res, User, options);
   },
 };
 

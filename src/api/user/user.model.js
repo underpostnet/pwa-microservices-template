@@ -1,7 +1,7 @@
 import { Schema, model } from 'mongoose';
 import validator from 'validator';
-import { s4, userRoleEnum } from '../../client/components/core/CommonJs.js';
-
+import { userRoleEnum } from '../../client/components/core/CommonJs.js';
+import crypto from 'crypto';
 // https://mongoosejs.com/docs/2.7.x/docs/schematypes.html
 
 const UserSchema = new Schema(
@@ -21,7 +21,6 @@ const UserSchema = new Schema(
     failedLoginAttempts: { type: Number, default: 0 },
     password: { type: String, trim: true, required: 'Password is required' },
     username: { type: String, trim: true, unique: true, required: 'Username is required' },
-    secret: { type: String, default: () => s4() + s4() + s4() + s4() },
     role: { type: String, enum: userRoleEnum, default: 'guest' },
     activeSessions: {
       type: [
@@ -30,6 +29,8 @@ const UserSchema = new Schema(
           ip: { type: String },
           userAgent: { type: String },
           expiresAt: { type: Date, required: true },
+          host: { type: String },
+          path: { type: String },
         },
       ],
       default: [],
@@ -79,7 +80,7 @@ const UserDto = {
     },
   },
   auth: {
-    payload: (user, sessionId, ip, userAgent, host, path) => {
+    payload: (user, jwtid, ip, userAgent, host, path) => {
       const tokenPayload = {
         _id: user._id.toString(),
         role: user.role,
@@ -88,8 +89,9 @@ const UserDto = {
         userAgent,
         host,
         path,
+        jwtid: jwtid ?? crypto.randomBytes(8).toString('hex'),
+        refreshExpiresAt: Date.now() + parseInt(process.env.REFRESH_EXPIRE_MINUTES) * 60 * 1000,
       };
-      if (sessionId) tokenPayload.jti = sessionId; // JWT ID
       return tokenPayload;
     },
   },

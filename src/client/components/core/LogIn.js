@@ -24,8 +24,9 @@ const LogIn = {
   Event: {},
   Trigger: async function (options) {
     const { user } = options;
-    await Webhook.register({ user });
     for (const eventKey of Object.keys(this.Event)) await this.Event[eventKey](options);
+    if (!user || user.role === 'guest') return;
+    await Webhook.register({ user });
     if (s(`.session`))
       htmls(
         `.session`,
@@ -72,19 +73,18 @@ const LogIn = {
           imageSrc,
         };
       }
+      htmls(
+        `.action-btn-profile-log-in-render`,
+        html`<div class="abs center top-box-profile-img-container">
+          <img
+            class="abs center top-box-profile-img"
+            ${this.Scope.user.main.model.user.profileImage
+              ? `src="${this.Scope.user.main.model.user.profileImage.imageSrc}"`
+              : ``}
+          />
+        </div>`,
+      );
     }
-
-    htmls(
-      `.action-btn-profile-log-in-render`,
-      html`<div class="abs center top-box-profile-img-container">
-        <img
-          class="abs center top-box-profile-img"
-          ${this.Scope.user.main.model.user.profileImage
-            ? `src="${this.Scope.user.main.model.user.profileImage.imageSrc}"`
-            : ``}
-        />
-      </div>`,
-    );
   },
   Render: async function () {
     setTimeout(async () => {
@@ -103,13 +103,7 @@ const LogIn = {
           if ('model' in inputData) body[inputData.model] = s(`.${inputData.id}`).value;
         }
         const result = await UserService.post({ id: 'auth', body });
-        if (result.status === 'success') {
-          await Auth.sessionIn(result);
-          setTimeout(() => {
-            if (s(`.modal-log-in`)) s(`.btn-close-modal-log-in`).click();
-            if (s(`.modal-sign-up`)) s(`.btn-close-modal-sign-up`).click();
-          });
-        }
+
         if (result.status === 'error' && result.message.match('attempts')) {
           htmls(`.login-attempt-warn-value`, result.message.split(':')[1]);
           s(`.login-attempt-warn-container`).classList.remove('hide');
@@ -119,10 +113,8 @@ const LogIn = {
           htmls(`.login-attempt-warn-value0`, result.message.split(':')[1]);
           s(`.login-attempt-warn-container0`).classList.remove('hide');
         } else s(`.login-attempt-warn-container0`).classList.add('hide');
-        NotificationManager.Push({
-          html: result.status === 'success' ? Translate.Render(`${result.status}-user-log-in`) : result.message,
-          status: result.status,
-        });
+
+        if (result.status === 'success') await Auth.sessionIn(result);
       });
       s(`.btn-log-in-forgot-password`).onclick = () => {
         s(`.main-btn-recover`).click();
@@ -188,9 +180,6 @@ const LogIn = {
         </div>
       </form>
     `;
-  },
-  cleanMainUser: () => {
-    LogIn.Scope.user.main.model.user = {};
   },
 };
 
