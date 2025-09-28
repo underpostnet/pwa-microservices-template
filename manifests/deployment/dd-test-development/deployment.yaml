@@ -1,0 +1,138 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dd-test-development-blue
+  labels:
+    app: dd-test-development-blue
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dd-test-development-blue
+  template:
+    metadata:
+      labels:
+        app: dd-test-development-blue
+    spec:
+      containers:
+        - name: dd-test-development-blue
+          image: localhost/rockylinux9-underpost:v2.8.872
+#          resources:
+#            requests:
+#              memory: "94Ki"
+#              cpu: "75m"
+#            limits:
+#              memory: "1504Ki"
+#              cpu: "1200m"
+          command:
+            - /bin/sh
+            - -c
+            - >
+              npm install -g npm@11.2.0 &&
+              npm install -g underpost &&
+              underpost secret underpost --create-from-file /etc/config/.env.development &&
+              underpost start --build --run dd-test development
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/config
+      volumes:
+        - name: config-volume
+          configMap:
+            name: underpost-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dd-test-development-blue-service
+spec:
+  selector:
+    app: dd-test-development-blue
+  ports:
+    - name: 'tcp-4021'
+      protocol: TCP
+      port: 4021
+      targetPort: 4021
+    - name: 'udp-4021'
+      protocol: UDP
+      port: 4021
+      targetPort: 4021
+
+    - name: 'tcp-4022'
+      protocol: TCP
+      port: 4022
+      targetPort: 4022
+    - name: 'udp-4022'
+      protocol: UDP
+      port: 4022
+      targetPort: 4022
+  type: LoadBalancer
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dd-test-development-green
+  labels:
+    app: dd-test-development-green
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dd-test-development-green
+  template:
+    metadata:
+      labels:
+        app: dd-test-development-green
+    spec:
+      containers:
+        - name: dd-test-development-green
+          image: localhost/rockylinux9-underpost:v2.8.872
+#          resources:
+#            requests:
+#              memory: "94Ki"
+#              cpu: "75m"
+#            limits:
+#              memory: "1504Ki"
+#              cpu: "1200m"
+          command:
+            - /bin/sh
+            - -c
+            - >
+              npm install -g npm@11.2.0 &&
+              npm install -g underpost &&
+              underpost secret underpost --create-from-file /etc/config/.env.development &&
+              underpost start --build --run dd-test development
+          volumeMounts:
+            - name: config-volume
+              mountPath: /etc/config
+      volumes:
+        - name: config-volume
+          configMap:
+            name: underpost-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dd-test-development-green-service
+spec:
+  selector:
+    app: dd-test-development-green
+  ports:
+    - name: 'tcp-4021'
+      protocol: TCP
+      port: 4021
+      targetPort: 4021
+    - name: 'udp-4021'
+      protocol: UDP
+      port: 4021
+      targetPort: 4021
+
+    - name: 'tcp-4022'
+      protocol: TCP
+      port: 4022
+      targetPort: 4022
+    - name: 'udp-4022'
+      protocol: UDP
+      port: 4022
+      targetPort: 4022
+  type: LoadBalancer

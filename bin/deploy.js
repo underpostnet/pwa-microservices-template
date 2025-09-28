@@ -372,6 +372,7 @@ try {
       shellExec(`node bin run kill 4002`);
       shellExec(`node bin run kill 4003`);
       shellExec(`npm run update-template`);
+      shellExec(`cd ../pwa-microservices-template && npm install`);
       shellExec(`cd ../pwa-microservices-template && npm run build && timeout 5s npm run dev`, {
         async: true,
       });
@@ -447,6 +448,9 @@ try {
       shellExec(`node bin/build dd`);
       shellExec(
         `node bin deploy --kubeadm --build-manifest --sync --info-router --replicas 1 --node ${node} dd production`,
+      );
+      shellExec(
+        `node bin deploy --kubeadm --build-manifest --sync --info-router --replicas 1 --node ${node} dd development `,
       );
       for (const deployId of fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8').split(`,`)) {
         fs.copySync(
