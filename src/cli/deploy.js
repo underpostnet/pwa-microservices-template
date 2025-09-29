@@ -12,7 +12,6 @@ import { loggerFactory } from '../server/logger.js';
 import { shellExec } from '../server/process.js';
 import fs from 'fs-extra';
 import dotenv from 'dotenv';
-import { DataBaseProvider } from '../db/DataBaseProvider.js';
 import UnderpostRootEnv from './env.js';
 import UnderpostCluster from './cluster.js';
 import Underpost from '../index.js';
@@ -155,21 +154,7 @@ ${UnderpostDeploy.API.deploymentYamlPartsFactory({
         let secretYaml = '';
 
         for (const host of Object.keys(confServer)) {
-          if (env === 'production')
-            secretYaml += `
----
-apiVersion: cert-manager.io/v1
-kind: Certificate
-metadata:
-  name: ${host}
-spec:
-  commonName: ${host}
-  dnsNames:
-    - ${host}
-  issuerRef:
-    name: letsencrypt-prod
-    kind: ClusterIssuer
-  secretName: ${host}`;
+          if (env === 'production') secretYaml += UnderpostDeploy.API.buildCertManagerCertificate({ host });
 
           const pathPortAssignment = pathPortAssignmentData[host];
           // logger.info('', { host, pathPortAssignment });
@@ -223,6 +208,22 @@ spec:
         }
       }
     },
+    buildCertManagerCertificate({ host }) {
+      return `
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ${host}
+spec:
+  commonName: ${host}
+  dnsNames:
+    - ${host}
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  secretName: ${host}`;
+    },
     getCurrentTraffic(deployId) {
       // kubectl get deploy,sts,svc,configmap,secret -n default -o yaml --export > default.yaml
       const hostTest = Object.keys(
@@ -232,7 +233,7 @@ spec:
       return info.match('blue') ? 'blue' : info.match('green') ? 'green' : null;
     },
     async callback(
-      deployList = 'default',
+      deployList = '',
       env = 'development',
       options = {
         remove: false,
@@ -242,6 +243,7 @@ spec:
         infoUtil: false,
         expose: false,
         cert: false,
+        certHosts: '',
         versions: '',
         image: '',
         traffic: '',
@@ -305,6 +307,14 @@ docker login nvcr.io
 Username: $oauthtoken
 Password: <Your Key>
 `);
+      if (!deployList && options.certHosts) {
+        for (const host of options.certHosts.split(',')) {
+          shellExec(`sudo kubectl apply -f - <<EOF
+${UnderpostDeploy.API.buildCertManagerCertificate({ host })}
+EOF`);
+        }
+        return;
+      } else if (!deployList) deployList = 'dd-default';
       if (deployList === 'dd' && fs.existsSync(`./engine-private/deploy/dd.router`))
         deployList = fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8');
       if (options.infoTraffic === true) {
@@ -361,7 +371,8 @@ Password: <Your Key>
         const confServer = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8'));
         for (const host of Object.keys(confServer)) {
           shellExec(`sudo kubectl delete HTTPProxy ${host}`);
-          if (env === 'production' && options.cert === true) shellExec(`sudo kubectl delete Certificate ${host}`);
+          if (UnderpostDeploy.API.isValidTLSContext({ host, env, options }))
+            shellExec(`sudo kubectl delete Certificate ${host}`);
           if (!options.remove === true && env === 'development') etcHosts.push(host);
         }
 
@@ -373,7 +384,7 @@ Password: <Your Key>
         if (!options.remove === true) {
           if (!options.disableUpdateDeployment) shellExec(`sudo kubectl apply -f ./${manifestsPath}/deployment.yaml`);
           shellExec(`sudo kubectl apply -f ./${manifestsPath}/proxy.yaml`);
-          if (env === 'production' && options.cert === true)
+          if (UnderpostDeploy.API.isValidTLSContext({ host, env, options }))
             shellExec(`sudo kubectl apply -f ./${manifestsPath}/secret.yaml`);
         }
       }
@@ -458,7 +469,11 @@ Password: <Your Key>
           notReadyPods.push(pod);
         }
       }
-      return { ready: notReadyPods.length === 0, notReadyPods, readyPods };
+      return {
+        ready: pods.length > 0 && notReadyPods.length === 0,
+        notReadyPods,
+        readyPods,
+      };
     },
     configMap(env) {
       shellExec(`kubectl delete configmap underpost-config`);
@@ -482,6 +497,10 @@ Password: <Your Key>
       fs.writeFileSync(`/etc/hosts`, renderHosts, 'utf8');
       return { renderHosts };
     },
+    isValidTLSContext: ({ host, env, options }) =>
+      env === 'production' &&
+      options.cert === true &&
+      (!options.certHosts || options.certHosts.split(',').includes(host)),
   };
 }
 
