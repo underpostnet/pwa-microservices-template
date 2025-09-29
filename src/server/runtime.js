@@ -117,9 +117,6 @@ const buildRuntime = async () => {
           // set logger
           app.use(loggerMiddleware(import.meta));
 
-          // instance public static
-          app.use('/', express.static(directory ? directory : `.${rootHostPath}`));
-
           // js src compression
           app.use(compression({ filter: shouldCompress }));
           function shouldCompress(req, res) {
@@ -163,6 +160,9 @@ const buildRuntime = async () => {
             } else req.lang = 'en';
             return next();
           });
+
+          // instance public static
+          app.use('/', express.static(directory ? directory : `.${rootHostPath}`));
 
           // security
           applySecurity(app, {
@@ -242,10 +242,6 @@ const buildRuntime = async () => {
                 })();
             }
 
-            // load ssr
-            const ssr = await ssrMiddlewareFactory({ app, directory, rootHostPath, path });
-            for (const [_, ssrMiddleware] of Object.entries(ssr)) app.use(ssrMiddleware);
-
             if (ws)
               await (async () => {
                 const { createIoServer } = await import(`../ws/${ws}/${ws}.ws.server.js`);
@@ -286,6 +282,10 @@ const buildRuntime = async () => {
               });
             }
           }
+
+          // load ssr
+          const ssr = await ssrMiddlewareFactory({ app, directory, rootHostPath, path });
+          for (const [_, ssrMiddleware] of Object.entries(ssr)) app.use(ssrMiddleware);
 
           await UnderpostStartUp.API.listenPortController(server, port, runningData);
 
