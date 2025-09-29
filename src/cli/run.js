@@ -8,6 +8,7 @@ import { range, setPad, timer } from '../client/components/core/CommonJs.js';
 import UnderpostDeploy from './deploy.js';
 import UnderpostRootEnv from './env.js';
 import UnderpostRepository from './repository.js';
+import os from 'os';
 
 const logger = loggerFactory(import.meta);
 
@@ -20,6 +21,8 @@ class UnderpostRun {
     imageName: '',
     containerName: '',
     namespace: '',
+    build: false,
+    replicas: 1,
   };
   static RUNNERS = {
     'spark-template': (path, options = UnderpostRun.DEFAULT_OPTION) => {
@@ -154,17 +157,21 @@ class UnderpostRun {
       const env = options.dev ? 'development' : 'production';
       const baseCommand = options.dev || true ? 'node bin' : 'underpost';
       shellExec(`${baseCommand} run clean`);
-      const defaultPaht = ['dd', 1, ``, 'kind-control-plane'];
-      let [deployId, replicas, image, node] = path ? path.split(',') : defaultPaht;
-      deployId = deployId ?? defaultPaht[0];
-      replicas = replicas ?? defaultPaht[1];
-      image = image ?? defaultPaht[2];
-      node = node ?? defaultPaht[3];
+      const defaultPath = ['dd-default', 1, ``, ``, 'kind-control-plane'];
+      let [deployId, replicas, versions, image, node] = path ? path.split(',') : defaultPath;
+      deployId = deployId ?? defaultPath[0];
+      replicas = replicas ?? defaultPath[1];
+      versions = versions ?? defaultPath[2];
+      image = image ?? defaultPath[3];
+      node = node ?? defaultPath[4];
       shellExec(
         `${baseCommand} deploy --kubeadm --build-manifest --sync --info-router --replicas ${
           replicas ?? 1
-        } --node ${node}${image ? ` --image ${image}` : ''} ${deployId} ${env}`,
+        } --node ${node}${image ? ` --image ${image}` : ''}${
+          versions ? ` --versions ${versions.replaceAll('+', ',')}` : ''
+        } dd ${env}`,
       );
+      if (!options.build) shellExec(`${baseCommand} deploy --kubeadm ${deployId} ${env}`);
     },
     'ls-deployments': async (path, options = UnderpostRun.DEFAULT_OPTION) => {
       console.table(await UnderpostDeploy.API.get(path, 'deployments'));
@@ -303,13 +310,21 @@ class UnderpostRun {
     },
     deploy: async (path, options = UnderpostRun.DEFAULT_OPTION) => {
       const deployId = path;
-      const { validVersion } = UnderpostRepository.API.privateConfUpdate(deployId);
+      const { validVersion, deployVersion } = UnderpostRepository.API.privateConfUpdate(deployId);
       if (!validVersion) throw new Error('Version mismatch');
       const currentTraffic = UnderpostDeploy.API.getCurrentTraffic(deployId);
       const targetTraffic = currentTraffic === 'blue' ? 'green' : 'blue';
       const env = 'production';
       const ignorePods = UnderpostDeploy.API.get(`${deployId}-${env}-${targetTraffic}`).map((p) => p.NAME);
-      shellExec(`sudo kubectl rollout restart deployment/${deployId}-${env}-${targetTraffic}`);
+
+      if (options.build === true) {
+        // deployId, replicas, versions, image, node
+        shellExec(
+          `node bin run sync ${deployId},${options.replicas ?? 1},${targetTraffic},${
+            options.imageName ?? `localhost/rockylinux9-underpost:${deployVersion}`
+          },${os.hostname()}`,
+        );
+      } else shellExec(`sudo kubectl rollout restart deployment/${deployId}-${env}-${targetTraffic}`);
 
       let checkStatusIteration = 0;
       const checkStatusIterationMsDelay = 1000;

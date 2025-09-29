@@ -35,8 +35,6 @@ const getWsBaseUrl = (options = { id: '', endpoint: '', wsBasePath: '' }) =>
 const headersFactory = (headerId = '') => {
   const headers = {
     Authorization: Auth.getJWT(),
-    withCredentials: true,
-    credentials: 'include', // no cors: 'same-origin'
   };
   switch (headerId) {
     case 'file':
@@ -71,29 +69,12 @@ const CoreService = {
           return reject(error);
         }),
     ),
-  getRandomImage: (options = { category: ['city'], mimetype: 'image/jpg' }) => {
-    const src = `https://api.api-ninjas.com/v1/randomimage?category=${options.category[0]}`;
-    return new Promise((resolve) => {
-      fetch(src, {
-        headers: { 'X-Api-Key': 'FyITmcxRXkCaUehbX6K0/g==uxZcFKL0dZUUg48G', Accept: options.mimetype },
-      })
-        .then((res) => res.blob())
-        .then(async (blob) => {
-          return resolve({
-            file: {
-              mimetype: 'image/jpg',
-              name: 'image.jpg',
-            },
-            url: URL.createObjectURL(blob),
-          });
-        });
-    });
-  },
   post: (options = { id: '', body: {} }) =>
     new Promise((resolve, reject) =>
       fetch(getApiBaseUrl({ id: options.id, endpoint }), {
         method: 'POST',
         headers: headersFactory(),
+        credentials: 'include',
         body: payloadFactory(options.body),
       })
         .then(async (res) => {
@@ -113,6 +94,7 @@ const CoreService = {
       fetch(getApiBaseUrl({ id: options.id, endpoint }), {
         method: 'PUT',
         headers: headersFactory(),
+        credentials: 'include',
         body: payloadFactory(options.body),
       })
         .then(async (res) => {
@@ -132,6 +114,7 @@ const CoreService = {
       fetch(getApiBaseUrl({ id: options.id, endpoint }), {
         method: 'GET',
         headers: headersFactory(),
+        credentials: 'include',
       })
         .then(async (res) => {
           return await res.json();
@@ -150,6 +133,7 @@ const CoreService = {
       fetch(getApiBaseUrl({ id: options.id, endpoint }), {
         method: 'DELETE',
         headers: headersFactory(),
+        credentials: 'include',
         body: payloadFactory(options.body),
       })
         .then(async (res) => {
