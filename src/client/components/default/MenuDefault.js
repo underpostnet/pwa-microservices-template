@@ -29,6 +29,8 @@ import { Recover } from '../core/Recover.js';
 import { DefaultManagement } from '../../services/default/default.management.js';
 import { Page500 } from '../core/500.js';
 import { Page404 } from '../core/404.js';
+import { PanelForm } from '../core/PanelForm.js';
+import { Chat } from '../core/Chat.js';
 
 const MenuDefault = {
   Data: {},
@@ -160,6 +162,34 @@ const MenuDefault = {
             handleContainerClass: 'handle-btn-container',
             tooltipHtml: await Badge.Render(buildBadgeToolTipMenuOption('500')),
           })}
+          ${await BtnIcon.Render({
+            class: 'in wfa main-btn-menu main-btn-blog',
+            label: renderMenuLabel({
+              icon: html`<i class="fa-solid fa-file-invoice"></i>`,
+              text: html`<span class="menu-label-text">${Translate.Render('blog')}</span>`,
+            }),
+            attrs: `data-id="blog"`,
+            tabHref: `${getProxyPath()}blog`,
+            handleContainerClass: 'handle-btn-container',
+            tooltipHtml: await Badge.Render(buildBadgeToolTipMenuOption('blog')),
+          })}
+          ${await BtnIcon.Render({
+            class: 'in wfa main-btn-menu main-btn-chat',
+            label: html`${renderMenuLabel({
+              icon: html`<i class="far fa-comments"></i>`,
+              text: html`<span class="menu-label-text">${Translate.Render('chat')}</span>`,
+            })}
+            ${await Badge.Render({
+              id: 'main-btn-chat',
+              type: 'circle-red',
+              style: badgeNotificationMenuStyle,
+              classList: 'hide',
+            })}`,
+            attrs: `data-id="chat"`,
+            tabHref: `${getProxyPath()}chat`,
+            handleContainerClass: 'handle-btn-container',
+            tooltipHtml: await Badge.Render(buildBadgeToolTipMenuOption('chat')),
+          })}
         </div>
       `,
       barConfig: newInstance(barConfig),
@@ -181,47 +211,7 @@ const MenuDefault = {
       RouterInstance,
       heightTopBar,
       heightBottomBar,
-      htmlMainBody: async () => {
-        setTimeout(() => {
-          EventsUI.onClick('.get-started-button', (e) => {
-            e.preventDefault();
-            location.href = `https://www.nexodev.org/docs/?cid=src`;
-          });
-        });
-        return html`
-          <div class="landing-container">
-            <div class="content-wrapper">
-              <h1 class="animated-text">
-                <span class="greeting">Hello, World!</span>
-                <span class="subtitle">Welcome to Our Platform</span>
-              </h1>
-
-              <div class="features">
-                <div class="feature-card">
-                  <i class="icon">🚀</i>
-                  <h3>Fast & Reliable</h3>
-                  <p>Lightning-fast performance with 99.9% uptime</p>
-                </div>
-                <div class="feature-card">
-                  <i class="icon">🎨</i>
-                  <h3>Beautiful UI</h3>
-                  <p>Modern and intuitive user interface</p>
-                </div>
-                <div class="feature-card">
-                  <i class="icon">⚡</i>
-                  <h3>Powerful Features</h3>
-                  <p>Everything you need in one place</p>
-                </div>
-              </div>
-
-              <button class="cta-button get-started-button">
-                Get Started
-                <span class="button-icon">→</span>
-              </button>
-            </div>
-          </div>
-        `;
-      },
+      htmlMainBody: options.htmlMainBody,
     });
 
     ThemeEvents['main-theme-handler'] = () => {
@@ -670,6 +660,68 @@ const MenuDefault = {
         heightTopBar,
         heightBottomBar,
         observer: true,
+      });
+    });
+
+    EventsUI.onClick(`.main-btn-blog`, async () => {
+      const { barConfig } = await Themes[Css.currentTheme]();
+      const idModal = 'modal-blog';
+      const routeModal = 'blog';
+      const idEvent = `form-panel-${idModal}`;
+      await Modal.Render({
+        id: idModal,
+        route: routeModal,
+        barConfig,
+        title: renderViewTitle({
+          icon: html`<i class="fa-solid fa-file-invoice"></i>`,
+          text: Translate.Render('blog'),
+        }),
+        observer: true,
+        html: async () => {
+          setTimeout(async () => {
+            await PanelForm.instance({
+              idPanel: 'default-blog',
+              heightTopBar,
+              heightBottomBar,
+              defaultUrlImage: `${getProxyPath()}android-chrome-96x96.png`,
+              Elements: ElementsDefault,
+              parentIdModal: idModal,
+              scrollClassContainer: `html-${idModal}`,
+              route: routeModal,
+            });
+          });
+        },
+        handleType: 'bar',
+        maximize: true,
+        mode: 'view',
+        slideMenu: 'modal-menu',
+        RouterInstance,
+        heightTopBar,
+        heightBottomBar,
+        barMode,
+      });
+    });
+
+    EventsUI.onClick(`.main-btn-chat`, async () => {
+      const { barConfig } = await Themes[Css.currentTheme]();
+      await Modal.Render({
+        id: 'modal-chat',
+        route: 'chat',
+        barConfig,
+        title: renderViewTitle({
+          icon: html` <i class="far fa-comments"></i>`,
+          text: Translate.Render('chat'),
+        }),
+        html: async () => await Chat.Render({ idModal: 'modal-chat' }),
+        handleType: 'bar',
+        maximize: true,
+        observer: true,
+        mode: 'view',
+        slideMenu: 'modal-menu',
+        RouterInstance,
+        heightTopBar,
+        heightBottomBar,
+        barMode,
       });
     });
   },
