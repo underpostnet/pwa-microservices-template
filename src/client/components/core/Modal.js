@@ -1,4 +1,4 @@
-import { getId, newInstance } from './CommonJs.js';
+import { getId, newInstance, s4 } from './CommonJs.js';
 import { Draggable } from '@neodrag/vanilla';
 import { append, s, prepend, htmls, sa, getAllChildNodes, isActiveElement } from './VanillaJs.js';
 import { BtnIcon } from './BtnIcon.js';
@@ -2262,6 +2262,11 @@ const Modal = {
     s(`.top-bar`).classList.remove('hide');
     s(`.bottom-bar`).classList.remove('hide');
     s(`.modal-menu`).classList.remove('hide');
+  },
+  RenderSeoSanitizer: async () => {
+    sa('img').forEach((img) => {
+      if (!img.getAttribute('alt')) img.setAttribute('alt', 'image ' + Worker.title + ' ' + s4());
+    });
   },
 };
 

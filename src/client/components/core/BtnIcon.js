@@ -1,7 +1,7 @@
 import { getId, s4 } from './CommonJs.js';
 import { renderCssAttr } from './Css.js';
 import { ToolTip } from './ToolTip.js';
-import { getAllChildNodes, s } from './VanillaJs.js';
+import { getAllChildNodes, htmlStrSanitize, s } from './VanillaJs.js';
 
 const BtnIcon = {
   Tokens: {},
@@ -32,7 +32,7 @@ const BtnIcon = {
       : ''}`;
     let render = html`<button
       ${options?.class ? `class="${options.class} ${tokenId}"` : ''}
-      ${options?.type ? `type="${options.type}"` : ''}
+      ${options?.type ? `type="${options.type}"` : `type="button"`}
       ${options?.style ? `style="${options.style}"` : ''}
       ${options?.attrs ? `${options.attrs}` : ''}
     >
@@ -49,6 +49,7 @@ const BtnIcon = {
             >`
           : label}
       </div>
+      <label class="hide">${htmlStrSanitize(options.label) ? htmlStrSanitize(options.label) : tokenId}</label>
     </button>`;
     if (options.tooltipHtml)
       setTimeout(() => {

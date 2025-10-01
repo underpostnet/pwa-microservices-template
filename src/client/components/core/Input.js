@@ -7,7 +7,7 @@ import { loggerFactory } from './Logger.js';
 import { RichText } from './RichText.js';
 import { ToggleSwitch } from './ToggleSwitch.js';
 import { Translate } from './Translate.js';
-import { htmls, s } from './VanillaJs.js';
+import { htmls, htmlStrSanitize, s } from './VanillaJs.js';
 const logger = loggerFactory(import.meta);
 
 const fileFormDataFactory = (e, extensions) => {
@@ -61,22 +61,27 @@ const Input = {
         };
     });
 
-    const inputElement = html` <input
-        type="${options?.type ? options.type : 'text'}"
-        class="${options.inputClass ? options.inputClass : 'in wfa'} ${id}"
-        ${options?.min !== undefined ? `min="${options.min}"` : ''}
-        ${options?.max !== undefined ? `max="${options.max}"` : ''}
-        placeholder${options?.placeholder ? `="${options.placeholder}"` : ''}
-        ${options?.value !== undefined ? `value="${options.value}"` : ''}
-        ${options?.autocomplete ? `autocomplete="${options.autocomplete}"` : ''}
-        ${options?.disabled ? `disabled` : ''}
-        ${options?.name !== undefined ? `name="${options.name}"` : ''}
-        ${options?.pattern !== undefined ? `pattern="${options.pattern}"` : ''}
-        ${options?.pattern === undefined && options.type === 'tel' ? `pattern="[0-9]{3}-[0-9]{3}-[0-9]{4}"` : ''}
-        ${options?.required ? ` required ` : ''}
-        ${options?.accept ? `accept="${options.accept}"` : ''}
-        ${options?.multiple ? `multiple="multiple"` : ''}
-      />
+    const labelValue = htmlStrSanitize(options.label) ? htmlStrSanitize(options.label) : id;
+
+    const inputElement = html` <label for="${id}-name">
+        <span class="hide">${labelValue}</span>
+        <input
+          type="${options?.type ? options.type : 'text'}"
+          class="${options.inputClass ? options.inputClass : 'in wfa'} ${id}"
+          ${options?.min !== undefined ? `min="${options.min}"` : ''}
+          ${options?.max !== undefined ? `max="${options.max}"` : ''}
+          placeholder${options?.placeholder ? `="${options.placeholder}"` : ''}
+          ${options?.value !== undefined ? `value="${options.value}"` : ''}
+          ${options?.autocomplete ? `autocomplete="${options.autocomplete}"` : ''}
+          ${options?.disabled ? `disabled` : ''}
+          ${options?.name !== undefined ? `name="${options.name}"` : `name='${id}-name'`}
+          ${options?.pattern !== undefined ? `pattern="${options.pattern}"` : ''}
+          ${options?.pattern === undefined && options.type === 'tel' ? `pattern="[0-9]{3}-[0-9]{3}-[0-9]{4}"` : ''}
+          ${options?.required ? ` required ` : ''}
+          ${options?.accept ? `accept="${options.accept}"` : ''}
+          ${options?.multiple ? `multiple="multiple"` : ''}
+          id="${id}-name"
+      /></label>
       <div class="${id}-input-extension input-info input-extension ${options?.extension ? '' : 'hide'}">
         ${options?.extension ? await options.extension() : ''}
       </div>`;
