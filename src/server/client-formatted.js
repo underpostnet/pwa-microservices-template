@@ -1,9 +1,17 @@
+/**
+ * Module for formatting client-side code
+ * @module src/server/client-formatted.js
+ * @namespace clientFormatted
+ */
+
 'use strict';
 
-import fs from 'fs-extra';
-import vm from 'node:vm';
-import Underpost from '../index.js';
-
+/**
+ * Formats a source code string by removing 'html`' and 'css`' tags from template literals.
+ * @param {string} src - The source code string.
+ * @returns {string} The formatted source code.
+ * @memberof clientFormatted
+ */
 const srcFormatted = (src) =>
   src
     .replaceAll(' html`', '`')
@@ -15,8 +23,26 @@ const srcFormatted = (src) =>
     .replaceAll('[html`', '[`')
     .replaceAll('[css`', '[`');
 
+/**
+ * Converts a JavaScript object into a string that can be embedded in client-side code
+ * and parsed back into an object (e.g., 'JSON.parse(`{...}`)').
+ * @param {*} data - The data to be stringified.
+ * @returns {string} A string representing the code to parse the JSON data.
+ * @memberof clientFormatted
+ */
 const JSONweb = (data) => 'JSON.parse(`' + JSON.stringify(data) + '`)';
 
+/**
+ * Formats a component's source code by rewriting its import paths to be absolute for browser consumption.
+ * @param {string} src - The source code of the component.
+ * @param {string} module - The name of the module/component.
+ * @param {Array<object>} dists - An array of distribution objects with import names.
+ * @param {string} proxyPath - The proxy path for the application.
+ * @param {string} [componentBasePath=''] - The base path for components.
+ * @param {string} [baseHost=''] - The base host URL.
+ * @returns {string} The formatted source code with updated import paths.
+ * @memberof clientFormatted
+ */
 const componentFormatted = (src, module, dists, proxyPath, componentBasePath = '', baseHost = '') => {
   dists.map(
     (dist) =>
@@ -40,6 +66,15 @@ const componentFormatted = (src, module, dists, proxyPath, componentBasePath = '
     );
 };
 
+/**
+ * Formats a view's source code by rewriting its import paths.
+ * @param {string} src - The source code of the view.
+ * @param {Array<object>} dists - An array of distribution objects with import names.
+ * @param {string} proxyPath - The proxy path for the application.
+ * @param {string} [baseHost=''] - The base host URL.
+ * @returns {string} The formatted source code with updated import paths.
+ * @memberof clientFormatted
+ */
 const viewFormatted = (src, dists, proxyPath, baseHost = '') => {
   dists.map(
     (dist) =>
@@ -49,11 +84,4 @@ const viewFormatted = (src, dists, proxyPath, baseHost = '') => {
   return src.replaceAll(`from './`, componentFromFormatted).replaceAll(`from '../`, componentFromFormatted);
 };
 
-const ssrFactory = async (componentPath = `./src/client/ssr/Render.js`) => {
-  const context = { SrrComponent: () => {}, npm_package_version: Underpost.version };
-  vm.createContext(context);
-  vm.runInContext(await srcFormatted(fs.readFileSync(componentPath, 'utf8')), context);
-  return context.SrrComponent;
-};
-
-export { srcFormatted, JSONweb, componentFormatted, viewFormatted, ssrFactory };
+export { srcFormatted, JSONweb, componentFormatted, viewFormatted };
