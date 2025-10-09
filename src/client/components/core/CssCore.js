@@ -130,19 +130,20 @@ const CssCommonCore = async () => {
           opacity: 0;
         }
       }
-      .title-view-modal {
+      .title-main-modal {
         top: 8px;
-        font-size: 21px !important;
-        position: absolute !important;
+        font-size: 21px;
+        position: absolute;
       }
-      .title-view-modal .view-title-icon {
-        font-size: 21px !important;
+      .title-main-modal .view-title-icon {
+        font-size: 21px;
       }
       .down-arrow-submenu {
-        top: -20px;
-        text-align: right;
-        padding-right: 42px;
+        top: 0px;
         color: #5f5f5f;
+        left: 115px;
+        transform-origin: center;
+        width: 0px;
       }
       .main-body-btn {
         width: 50px;
@@ -222,9 +223,6 @@ const CssCommonCore = async () => {
       .menu-label-text {
         transition: 0.3s;
         position: relative;
-      }
-      .menu-btn-container-children {
-        transition: 0.3s;
       }
     </style>
     ${boxShadow({ selector: '.account-profile-image' })}
@@ -336,11 +334,12 @@ const CssCoreDark = {
         }
         .main-btn-menu {
           text-align: left;
+          transition: none; /* sortable necessary */
           padding: 15px;
-          transition: none;
           margin: 0;
           border: 0;
           height: 52px;
+          background: #121212;
         }
         .main-btn-menu-active {
           background: #212020;
@@ -542,6 +541,10 @@ const CssCoreDark = {
           padding: 5px;
           margin: 5px;
         }
+        .submenu-btn {
+          background: rgba(255, 255, 255, 0.1);
+          border-radius: 0;
+        }
       </style>
       ${scrollBarDarkRender()} ${borderChar(1, 'black', ['.main-body-btn-container'])}
     `,
@@ -590,12 +593,7 @@ const CssCoreLight = {
         .hover-active {
           background: #bbbbbb;
         }
-        .title-modal {
-          cursor: default;
-          font-size: 20px;
-          padding: 5px;
-          margin: 5px;
-        }
+
         .box-shadow {
           box-shadow: 0 4px 8px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.19);
         }
@@ -656,11 +654,12 @@ const CssCoreLight = {
         }
         .main-btn-menu {
           text-align: left;
+          transition: none; /* sortable necessary */
           padding: 15px;
-          transition: none;
           margin: 0;
           border: 0;
           height: 52px;
+          background: #fff;
         }
         .main-btn-menu-active {
           background: #d8d8d8;
@@ -738,9 +737,7 @@ const CssCoreLight = {
           color: #333;
           background: 0 0;
         }
-        .title-modal {
-          color: #000;
-        }
+
         input {
           cursor: pointer;
           color: #272727;
@@ -871,6 +868,10 @@ const CssCoreLight = {
           border-radius: 5px;
           padding: 5px;
           margin: 5px;
+        }
+        .submenu-btn {
+          background: rgba(0, 0, 0, 0.1);
+          border-radius: 0;
         }
       </style>
       ${scrollBarLightRender()} ${borderChar(1, 'white', ['.main-body-btn-container'])}
