@@ -15,9 +15,12 @@ const BtnIcon = {
       labelStyle: '',
       tabHref: '',
       tooltipHtml: '',
+      useVisibilityHover: false,
+      useMenuBtn: false,
     },
   ) {
     const tokenId = getId(this.Tokens, 'btn-token-');
+    if (options.useMenuBtn) options.class += ' main-menu-btn-selector';
     this.Tokens[tokenId] = { ...options };
     setTimeout(() => {
       if (s(`.a-${tokenId}`)) s(`.a-${tokenId}`).onclick = (e) => e.preventDefault();
@@ -54,7 +57,13 @@ const BtnIcon = {
     if (options.tooltipHtml)
       setTimeout(() => {
         if (s(`.${tokenId}`))
-          ToolTip.Render({ container: `.${tokenId}`, id: tokenId, htmlRender: options.tooltipHtml });
+          ToolTip.Render({
+            container: `.${tokenId}`,
+            id: tokenId,
+            htmlRender: options.tooltipHtml,
+            useVisibilityHover: !!options.useVisibilityHover,
+            useMenuBtn: !!options.useMenuBtn,
+          });
       });
     return render;
   },

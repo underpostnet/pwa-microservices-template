@@ -108,12 +108,12 @@ const Modal = {
       },
       getMenuLeftStyle: (ops = { open: false }) =>
         `${
-          options.barMode === 'top-bottom-bar'
+          options.mode === 'slide-menu-right'
             ? `${
                 windowGetW() +
                 (ops?.open
                   ? -1 * originSlideMenuWidth +
-                    (options.barMode === 'top-bottom-bar' && s(`.btn-icon-menu-mode-right`).classList.contains('hide')
+                    (options.mode === 'slide-menu-right' && s(`.btn-icon-menu-mode-right`).classList.contains('hide')
                       ? originSlideMenuWidth - collapseSlideMenuWidth
                       : 0)
                   : originSlideMenuWidth)
@@ -281,7 +281,7 @@ const Modal = {
               s(`.main-body-btn-container`).style[
                 true || (options.mode && options.mode.match('right')) ? 'right' : 'left'
               ] = options.mode && options.mode.match('right') ? `${slideMenuWidth}px` : '0px';
-              if (options.barMode === 'top-bottom-bar') {
+              if (options.mode === 'slide-menu-right') {
                 s(`.${idModal}`).style.left = `${windowGetW() - originSlideMenuWidth}px`;
               } else {
                 s(`.${idModal}`).style.left = `0px`;
@@ -304,7 +304,7 @@ const Modal = {
               s(`.main-body-btn-container`).style[
                 true || (options.mode && options.mode.match('right')) ? 'right' : 'left'
               ] = `${0}px`;
-              if (options.barMode === 'top-bottom-bar') {
+              if (options.mode === 'slide-menu-right') {
                 s(`.${idModal}`).style.left = `${windowGetW() + originSlideMenuWidth}px`;
               } else {
                 s(`.${idModal}`).style.left = `-${originSlideMenuWidth}px`;
@@ -1586,7 +1586,6 @@ const Modal = {
         };
         EventsUI.onClick(`.btn-icon-menu-back`, backMenuButtonEvent);
         EventsUI.onClick(`.btn-icon-menu-mode`, () => {
-          Modal.subMenuBtnClass = {};
           if (s(`.btn-icon-menu-mode-right`).classList.contains('hide')) {
             s(`.btn-icon-menu-mode-right`).classList.remove('hide');
             s(`.btn-icon-menu-mode-left`).classList.add('hide');
@@ -1602,13 +1601,6 @@ const Modal = {
               true || (options.mode && options.mode.match('right')) ? 'right' : 'left'
             ] = options.mode && options.mode.match('right') ? `${slideMenuWidth}px` : '0px';
             sa(`.handle-btn-container`).forEach((el) => el.classList.add('hide'));
-            // TODO: tooltip refactor visible
-            if (!s(`.btn-bar-center-icon-close`).classList.contains('hide')) {
-              if (!Modal.mobileModal()) {
-                sa(`.tooltip-menu`).forEach((el) => el.classList.remove('hide'));
-                // s(`.${idModal}`).style.overflow = 'visible';
-              }
-            }
             if (options.onCollapseMenu) options.onCollapseMenu();
             s(`.sub-menu-title-container-${'modal-menu'}`).classList.add('hide');
             s(`.nav-path-container-${'modal-menu'}`).classList.add('hide');
@@ -1625,10 +1617,6 @@ const Modal = {
             sa(`.handle-btn-container`).forEach((el) => el.classList.remove('hide'));
 
             Modal.menuTextLabelAnimation(idModal);
-            if (!Modal.mobileModal()) {
-              sa(`.tooltip-menu`).forEach((el) => el.classList.add('hide'));
-              s(`.${idModal}`).style.overflow = null;
-            }
 
             if (options.onExtendMenu) options.onExtendMenu();
             s(`.sub-menu-title-container-${'modal-menu'}`).classList.remove('hide');
@@ -2173,19 +2161,22 @@ const Modal = {
       };
     });
   },
-  menuTextLabelAnimation: (idModal) => {
+  menuTextLabelAnimation: (idModal, subMenuId) => {
     if (
       !s(
-        `.btn-icon-menu-mode-${Modal.Data[idModal].options.barMode === 'top-bottom-bar' ? 'left' : 'right'}`,
+        `.btn-icon-menu-mode-${Modal.Data[idModal].options.mode === 'slide-menu-right' ? 'left' : 'right'}`,
       ).classList.contains('hide')
     ) {
       return;
     }
-    const btnSelector = `.menu-label-text`;
+    const btnSelector = `.main-btn-menu`;
     const labelSelector = `.menu-label-text`;
 
-    const _data =
-      Object.keys(Modal.subMenuBtnClass).length > 0 ? Modal.subMenuBtnClass : { _: { btnSelector, labelSelector } };
+    const _data = subMenuId
+      ? {
+          [subMenuId]: Modal.subMenuBtnClass[subMenuId],
+        }
+      : { ...Modal.subMenuBtnClass, _: { btnSelector, labelSelector } };
 
     for (const keyDataBtn of Object.keys(_data)) {
       const { btnSelector, labelSelector, open, top } = _data[keyDataBtn];
@@ -2194,14 +2185,11 @@ const Modal = {
           top();
         });
       if (open) continue;
-      if (Modal.subMenuBtnClass[keyDataBtn]) Modal.subMenuBtnClass[keyDataBtn].open = true;
       sa(labelSelector).forEach((el) => {
         el.classList.add('hide');
         el.style.transition = null;
       });
-      sa(btnSelector).forEach((el) => {
-        el.classList.overflow = 'hidden';
-      });
+
       setTimeout(() => {
         sa(labelSelector).forEach((el) => {
           el.classList.remove('hide');
@@ -2214,9 +2202,6 @@ const Modal = {
       setTimeout(() => {
         sa(labelSelector).forEach((el) => {
           el.style.top = '-3px';
-        });
-        sa(btnSelector).forEach((el) => {
-          el.classList.overflow = null;
         });
       }, 400);
     }
@@ -2397,17 +2382,17 @@ const buildBadgeToolTipMenuOption = (id, sideKey = 'left') => {
   const option = {
     id: `tooltip-content-main-btn-${id}`,
     text: `${Translate.Render(`${id}`)}`,
-    classList: 'tooltip-menu hide',
-    style: { top: `0px` },
+    classList: 'tooltip-menu',
+    style: { top: `-40px` },
   };
   switch (sideKey) {
     case 'left':
-      option.style.left = '40px';
+      option.style.left = '60px';
 
       break;
 
     case 'right':
-      option.style.right = '80px';
+      option.style.right = '60px';
       break;
 
     default:
@@ -2416,4 +2401,57 @@ const buildBadgeToolTipMenuOption = (id, sideKey = 'left') => {
   return option;
 };
 
-export { Modal, renderMenuLabel, renderViewTitle, buildBadgeToolTipMenuOption };
+const subMenuRender = async (subMenuId) => {
+  const _hBtn = 51;
+  const menuBtn = s(`.main-btn-${subMenuId}`);
+  const menuContainer = s(`.menu-btn-container-children-${subMenuId}`);
+  const arrow = s(`.down-arrow-submenu-${subMenuId}`);
+
+  if (!menuBtn || !menuContainer || !arrow) return;
+
+  const top = () => {
+    menuContainer.style.top = menuBtn.offsetTop + Modal.Data['modal-menu'].options.heightTopBar + 'px';
+  };
+
+  Modal.subMenuBtnClass[subMenuId] = {
+    ...Modal.subMenuBtnClass[subMenuId],
+    btnSelector: `.btn-${subMenuId}`,
+    labelSelector: `.menu-label-text-${subMenuId}`,
+    top,
+  };
+
+  menuBtn.style.transition = '.3s';
+  arrow.style.transition = '.3s';
+
+  if (Modal.subMenuBtnClass[subMenuId].open) {
+    Modal.subMenuBtnClass[subMenuId].open = false;
+    // Close animation
+    menuContainer.style.overflow = 'hidden';
+    menuContainer.style.height = '0px';
+    arrow.style.rotate = '180deg';
+    setTimeout(() => {
+      menuBtn.style.marginBottom = '0px';
+      arrow.style.rotate = '0deg';
+    });
+  } else {
+    Modal.menuTextLabelAnimation('modal-menu', subMenuId);
+    Modal.subMenuBtnClass[subMenuId].open = true;
+    // Open animation
+    setTimeout(top, 360);
+    menuContainer.style.width = '320px';
+    menuContainer.style.overflow = null;
+    menuContainer.style.height = '0px';
+    menuContainer.style.height = `${_hBtn * 6}px`;
+    arrow.style.rotate = '0deg';
+    setTimeout(() => {
+      menuBtn.style.marginBottom = `${_hBtn * 6 + 4}px`;
+      arrow.style.rotate = '180deg';
+    });
+  }
+
+  setTimeout(() => {
+    menuBtn.style.transition = null;
+  }, 500);
+};
+
+export { Modal, renderMenuLabel, renderViewTitle, buildBadgeToolTipMenuOption, subMenuRender };
