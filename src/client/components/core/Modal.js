@@ -2413,6 +2413,10 @@ const buildBadgeToolTipMenuOption = (id, sideKey = 'left') => {
   return option;
 };
 
+const isSubMenuOpen = (subMenuId) => {
+  return s(`.down-arrow-submenu-${subMenuId}`).style.rotate === '180deg';
+};
+
 const subMenuRender = async (subMenuId) => {
   const _hBtn = 51;
   const menuBtn = s(`.main-btn-${subMenuId}`);
@@ -2420,6 +2424,9 @@ const subMenuRender = async (subMenuId) => {
   const arrow = s(`.down-arrow-submenu-${subMenuId}`);
 
   if (!menuBtn || !menuContainer || !arrow) return;
+
+  // if (Modal.subMenuBtnClass[subMenuId] && !(isSubMenuOpen(subMenuId) && Modal.subMenuBtnClass[subMenuId].open === true))
+  //   Modal.subMenuBtnClass[subMenuId].open = false;
 
   const top = () => {
     menuContainer.style.top = menuBtn.offsetTop + Modal.Data['modal-menu'].options.heightTopBar + 'px';
@@ -2466,4 +2473,4 @@ const subMenuRender = async (subMenuId) => {
   }, 500);
 };
 
-export { Modal, renderMenuLabel, renderViewTitle, buildBadgeToolTipMenuOption, subMenuRender };
+export { Modal, renderMenuLabel, renderViewTitle, buildBadgeToolTipMenuOption, subMenuRender, isSubMenuOpen };
