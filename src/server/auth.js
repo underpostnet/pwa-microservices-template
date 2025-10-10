@@ -110,16 +110,22 @@ function jwtIssuerAudienceFactory(options = { host: '', path: '' }) {
  * @param {object} [options={}] Additional JWT sign options.
  * @param {string} options.host The host name.
  * @param {string} options.path The path name.
- * @param {number} expireMinutes The token expiration in minutes.
+ * @param {number} accessExpireMinutes The access token expiration in minutes.
+ * @param {number} refreshExpireMinutes The refresh token expiration in minutes.
  * @returns {string} The signed JWT.
  * @throws {Error} If JWT key is not configured.
  * @memberof Auth
  */
-function jwtSign(payload, options = { host: '', path: '' }, expireMinutes = process.env.ACCESS_EXPIRE_MINUTES) {
+function jwtSign(
+  payload,
+  options = { host: '', path: '' },
+  accessExpireMinutes = process.env.ACCESS_EXPIRE_MINUTES,
+  refreshExpireMinutes = process.env.REFRESH_EXPIRE_MINUTES,
+) {
   const { issuer, audience } = jwtIssuerAudienceFactory(options);
   const signOptions = {
     algorithm: config.jwtAlgorithm,
-    expiresIn: `${expireMinutes}m`,
+    expiresIn: `${accessExpireMinutes}m`,
     issuer,
     audience,
   };
@@ -128,7 +134,11 @@ function jwtSign(payload, options = { host: '', path: '' }, expireMinutes = proc
 
   if (!process.env.JWT_SECRET) throw new Error('JWT key not configured');
 
-  logger.info('JWT signed', { payload, signOptions, expireMinutes });
+  // Add refreshExpiresAt to the payload, which is the same as the token's own expiry.
+  const now = Date.now();
+  payload.refreshExpiresAt = now + refreshExpireMinutes * 60 * 1000;
+
+  logger.info('JWT signed', { payload, signOptions, accessExpireMinutes, refreshExpireMinutes });
 
   return jwt.sign(payload, process.env.JWT_SECRET, signOptions);
 }
@@ -169,6 +179,14 @@ const getBearerToken = (req) => {
   if (header.startsWith('Bearer ')) return header.slice(7).trim();
   return '';
 };
+
+/**
+ * Checks if the request is a refresh token request.
+ * @param {import('express').Request} req The Express request object.
+ * @returns {boolean} True if the request is a refresh token request, false otherwise.
+ * @memberof Auth
+ */
+const isRefreshTokenReq = (req) => req.method === 'GET' && req.params.id === 'auth';
 
 // ---------- Middleware ----------
 /**
@@ -237,10 +255,7 @@ const authMiddlewareFactory = (options = { host: '', path: '' }) => {
           return res.status(401).json({ status: 'error', message: 'unauthorized: host or path mismatch' });
         }
 
-        // check session expiresAt
-        const isRefreshTokenReq = req.method === 'GET' && req.params.id === 'auth';
-
-        if (!isRefreshTokenReq && session.expiresAt < new Date()) {
+        if (!isRefreshTokenReq(req) && session.expiresAt < new Date()) {
           return res.status(401).json({ status: 'error', message: 'unauthorized: session expired' });
         }
       }
@@ -342,11 +357,11 @@ const cookieOptionsFactory = (req) => {
   const reqIsSecure = Boolean(req.secure || forwardedProto.split(',')[0] === 'https');
 
   // secure must be true for SameSite=None to work across sites
-  const secure = isProduction ? reqIsSecure : false;
+  const secure = isProduction ? reqIsSecure : req.protocol === 'https';
   const sameSite = secure ? 'None' : 'Lax';
 
   // Safe parse of maxAge minutes
-  const minutes = Number.parseInt(process.env.REFRESH_EXPIRE_MINUTES, 10);
+  const minutes = Number.parseInt(process.env.ACCESS_EXPIRE_MINUTES, 10);
   const maxAge = Number.isFinite(minutes) && minutes > 0 ? minutes * 60 * 1000 : undefined;
 
   const opts = {
@@ -397,6 +412,48 @@ async function createSessionAndUserToken(user, User, req, res, options = { host:
   res.cookie('refreshToken', refreshToken, cookieOptionsFactory(req));
 
   return { jwtid };
+}
+
+/**
+ * Removes a session by its ID for a given user.
+ * @param {import('mongoose').Model} User The Mongoose User model.
+ * @param {string} userId The ID of the user.
+ * @param {string} sessionId The ID of the session to remove.
+ * @returns {Promise<void>}
+ * @memberof Auth
+ */
+async function removeSession(User, userId, sessionId) {
+  return await User.updateOne({ _id: userId }, { $pull: { activeSessions: { _id: sessionId } } });
+}
+
+/**
+ * Logs out a user session by removing it from the database and clearing the refresh token cookie.
+ * @param {import('mongoose').Model} User The Mongoose User model.
+ * @param {import('express').Request} req The Express request object.
+ * @param {import('express').Response} res The Express response object.
+ * @returns {Promise<boolean>} True if a session was found and removed, false otherwise.
+ * @memberof Auth
+ */
+async function logoutSession(User, req, res) {
+  const refreshToken = req.cookies?.refreshToken;
+
+  if (!refreshToken) {
+    return false;
+  }
+
+  const user = await User.findOne({ 'activeSessions.tokenHash': refreshToken });
+
+  if (!user) {
+    return false;
+  }
+
+  const session = user.activeSessions.find((s) => s.tokenHash === refreshToken);
+
+  const result = await removeSession(User, user._id, session._id);
+
+  res.clearCookie('refreshToken', { path: '/' });
+
+  return result.modifiedCount > 0;
 }
 
 /**
@@ -470,12 +527,10 @@ async function refreshSessionAndToken(req, res, User, options = { host: '', path
   }
 
   // Check expiry
-  if (session.expiresAt && session.expiresAt < new Date()) {
-    // remove expired session
-    user.activeSessions.id(session._id).remove();
-    await user.save({ validateBeforeSave: false });
-    res.clearCookie('refreshToken', { path: '/' });
-    throw new Error('Refresh token expired');
+  if (!isRefreshTokenReq(req) && session.expiresAt && session.expiresAt < new Date()) {
+    const result = await removeSession(User, user._id, session._id);
+    if (result) throw new Error('Refresh token expired');
+    else throw new Error('Session not found');
   }
 
   // Rotate: generate new token, update stored hash and metadata
@@ -646,5 +701,8 @@ export {
   createSessionAndUserToken,
   createUserAndSession,
   refreshSessionAndToken,
+  logoutSession,
+  removeSession,
   applySecurity,
+  isRefreshTokenReq,
 };
