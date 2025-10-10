@@ -156,7 +156,7 @@ const Docs = {
         id: options.idModal,
         routeId: 'docs',
         event: (path) => {
-          // Modal.subMenuBtnClass['docs'].disabled = true;
+          Modal.subMenuBtnClass['docs'].open = !Modal.subMenuBtnClass['docs'].open;
           if (s(`.btn-docs-${path}`)) s(`.btn-docs-${path}`).click();
           if (Modal.mobileModal()) {
             setTimeout(() => {
@@ -187,7 +187,7 @@ const Docs = {
       docMenuRender += html`
         ${await BtnIcon.Render({
           class: `in wfa main-btn-menu submenu-btn btn-docs btn-docs-${docData.type}`,
-          label: html`<span class="menu-btn-icon">${docData.icon}</span
+          label: html`<span class="inl menu-btn-icon">${docData.icon}</span
             ><span class="menu-label-text menu-label-text-docs"> ${docData.text} </span>`,
           tabHref,
           tooltipHtml: await Badge.Render(buildBadgeToolTipMenuOption(docData.text, 'right')),

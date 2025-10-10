@@ -380,6 +380,9 @@ const Modal = {
                   s(`.slide-menu-top-bar-fix`).style.top = '-100px';
                   s(`.top-bar-search-box-container`).click();
                 }
+                if (Modal.mobileModal()) {
+                  btnCloseEvent();
+                }
               };
 
               let _heightTopBar, _heightBottomBar, _topMenu;
@@ -527,9 +530,15 @@ const Modal = {
               </div>`,
             );
             EventsUI.onClick(`.action-btn-profile-log-in`, () => {
+              if (Modal.mobileModal() && s(`.btn-close-search-box-history`)) {
+                s(`.btn-close-search-box-history`).click();
+              }
               s(`.main-btn-account`).click();
             });
             EventsUI.onClick(`.action-btn-profile-log-out`, () => {
+              if (Modal.mobileModal() && s(`.btn-close-search-box-history`)) {
+                s(`.btn-close-search-box-history`).click();
+              }
               s(`.main-btn-sign-up`).click();
             });
             s(`.input-info-${inputSearchBoxId}`).style.textAlign = 'left';
@@ -773,6 +782,9 @@ const Modal = {
               let boxHistoryDelayRender = 0;
               const searchBoxHistoryOpen = async () => {
                 if (boxHistoryDelayRender) return;
+                if (Modal.mobileModal()) {
+                  btnCloseEvent();
+                }
                 boxHistoryDelayRender = 1000;
                 setTimeout(() => (boxHistoryDelayRender = 0));
                 if (!s(`.${searchBoxHistoryId}`)) {
@@ -2341,7 +2353,7 @@ const Modal = {
 };
 
 const renderMenuLabel = ({ img, text, icon }) => {
-  if (!img) return html`<span class="menu-btn-icon">${icon}</span> ${text}`;
+  if (!img) return html`<span class="inl menu-btn-icon">${icon}</span> ${text}`;
   return html`<img class="abs center img-btn-square-menu" src="${getProxyPath()}assets/ui-icons/${img}" />
     <div class="abs center main-btn-menu-text">${text}</div>`;
 };
@@ -2444,7 +2456,7 @@ const subMenuRender = async (subMenuId) => {
     menuContainer.style.height = `${_hBtn * 6}px`;
     arrow.style.rotate = '0deg';
     setTimeout(() => {
-      menuBtn.style.marginBottom = `${_hBtn * 6 + 4}px`;
+      menuBtn.style.marginBottom = `${_hBtn * sa(`.menu-label-text-${subMenuId}`).length + 4}px`;
       arrow.style.rotate = '180deg';
     });
   }
