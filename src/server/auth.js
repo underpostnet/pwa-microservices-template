@@ -512,6 +512,7 @@ async function refreshSessionAndToken(req, res, User, options = { host: '', path
 
   if (!user) {
     // Possible token reuse: look up user by some other signals? If not possible, log and throw.
+    // TODO: on cors requests, this will throw an error, because the cookie is not sent.
     logger.warn('Refresh token reuse or invalid token detected');
     // Optional: revoke by clearing cookie and returning unauthorized
     res.clearCookie('refreshToken', { path: '/' });
@@ -663,6 +664,7 @@ function applySecurity(app, opts = {}) {
       maxAge: 600,
     }),
   );
+  logger.info('Cors origin', origin);
 
   // Rate limiting + slow down
   const limiter = rateLimit({

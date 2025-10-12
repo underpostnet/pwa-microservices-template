@@ -2,17 +2,26 @@ import fs from 'fs-extra';
 import nodemon from 'nodemon';
 import { shellExec } from './process.js';
 import { loggerFactory } from './logger.js';
+import { writeEnv } from './conf.js';
+import dotenv from 'dotenv';
 
 const logger = loggerFactory(import.meta);
 
-const createClientDevServer = () => {
-  // process.argv.slice(2).join(' ')
-  shellExec(`env-cmd -f .env.development node bin/deploy build-full-client ${process.argv.slice(2).join(' ')}`);
+const createClientDevServer = (
+  deployId = process.argv[2] || 'dd-default',
+  subConf = process.argv[3] || '',
+  host = process.argv[4] || 'default.net',
+  path = process.argv[5] || '/',
+) => {
   shellExec(
-    `env-cmd -f .env.development node src/api ${process.argv[2]}${process.argv[5] ? ` ${process.argv[5]}` : ''}${
-      process.argv.includes('static') ? ' static' : ''
-    }`,
-    { async: true },
+    `env-cmd -f ./engine-private/conf/${deployId}/.env.${process.env.NODE_ENV}.${subConf}-dev-client node bin/deploy build-full-client ${deployId} ${subConf}-dev-client ${host} ${path}`.trim(),
+  );
+
+  shellExec(
+    `env-cmd -f ./engine-private/conf/${deployId}/.env.${process.env.NODE_ENV}.${subConf}-dev-client node src/server ${deployId} ${subConf}-dev-client`.trim(),
+    {
+      async: true,
+    },
   );
 
   // https://github.com/remy/nodemon/blob/main/doc/events.md
@@ -28,7 +37,11 @@ const createClientDevServer = () => {
 
   let buildPathScope = [];
 
-  const nodemonOptions = { script: './src/client.build', args: process.argv.slice(2), watch: 'src/client' };
+  const nodemonOptions = {
+    script: './src/client.build',
+    args: [`${deployId}`, `${subConf}-dev-client`, `${host}`, `${path}`],
+    watch: 'src/client',
+  };
   logger.info('nodemon option', { nodemonOptions });
   nodemon(nodemonOptions)
     .on('start', function (...args) {

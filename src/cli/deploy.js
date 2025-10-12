@@ -14,7 +14,6 @@ import fs from 'fs-extra';
 import dotenv from 'dotenv';
 import UnderpostRootEnv from './env.js';
 import UnderpostCluster from './cluster.js';
-import Underpost from '../index.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -62,6 +61,7 @@ class UnderpostDeploy {
         .join('');
     },
     deploymentYamlPartsFactory({ deployId, env, suffix, resources, replicas, image }) {
+      const packageJson = JSON.parse(fs.readFileSync('./package.json', 'utf8'));
       return `apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -80,7 +80,7 @@ spec:
     spec:
       containers:
         - name: ${deployId}-${env}-${suffix}
-          image: ${image ?? `localhost/rockylinux9-underpost:${Underpost.version}`}
+          image: ${image ?? `localhost/rockylinux9-underpost:${packageJson.version}`}
 #          resources:
 #            requests:
 #              memory: "${resources.requests.memory}"
@@ -124,7 +124,6 @@ spec:
         if (!deployId) continue;
         const confServer = loadReplicas(
           JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8')),
-          'proxy',
         );
         const router = await UnderpostDeploy.API.routerFactory(deployId, env);
         const pathPortAssignmentData = pathPortAssignmentFactory(router, confServer);
