@@ -1,8 +1,9 @@
 /**
- * @namespace Runtime
- * @description The main runtime orchestrator responsible for reading configuration,
+ * The main runtime orchestrator responsible for reading configuration,
  * initializing services (Prometheus, Ports, DB, Mailer), and building the
  * specific server runtime for each host/path (e.g., nodejs, lampp).
+ * @module src/server/runtime.js
+ * @namespace Runtime
  */
 
 import fs from 'fs-extra';
@@ -27,6 +28,7 @@ const logger = loggerFactory(import.meta);
  *
  * @memberof Runtime
  * @returns {Promise<void>}
+ * @function buildRuntime
  */
 const buildRuntime = async () => {
   const deployId = process.env.DEPLOY_ID;
@@ -74,6 +76,7 @@ const buildRuntime = async () => {
         replicas,
         valkey,
         apiBaseHost,
+        useLocalSsl,
       } = confServer[host][path];
 
       // Calculate context data
@@ -113,6 +116,7 @@ const buildRuntime = async () => {
             apis,
             origins,
             directory,
+            useLocalSsl,
             ws,
             mailer,
             db,

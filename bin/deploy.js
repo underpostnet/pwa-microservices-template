@@ -1459,6 +1459,15 @@ nvidia/gpu-operator \
       // sudo yum install sbt
       break;
     }
+
+    case 'ssl': {
+      fs.mkdirSync(`./engine-private/ssl/localhost`, { recursive: true });
+      const targetDir = `./engine-private/ssl/localhost`;
+      const domains = ['localhost', '127.0.0.1', '::1'];
+      shellExec(`chmod +x ./scripts/ssl.sh`);
+      shellExec(`./scripts/ssl.sh ${targetDir} "${domains.join(' ')}"`);
+      break;
+    }
   }
 } catch (error) {
   logger.error(error, error.stack);

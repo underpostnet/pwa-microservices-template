@@ -15,6 +15,13 @@ import fs from 'fs-extra';
 
 const logger = loggerFactory(import.meta);
 
+/**
+ * @class UnderpostCluster
+ * @description Manages Kubernetes cluster initialization, configuration, and component deployment.
+ * This class provides a set of static methods to handle cluster initialization, configuration,
+ * and optional component deployments.
+ * @memberof UnderpostCluster
+ */
 class UnderpostCluster {
   static API = {
     /**
@@ -520,7 +527,7 @@ net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`,
 
       // shellExec(`sudo sysctl --system`); // Apply sysctl changes immediately
       // Apply NAT iptables rules.
-      shellExec(`${underpostRoot}/manifests/maas/nat-iptables.sh`, { silent: true });
+      shellExec(`${underpostRoot}/scripts/nat-iptables.sh`, { silent: true });
 
       // Disable firewalld (common cause of network issues in Kubernetes)
       shellExec(`sudo systemctl stop firewalld || true`); // Stop if running
@@ -663,8 +670,8 @@ net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`,
         shellExec('sudo iptables -F || true');
         shellExec('sudo iptables -t nat -F || true');
         // Restore iptables rules
-        shellExec(`chmod +x ${options.underpostRoot}/manifests/maas/nat-iptables.sh`);
-        shellExec(`${options.underpostRoot}/manifests/maas/nat-iptables.sh`, { silent: true });
+        shellExec(`chmod +x ${options.underpostRoot}/scripts/nat-iptables.sh`);
+        shellExec(`${options.underpostRoot}/scripts/nat-iptables.sh`, { silent: true });
         shellExec('sudo ip link del cni0 || true');
         shellExec('sudo ip link del flannel.1 || true');
 
