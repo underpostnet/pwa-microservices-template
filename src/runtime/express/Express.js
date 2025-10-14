@@ -21,7 +21,7 @@ import { createPeerServer } from '../../server/peer.js';
 import { createValkeyConnection } from '../../server/valkey.js';
 import { applySecurity, authMiddlewareFactory } from '../../server/auth.js';
 import { ssrMiddlewareFactory } from '../../server/ssr.js';
-import { Ssl } from '../../server/ssl.js';
+import { TLS } from '../../server/tls.js';
 import { shellExec } from '../../server/process.js';
 
 const logger = loggerFactory(import.meta);
@@ -226,9 +226,7 @@ class ExpressService {
         const peerPort = newInstance(port + portsUsed); // portsUsed is 1 here
         const { options, meta, peerServer } = await createPeerServer({
           port: peerPort,
-          devPort: port,
           origins,
-          host,
           path,
         });
         await UnderpostStartUp.API.listenPortController(peerServer, peerPort, {
@@ -247,8 +245,8 @@ class ExpressService {
 
     // Start listening on the main port
     if (useLocalSsl && process.env.NODE_ENV === 'development') {
-      if (!Ssl.validateSecureContext()) shellExec(`node bin/deploy ssl`);
-      const { ServerSSL } = await Ssl.createSslServer(app);
+      if (!TLS.validateSecureContext()) shellExec(`node bin/deploy tls`);
+      const { ServerSSL } = await TLS.createSslServer(app);
       await UnderpostStartUp.API.listenPortController(ServerSSL, port, runningData);
     } else await UnderpostStartUp.API.listenPortController(server, port, runningData);
 

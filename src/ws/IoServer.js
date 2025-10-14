@@ -15,7 +15,7 @@ import http from 'http';
 const logger = loggerFactory(import.meta);
 
 /**
- * @class
+ * @class IoServerClass
  * @alias IoServerClass
  * @memberof SocketIoServer
  * @classdesc Provides a static factory method to create and configure a Socket.IO server,
@@ -37,6 +37,7 @@ class IoServerClass {
    * @returns {object} return.meta - The module's import meta object (`import.meta`).
    */
   static create(httpServer, options = {}, ConnectionHandler = () => {}) {
+    logger.info('origins', options.origins);
     const wsOptions = {
       cors: {
         origins: options.origins,
