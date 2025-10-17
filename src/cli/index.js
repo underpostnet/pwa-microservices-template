@@ -64,10 +64,11 @@ program
 // 'cmt' command: Commit changes to a GitHub repository
 program
   .command('cmt')
-  .argument('<path>', 'The absolute or relative directory path of the repository.')
-  .argument(`<commit-type>`, `The type of commit to perform. Options: ${Object.keys(commitData).join(', ')}.`)
+  .argument('[path]', 'The absolute or relative directory path of the repository.')
+  .argument(`[commit-type]`, `The type of commit to perform. Options: ${Object.keys(commitData).join(', ')}.`)
   .argument(`[module-tag]`, 'Optional: Sets a specific module tag for the commit.')
   .argument(`[message]`, 'Optional: Provides an additional custom message for the commit.')
+  .option(`--log`, 'Shows commit history from the specified number of latest n path commits.')
   .option('--empty', 'Allows committing with empty files.')
   .option('--copy', 'Copies the generated commit message to the clipboard.')
   .option('--info', 'Displays information about available commit types.')
@@ -183,6 +184,7 @@ program
   .option('--versions <deployment-versions>', 'A comma-separated list of custom deployment versions.')
   .option('--traffic <traffic-versions>', 'A comma-separated list of custom deployment traffic weights.')
   .option('--disable-update-deployment', 'Disables updates to deployments.')
+  .option('--disable-update-proxy', 'Disables updates to proxies.')
   .option('--info-traffic', 'Retrieves traffic configuration from current resource deployments.')
   .option('--kubeadm', 'Enables the kubeadm context for deployment operations.')
   .option('--etc-hosts', 'Enables the etc-hosts context for deployment operations.')

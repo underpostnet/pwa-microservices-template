@@ -83,7 +83,7 @@ class UnderpostRepository {
      * @memberof UnderpostRepository
      */
     commit(
-      repoPath = './',
+      repoPath = undefined,
       commitType = 'feat',
       subModule = '',
       message = '',
@@ -91,8 +91,31 @@ class UnderpostRepository {
         copy: false,
         info: false,
         empty: false,
+        log: false,
       },
     ) {
+      if (options.log) {
+        const history = UnderpostRepository.API.getHistory(repoPath);
+        if (history[0]) {
+          pbcopy(
+            history
+              .reverse()
+              .map((commitData, i) => `${i === 0 ? '' : ' && '}git --no-pager show ${commitData.hash}`)
+              .join(''),
+          );
+          for (const commit of history) {
+            console.log(commit.hash.yellow, commit.message);
+            console.log(
+              shellExec(`git show --name-status --pretty="" ${commit.hash}`, {
+                stdout: true,
+                silent: true,
+                disableLog: true,
+              }).red,
+            );
+          }
+        } else logger.warn('No commits found');
+        return;
+      }
       if (commitType === 'reset') {
         if (options.copy) pbcopy(shellExec(`git --no-pager log -1 --pretty=%B`, { stdout: true }));
         shellExec(`cd ${repoPath} && git reset --soft HEAD~${isNaN(parseInt(subModule)) ? 1 : parseInt(subModule)}`);
@@ -267,6 +290,24 @@ Prevent build private config repo.`,
         engineVersion: packageJsonEngine.version,
         deployVersion: packageJsonDeploy.version,
       };
+    },
+    getHistory(sinceCommit = 5) {
+      return shellExec(`git log --oneline --graph --decorate -n ${sinceCommit}`, { stdout: true, silent: true })
+        .split(`\n`)
+        .map((line) => {
+          return {
+            hash: line.slice(2, 10),
+            message: line.slice(11),
+          };
+        })
+        .filter((line) => line.hash)
+        .map((line) => {
+          line.files = shellExec(`git show --name-status --pretty="" ${line.hash}`, {
+            stdout: true,
+            silent: true,
+          });
+          return line;
+        });
     },
   };
 }
