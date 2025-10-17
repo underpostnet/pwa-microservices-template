@@ -251,7 +251,7 @@ try {
       break;
 
     case 'sync-env-port':
-      const dataDeploy = getDataDeploy({ deployGroupId: process.argv[3], disableSyncEnvPort: true });
+      const dataDeploy = getDataDeploy({ disableSyncEnvPort: true });
       const dataEnv = [
         { env: 'production', port: 3000 },
         { env: 'development', port: 4000 },
@@ -459,7 +459,6 @@ try {
       );
       shellExec(`node bin/deploy cli-docs ${version} ${newVersion}`);
       shellExec(`node bin/deploy update-dependencies`);
-      shellExec(`auto-changelog`);
       shellExec(`node bin/build dd`);
       shellExec(
         `node bin deploy --kubeadm --build-manifest --sync --info-router --replicas 1 --node ${node} dd production`,

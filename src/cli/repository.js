@@ -96,13 +96,11 @@ class UnderpostRepository {
     ) {
       if (options.log) {
         const history = UnderpostRepository.API.getHistory(repoPath);
+        const chainCmd = history
+          .reverse()
+          .map((commitData, i) => `${i === 0 ? '' : ' && '}git --no-pager show ${commitData.hash}`)
+          .join('');
         if (history[0]) {
-          pbcopy(
-            history
-              .reverse()
-              .map((commitData, i) => `${i === 0 ? '' : ' && '}git --no-pager show ${commitData.hash}`)
-              .join(''),
-          );
           for (const commit of history) {
             console.log(commit.hash.yellow, commit.message);
             console.log(
@@ -113,6 +111,8 @@ class UnderpostRepository {
               }).red,
             );
           }
+          if (options.copy) pbcopy(chainCmd);
+          else console.log('Show all:', chainCmd);
         } else logger.warn('No commits found');
         return;
       }
@@ -292,7 +292,11 @@ Prevent build private config repo.`,
       };
     },
     getHistory(sinceCommit = 5) {
-      return shellExec(`git log --oneline --graph --decorate -n ${sinceCommit}`, { stdout: true, silent: true })
+      return shellExec(`git log --oneline --graph --decorate -n ${sinceCommit}`, {
+        stdout: true,
+        silent: true,
+        disableLog: true,
+      })
         .split(`\n`)
         .map((line) => {
           return {
@@ -305,6 +309,7 @@ Prevent build private config repo.`,
           line.files = shellExec(`git show --name-status --pretty="" ${line.hash}`, {
             stdout: true,
             silent: true,
+            disableLog: true,
           });
           return line;
         });
