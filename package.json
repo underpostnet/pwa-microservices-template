@@ -2,7 +2,7 @@
     "type": "module",
     "main": "src/index.js",
     "name": "underpost",
-    "version": "2.8.887",
+    "version": "2.81.0",
     "description": "pwa api rest template",
     "scripts": {
         "start": "env-cmd -f .env.production node --max-old-space-size=8192 src/server",
@@ -93,7 +93,6 @@
         "peer": "^1.0.2",
         "peerjs": "^1.5.2",
         "prom-client": "^15.1.2",
-        "public-ip": "^6.0.1",
         "read": "^2.1.0",
         "rrule": "^2.8.1",
         "sharp": "^0.32.5",

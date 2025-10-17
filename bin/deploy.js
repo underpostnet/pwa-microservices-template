@@ -27,7 +27,7 @@ import { buildClient } from '../src/server/client-build.js';
 import { DefaultConf } from '../conf.js';
 import colors from 'colors';
 import { program } from '../src/cli/index.js';
-import { getLocalIPv4Address, ip } from '../src/server/dns.js';
+import Dns, { getLocalIPv4Address } from '../src/server/dns.js';
 import { timer } from '../src/client/components/core/CommonJs.js';
 
 colors.enable();
@@ -124,8 +124,12 @@ try {
     case 'conf': {
       let subConf = process.argv[5] ?? '';
 
-      if (!['current', 'clean'].includes(process.argv[3]))
-        dotenv.config({ path: `./engine-private/conf/${process.argv[3]}/.env.${process.argv[4]}`, override: true });
+      if (!['current', 'clean', 'root'].includes(process.argv[3])) {
+        const path = fs.existsSync(`./engine-private/replica/${process.argv[3]}`)
+          ? `./engine-private/replica/${process.argv[3]}/.env.${process.argv[4]}`
+          : `./engine-private/conf/${process.argv[3]}/.env.${process.argv[4]}`;
+        dotenv.config({ path, override: true });
+      }
 
       loadConf(process.argv[3], subConf);
       break;
@@ -267,6 +271,7 @@ try {
           writeEnv(envPath, envObj);
         }
         const serverConf = loadReplicas(
+          deployId,
           JSON.parse(fs.readFileSync(`${baseConfPath}/${deployId}/conf.server.json`, 'utf8')),
         );
         for (const host of Object.keys(serverConf)) {
@@ -287,6 +292,7 @@ try {
       const host = process.argv[4];
       const path = process.argv[5];
       const serverConf = loadReplicas(
+        deployId,
         JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8')),
       );
 
@@ -491,6 +497,7 @@ try {
       shellExec(
         `underpost secret underpost --create-from-file /home/dd/engine/engine-private/conf/dd-cron/.env.production`,
       );
+      shellExec(`node bin/deploy sync-deploy-envs`);
       shellExec(`node bin/build dd conf`);
       shellExec(`git add . && cd ./engine-private && git add .`);
       shellExec(`node bin cmt . ci package-pwa-microservices-template`);
@@ -572,10 +579,10 @@ ${shellExec(`git log | grep Author: | sort -u`, { stdout: true }).split(`\n`).jo
             `${key}`.toUpperCase().match('MAC')
               ? 'changethis'
               : isNaN(parseFloat(privateEnv[key]))
-              ? `${privateEnv[key]}`.match(`@`)
-                ? 'admin@default.net'
-                : 'changethis'
-              : privateEnv[key];
+                ? `${privateEnv[key]}`.match(`@`)
+                  ? 'admin@default.net'
+                  : 'changethis'
+                : privateEnv[key];
         }
         return env;
       };
@@ -662,7 +669,7 @@ ${shellExec(`git log | grep Author: | sort -u`, { stdout: true }).split(`\n`).jo
       // generate + import + start
       // node bin/deploy ssh root@<host> <password>
 
-      const host = process.argv[3] ?? `root@${await ip.public.ipv4()}`;
+      const host = process.argv[3] ?? `root@${await Dns.getPublicIp()}`;
       const domain = host.split('@')[1];
       const user = 'root'; // host.split('@')[0];
       const password = process.argv[4] ?? '';

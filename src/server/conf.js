@@ -11,6 +11,7 @@ import {
   capFirst,
   getCapVariableName,
   newInstance,
+  orderAbc,
   orderArrayFromAttrInt,
   range,
   timer,
@@ -154,18 +155,20 @@ const Config = {
    * @memberof ServerConfBuilder
    */
   buildProxyByDeployId: function (deployId = 'dd-default', subConf = '') {
-    let confPath = `./engine-private/conf/${deployId}/conf.server.json`;
-    const privateConfDevPath = fs.existsSync(`./engine-private/replica/${deployId}/conf.server.json`)
+    let confPath = fs.existsSync(`./engine-private/replica/${deployId}/conf.server.json`)
       ? `./engine-private/replica/${deployId}/conf.server.json`
-      : `./engine-private/conf/${deployId}/conf.server.dev.${subConf}.json`;
-    const confDevPath = fs.existsSync(privateConfDevPath)
-      ? privateConfDevPath
-      : `./engine-private/conf/${deployId}/conf.server.dev.json`;
+      : `./engine-private/conf/${deployId}/conf.server.json`;
 
-    if (fs.existsSync(confDevPath)) confPath = confDevPath;
+    if (
+      process.env.NODE_ENV === 'development' &&
+      subConf &&
+      fs.existsSync(`./engine-private/conf/${deployId}/conf.server.dev.${subConf}.json`)
+    )
+      confPath = `./engine-private/conf/${deployId}/conf.server.dev.${subConf}.json`;
+
     const serverConf = JSON.parse(fs.readFileSync(confPath, 'utf8'));
 
-    for (const host of Object.keys(loadReplicas(serverConf)))
+    for (const host of Object.keys(loadReplicas(deployId, serverConf)))
       this.default.server[host] = {
         ...this.default.server[host],
         ...serverConf[host],
@@ -231,7 +234,7 @@ const loadConf = (deployId = 'dd-default', subConf) => {
       const devConfPath = `${folder}/conf.${typeConf}.dev${subConf ? `.${subConf}` : ''}.json`;
       if (fs.existsSync(devConfPath)) srcConf = fs.readFileSync(devConfPath, 'utf8');
     }
-    if (typeConf === 'server') srcConf = JSON.stringify(loadReplicas(JSON.parse(srcConf)), null, 4);
+    if (typeConf === 'server') srcConf = JSON.stringify(loadReplicas(deployId, JSON.parse(srcConf)), null, 4);
     fs.writeFileSync(`./conf/conf.${typeConf}.json`, srcConf, 'utf8');
   }
   fs.writeFileSync(`./.env.production`, fs.readFileSync(`${folder}/.env.production`, 'utf8'), 'utf8');
@@ -263,19 +266,30 @@ const loadConf = (deployId = 'dd-default', subConf) => {
  * @param {object} confServer - The server configuration.
  * @memberof ServerConfBuilder
  */
-const loadReplicas = (confServer) => {
+const loadReplicas = (deployId, confServer) => {
+  const confServerOrigin = newInstance(confServer);
   for (const host of Object.keys(confServer)) {
     for (const path of Object.keys(confServer[host])) {
       const { replicas, singleReplica } = confServer[host][path];
-      if (replicas && !singleReplica)
-        for (const replicaPath of replicas) {
-          {
-            confServer[host][replicaPath] = newInstance(confServer[host][path]);
-            delete confServer[host][replicaPath].replicas;
+      if (replicas) {
+        if (!singleReplica)
+          for (const replicaPath of replicas) {
+            {
+              confServer[host][replicaPath] = newInstance(confServer[host][path]);
+              delete confServer[host][replicaPath].replicas;
+            }
           }
+        else {
+          const orderReplica = orderAbc(confServerOrigin[host][path].replicas);
+          confServerOrigin[host][path].replicas = orderReplica;
+          confServer[host][path].replicas = orderReplica;
         }
+      }
     }
   }
+  const serverPath = `./engine-private/conf/${deployId}/conf.server${process.env.NODE_ENV === 'production' ? '' : '.dev'}.json`;
+  if (fs.existsSync(serverPath)) fs.writeFileSync(serverPath, JSON.stringify(confServerOrigin, null, 4), 'utf8');
+
   return confServer;
 };
 
@@ -866,6 +880,7 @@ const getDataDeploy = (
   let buildDataDeploy = [];
   for (const deployObj of dataDeploy) {
     const serverConf = loadReplicas(
+      deployObj.deployId,
       JSON.parse(fs.readFileSync(`./engine-private/conf/${deployObj.deployId}/conf.server.json`, 'utf8')),
     );
     let replicaDataDeploy = [];
@@ -1039,6 +1054,7 @@ const mergeFile = async (parts = [], outputFilePath) => {
  */
 const rebuildConfFactory = ({ deployId, valkey, mongo }) => {
   const confServer = loadReplicas(
+    deployId,
     JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8')),
   );
   const hosts = {};
@@ -1306,9 +1322,9 @@ const buildCliDoc = (program, oldVersion, newVersion) => {
 ` +
       baseOptions +
       `
-      
+
 <a target="_top" href="https://github.com/${process.env.GITHUB_USERNAME}/pwa-microservices-template/blob/master/cli.md">See complete CLI Docs here.</a>
-      
+
 `
     ).replaceAll(oldVersion, newVersion),
     'utf8',

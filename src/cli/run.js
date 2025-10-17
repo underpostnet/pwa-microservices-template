@@ -169,15 +169,18 @@ class UnderpostRun {
      */
     'dev-cluster': (path, options = UnderpostRun.DEFAULT_OPTION) => {
       const baseCommand = options.dev ? 'node bin' : 'underpost';
-      shellExec(`${baseCommand} cluster${options.dev ? ' --dev' : ''} --reset`);
-      shellExec(`${baseCommand} cluster${options.dev ? ' --dev' : ''}`);
       const mongoHosts = ['mongodb-0.mongodb-service'];
-      shellExec(
-        `${baseCommand} cluster${options.dev ? ' --dev' : ''} --mongodb --mongo-db-host ${mongoHosts.join(
-          ',',
-        )} --pull-image`,
-      );
-      shellExec(`${baseCommand} cluster${options.dev ? ' --dev' : ''} --valkey --pull-image`);
+      if (path !== 'expose') {
+        shellExec(`${baseCommand} cluster${options.dev ? ' --dev' : ''} --reset`);
+        shellExec(`${baseCommand} cluster${options.dev ? ' --dev' : ''}`);
+
+        shellExec(
+          `${baseCommand} cluster${options.dev ? ' --dev' : ''} --mongodb --mongo-db-host ${mongoHosts.join(
+            ',',
+          )} --pull-image`,
+        );
+        shellExec(`${baseCommand} cluster${options.dev ? ' --dev' : ''} --valkey --pull-image`);
+      }
       shellExec(`${baseCommand} deploy --expose mongo`, { async: true });
       shellExec(`${baseCommand} deploy --expose valkey`, { async: true });
       {
@@ -206,7 +209,9 @@ class UnderpostRun {
      * @memberof UnderpostRun
      */
     'dev-hosts-expose': (path, options = UnderpostRun.DEFAULT_OPTION) => {
-      shellExec(`node bin deploy ${path} development --disable-update-deployment --kubeadm --etc-hosts`);
+      shellExec(
+        `node bin deploy ${path} development --disable-update-deployment --disable-update-proxy --kubeadm --etc-hosts`,
+      );
     },
 
     /**
@@ -550,7 +555,7 @@ class UnderpostRun {
     },
     /**
      * @method cluster
-     * @description Deploys a full production-ready Kubernetes cluster environment including MongoDB, MariaDB, Valkey, Contour (Ingress), and Cert-Manager, and deploys all services.
+     * @description Deploys a full production/development ready Kubernetes cluster environment including MongoDB, MariaDB, Valkey, Contour (Ingress), and Cert-Manager, and deploys all services.
      * @param {string} path - The input value, identifier, or path for the operation.
      * @param {Object} options - The default underpost runner options for customizing workflow
      * @memberof UnderpostRun

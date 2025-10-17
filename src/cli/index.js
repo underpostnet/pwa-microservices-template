@@ -90,7 +90,7 @@ program
   .command('env')
   .argument(
     '[deploy-id]',
-    `The deployment configuration ID. Use 'clean' to restore default environment settings. User 'root' to load root env. User 'current' to get plain current deploy Id.`,
+    `The deployment configuration ID. Use 'clean' to restore default environment settings. Use 'root' to load underpost root env. Use 'current' to get plain current deploy Id.`,
   )
   .argument('[env]', 'Optional: The environment to set (e.g., "production", "development"). Defaults to "production".')
   .argument('[subConf]', 'Optional: The sub configuration to set.')
@@ -185,7 +185,10 @@ program
   .option('--traffic <traffic-versions>', 'A comma-separated list of custom deployment traffic weights.')
   .option('--disable-update-deployment', 'Disables updates to deployments.')
   .option('--disable-update-proxy', 'Disables updates to proxies.')
-  .option('--info-traffic', 'Retrieves traffic configuration from current resource deployments.')
+  .option(
+    '--status',
+    'Retrieves current network traffic data from resource deployments and the host machine network configuration.',
+  )
   .option('--kubeadm', 'Enables the kubeadm context for deployment operations.')
   .option('--etc-hosts', 'Enables the etc-hosts context for deployment operations.')
   .option('--restore-hosts', 'Restores default `/etc/hosts` entries.')
