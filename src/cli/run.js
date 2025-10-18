@@ -356,14 +356,21 @@ class UnderpostRun {
     },
     /**
      * @method ide
-     * @description Opens a Visual Studio Code (VS Code) session for the specified path using `node ${underpostRoot}/bin/zed ${path}`.
+     * @description Opens a Visual Studio Code (VS Code) session for the specified path using `node ${underpostRoot}/bin/zed ${path}`,
+     * or installs Zed and sublime-text IDE if `path` is 'install'.
      * @param {string} path - The input value, identifier, or path for the operation (used as the path to the directory to open in the IDE).
      * @param {Object} options - The default underpost runner options for customizing workflow
      * @memberof UnderpostRun
      */
     ide: (path, options = UnderpostRun.DEFAULT_OPTION) => {
       const { underpostRoot } = options;
-      shellExec(`node ${underpostRoot}/bin/zed ${path}`);
+      if (path === 'install') {
+        shellExec(`sudo curl -f https://zed.dev/install.sh | sh`);
+        shellExec(
+          `sudo dnf config-manager --add-repo https://download.sublimetext.com/rpm/stable/x86_64/sublime-text.repo`,
+        );
+        shellExec(`sudo dnf install -y sublime-text`);
+      } else shellExec(`node ${underpostRoot}/bin/zed ${path}`);
     },
     /**
      * @method sync
@@ -424,6 +431,20 @@ class UnderpostRun {
     'ls-deployments': async (path, options = UnderpostRun.DEFAULT_OPTION) => {
       console.table(await UnderpostDeploy.API.get(path, 'deployments'));
     },
+
+    /**
+     * @method host-update
+     * @description Executes the `rocky-setup.sh` script to update the host system configuration.
+     * @param {string} path - The input value, identifier, or path for the operation.
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @memberof UnderpostRun
+     */
+    'host-update': async (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      // const baseCommand = options.dev ? 'node bin' : 'underpost';
+      shellExec(`chmod +x ${options.underpostRoot}/scripts/rocky-setup.sh`);
+      shellExec(`${options.underpostRoot}/scripts/rocky-setup.sh --yes${options.dev ? ' --install-dev' : ``}`);
+    },
+
     /**
      * @method monitor
      * @description Monitors a specific pod (identified by `path`) for the existence of a file (`/await`), and performs conditional actions (like file copying and opening Firefox) when the file is removed.
