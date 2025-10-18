@@ -82,6 +82,11 @@ class UnderpostRepository {
      * @param {boolean} [options.copy=false] - If true, copies the commit message to the clipboard.
      * @param {boolean} [options.info=false] - If true, displays information about commit types.
      * @param {boolean} [options.empty=false] - If true, allows an empty commit.
+     * @param {boolean} [options.diff=false] - If true, shows the diff of the last commit.
+     * @param {boolean} [options.edit=false] - If true, amends the last commit without changing the message.
+     * @param {boolean} [options.cached=false] - If true, commits only staged changes.
+     * @param {number} [options.log=0] - If greater than 0, shows the last N commits with diffs.
+     * @param {boolean} [options.lastMsg=0] - If true, copies the last last single n commit message to clipboard.
      * @memberof UnderpostRepository
      */
     commit(
@@ -95,12 +100,20 @@ class UnderpostRepository {
         empty: false,
         diff: false,
         edit: false,
+        cached: false,
+        lastMsg: 0,
         log: 0,
       },
     ) {
       if (!repoPath) repoPath = '.';
+      if (options.lastMsg) {
+        if (options.copy) {
+          pbcopy(UnderpostRepository.API.getLastCommitMsg(options.lastMsg - 1));
+        } else console.log(UnderpostRepository.API.getLastCommitMsg(options.lastMsg - 1));
+        return;
+      }
       if (options.diff) {
-        const _diffCmd = `git ${diffCmd.replace('show', 'diff')}`;
+        const _diffCmd = `git ${diffCmd.replace('show', `diff${options.cached ? ` --cached` : ''}`)}`;
         if (options.copy) pbcopy(_diffCmd);
         else console.log('Diff command:', _diffCmd);
         return;
@@ -147,8 +160,8 @@ class UnderpostRepository {
      * @returns {string} The last commit message.
      * @memberof UnderpostRepository
      */
-    getLastCommitMsg() {
-      return shellExec(`git --no-pager log -1 --pretty=%B`, { stdout: true });
+    getLastCommitMsg(skip = 0) {
+      return shellExec(`git --no-pager log -1 --skip=${skip} --pretty=%B`, { stdout: true });
     },
 
     /**
