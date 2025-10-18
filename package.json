@@ -18,7 +18,7 @@
         "proxy": "node src/proxy proxy",
         "docs": "jsdoc -c jsdoc.json",
         "install-global": "npm install -g pm2 && npm install -g jsdoc && npm install -g prettier && npm install -g env-cmd",
-        "install-test": "npm install -g mocha && npm install -g c8 && npm install -g nyc && npm install -g coveralls",
+        "install-test": "npm install -g mocha && npm install -g c8 && npm install -g coveralls",
         "install-underpost": "cp -a $(npm root -g)/underpost/node_modules ./node_modules && npm install --only=dev --ignore-scripts",
         "install": "npm run install-global && npm run install-test",
         "prettier": "prettier --write .",
