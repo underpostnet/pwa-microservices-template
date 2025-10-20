@@ -274,7 +274,7 @@ class UnderpostRun {
      * @param {Object} options - The default underpost runner options for customizing workflow
      * @memberof UnderpostRun
      */
-    'template-deploy': (path, options = UnderpostRun.DEFAULT_OPTION) => {
+    'template-deploy': (path = '', options = UnderpostRun.DEFAULT_OPTION) => {
       const baseCommand = options.dev ? 'node bin' : 'underpost';
       shellExec(`${baseCommand} run clean`);
       shellExec(
@@ -314,16 +314,23 @@ class UnderpostRun {
     },
     /**
      * @method pull
-     * @description Cleans the core repository and pulls the latest content for `engine` and `engine-private` repositories from the remote.
+     * @description Clones or pulls updates for the `engine` and `engine-private` repositories into `/home/dd/engine` and `/home/dd/engine/engine-private`.
      * @param {string} path - The input value, identifier, or path for the operation.
      * @param {Object} options - The default underpost runner options for customizing workflow
      * @memberof UnderpostRun
      */
     pull: (path, options = UnderpostRun.DEFAULT_OPTION) => {
-      shellCd(`/home/dd/engine`);
-      shellExec(`node bin/deploy clean-core-repo`);
-      shellExec(`underpost pull . ${process.env.GITHUB_USERNAME}/engine`);
-      shellExec(`underpost pull ./engine-private ${process.env.GITHUB_USERNAME}/engine-private`);
+      if (!fs.existsSync(`/home/dd`) || !fs.existsSync(`/home/dd/engine`)) {
+        fs.mkdirSync(`/home/dd`, { recursive: true });
+        shellExec(`cd /home/dd && underpost clone ${process.env.GITHUB_USERNAME}/engine`);
+      } else {
+        shellExec(`underpost run clean`);
+        shellExec(`cd /home/dd/engine && underpost pull . ${process.env.GITHUB_USERNAME}/engine`);
+      }
+      if (!fs.existsSync(`/home/dd/engine/engine-private`))
+        shellExec(`cd /home/dd/engine && underpost clone ${process.env.GITHUB_USERNAME}/engine-private`);
+      else
+        shellExec(`cd /home/dd/engine/engine-private underpost pull . ${process.env.GITHUB_USERNAME}/engine-private`);
     },
     /**
      * @method release-deploy
@@ -445,6 +452,43 @@ class UnderpostRun {
       // const baseCommand = options.dev ? 'node bin' : 'underpost';
       shellExec(`chmod +x ${options.underpostRoot}/scripts/rocky-setup.sh`);
       shellExec(`${options.underpostRoot}/scripts/rocky-setup.sh --yes${options.dev ? ' --install-dev' : ``}`);
+    },
+
+    /**
+     * @method dev-container
+     * @description Runs a development container pod named `underpost-dev-container` with specified volume mounts and opens a terminal to follow its logs.
+     * @param {string} path - The input value, identifier, or path for the operation (used as an optional command to run inside the container).
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @memberof UnderpostRun
+     */
+    'dev-container': async (path = '', options = UnderpostRun.DEFAULT_OPTION) => {
+      options.dev = true;
+      const baseCommand = options.dev ? 'node bin' : 'underpost';
+      const baseClusterCommand = options.dev ? ' --dev' : '';
+      const currentImage = UnderpostDeploy.API.getCurrentLoadedImages('kind-worker', false).find((o) =>
+        o.IMAGE.match('underpost'),
+      );
+      const podName = `underpost-dev-container`;
+      if (!UnderpostDeploy.API.existsContainerFile({ podName: 'kind-worker', path: '/home/dd/engine' })) {
+        shellExec(`docker exec -i kind-worker bash -c "mkdir -p /home/dd"`);
+        shellExec(`docker cp /home/dd/engine kind-worker:/home/dd/engine`);
+        shellExec(`docker exec -i kind-worker bash -c "chown -R 1000:1000 /home/dd || true; chmod -R 755 /home/dd"`);
+      }
+      if (!currentImage) shellExec(`${baseCommand} dockerfile-pull-base-images${baseClusterCommand} --kind-load`);
+      // shellExec(`kubectl delete pod ${podName} --ignore-not-found`);
+      await UnderpostRun.RUNNERS['deploy-job']('', {
+        dev: true,
+        podName,
+        imageName: currentImage ? currentImage.image : `localhost/rockylinux9-underpost:${Underpost.version}`,
+        volumeHostPath: '/home/dd',
+        volumeMountPath: '/home/dd',
+        on: {
+          init: async () => {
+            // openTerminal(`kubectl logs -f ${podName}`);
+          },
+        },
+        args: [daemonProcess(path ? path : `cd /home/dd/engine && npm run test`)],
+      });
     },
 
     /**
