@@ -50,6 +50,8 @@ class UnderpostRun {
    * @property {boolean} k3s - Whether to run in k3s mode.
    * @property {boolean} kubeadm - Whether to run in kubeadm mode.
    * @property {boolean} force - Whether to force the operation.
+   * @property {boolean} reset - Whether to reset the operation.
+   * @property {boolean} tls - Whether to use TLS.
    * @property {string} tty - The TTY option for the container.
    * @property {string} stdin - The stdin option for the container.
    * @property {string} restartPolicy - The restart policy for the container.
@@ -68,6 +70,8 @@ class UnderpostRun {
     k3s: false,
     kubeadm: false,
     force: false,
+    reset: false,
+    tls: false,
     tty: '',
     stdin: '',
     restartPolicy: '',
@@ -781,7 +785,7 @@ class UnderpostRun {
     /**
      * @method dev
      * @description Starts development servers for client, API, and proxy based on provided parameters (deployId, host, path, clientHostPort).
-     * @param {string} path - The input value, identifier, or path for the operation (formatted as `deployId,host,path,clientHostPort`).
+     * @param {string} path - The input value, identifier, or path for the operation (formatted as `deployId,subConf,host,path,clientHostPort`).
      * @param {Object} options - The default underpost runner options for customizing workflow
      * @memberof UnderpostRun
      */
@@ -789,15 +793,23 @@ class UnderpostRun {
       let [deployId, subConf, host, _path, clientHostPort] = path.split(',');
       if (!deployId) deployId = 'dd-default';
       if (!host) host = 'default.net';
-      if (!path) path = '/';
-      if (!clientHostPort) clientHostPort = 'localhost:3999';
+      if (!_path) _path = '/';
+      if (!clientHostPort) clientHostPort = 'localhost:4004';
       if (!subConf) subConf = 'local';
+      if (options.reset && fs.existsSync(`./engine-private/conf/${deployId}`))
+        fs.removeSync(`./engine-private/conf/${deployId}`);
       if (!fs.existsSync(`./engine-private/conf/${deployId}`)) Config.deployIdFactory(deployId, { subConf });
-      shellExec(`npm run dev-api ${deployId} ${subConf} ${host} ${path} ${clientHostPort}`, { async: true });
+      shellExec(`node bin run dev-cluster expose`);
+      shellExec(
+        `npm run dev-api ${deployId} ${subConf} ${host} ${_path} ${clientHostPort}${options.tls ? ' tls' : ''}`,
+        { async: true },
+      );
       await awaitDeployMonitor(true);
-      shellExec(`npm run dev-client ${deployId} ${subConf} ${host} ${path}`, { async: true });
+      shellExec(`npm run dev-client ${deployId} ${subConf} ${host} ${_path} proxy${options.tls ? ' tls' : ''}`, {
+        async: true,
+      });
       await awaitDeployMonitor(true);
-      shellExec(`npm run dev-proxy ${deployId} ${subConf} ${host} ${path}`);
+      shellExec(`npm run dev-proxy ${deployId} ${subConf} ${host} ${_path}${options.tls ? ' tls' : ''}`);
     },
 
     /**

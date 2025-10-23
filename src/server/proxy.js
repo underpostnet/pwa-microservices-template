@@ -11,8 +11,12 @@ import dotenv from 'dotenv';
 
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import { loggerFactory, loggerMiddleware } from './logger.js';
-import { buildPortProxyRouter, buildProxyRouter } from './conf.js';
+import { buildPortProxyRouter, buildProxyRouter, getTlsHosts, isDevProxyContext, isTlsDevProxy } from './conf.js';
 import UnderpostStartUp from './start.js';
+import UnderpostDeploy from '../cli/deploy.js';
+import { SSL_BASE, TLS } from './tls.js';
+import { shellExec } from './process.js';
+import fs from 'fs-extra';
 
 dotenv.config();
 
@@ -35,6 +39,8 @@ class Proxy {
    * @memberof ProxyService
    */
   static async buildProxy() {
+    if (process.env.NODE_ENV === 'production') process.env.DEV_PROXY_PORT_OFFSET = 0;
+
     // Start a default Express listener on process.env.PORT (potentially unused, but ensures Express is initialized)
     process.env.PORT = parseInt(process.env.PORT) + parseInt(process.env.DEV_PROXY_PORT_OFFSET);
     express().listen(process.env.PORT);
@@ -43,7 +49,7 @@ class Proxy {
 
     for (let port of Object.keys(proxyRouter)) {
       const hosts = proxyRouter[port];
-      port = parseInt(port);
+      port = parseInt(port) + parseInt(process.env.DEV_PROXY_PORT_OFFSET);
       const proxyPath = '/';
       const proxyHost = 'localhost';
       const runningData = { host: proxyHost, path: proxyPath, client: null, runtime: 'nodejs', meta: import.meta };
@@ -56,14 +62,22 @@ class Proxy {
       /** @type {import('http-proxy-middleware/dist/types').Options} */
       const options = {
         ws: true, // Enable websocket proxying
-        target: `http://localhost:${process.env.PORT}`, // Default target (should be overridden by router)
+        target: `http://localhost:${parseInt(process.env.PORT - 1)}`, // Default target (should be overridden by router)
         router: {},
+        // changeOrigin: true,
+        logLevel: 'debug',
         xfwd: true, // Adds x-forward headers (Host, Proto, etc.)
         onProxyReq: (proxyReq, req, res, options) => {},
         pathRewrite: {},
       };
 
-      options.router = buildPortProxyRouter({ port, proxyRouter, hosts, orderByPathLength: true });
+      options.router = buildPortProxyRouter({
+        port,
+        proxyRouter,
+        hosts,
+        orderByPathLength: true,
+        devProxyContext: process.env.NODE_ENV !== 'production',
+      });
 
       const filter = proxyPath; // Use '/' as the general filter
       app.use(proxyPath, createProxyMiddleware(filter, options));
@@ -86,11 +100,33 @@ class Proxy {
           break;
 
         default:
-          // In non-production, always use standard HTTP listener
-          await UnderpostStartUp.API.listenPortController(app, port, runningData);
-          break;
+          switch (port) {
+            case 443: {
+              let tlsHosts = hosts;
+              if (isDevProxyContext() && isTlsDevProxy()) {
+                tlsHosts = {};
+                for (const tlsHost of getTlsHosts(hosts)) {
+                  if (fs.existsSync(SSL_BASE(tlsHost))) fs.removeSync(SSL_BASE(tlsHost));
+                  if (!TLS.validateSecureContext(tlsHost)) shellExec(`node bin/deploy tls "${tlsHost}"`);
+                  tlsHosts[tlsHost] = {};
+                }
+              }
+              const { ServerSSL } = await TLS.createSslServer(app, tlsHosts);
+              await UnderpostStartUp.API.listenPortController(ServerSSL, port, runningData);
+              break;
+            }
+            default: // In non-production, always use standard HTTP listener
+              await UnderpostStartUp.API.listenPortController(app, port, runningData);
+              break;
+          }
       }
       logger.info('Proxy running', { port, options });
+      if (process.env.NODE_ENV === 'development')
+        logger.info(
+          UnderpostDeploy.API.etcHostFactory(Object.keys(options.router), {
+            append: true,
+          }).renderHosts,
+        );
     }
   }
 }

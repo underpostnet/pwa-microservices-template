@@ -651,6 +651,8 @@ const buildProxyRouter = () => {
     for (const path of Object.keys(confServer[host])) {
       if (confServer[host][path].singleReplica) continue;
 
+      if (isDevProxyContext()) confServer[host][path].proxy = [isTlsDevProxy() ? 443 : 80];
+
       confServer[host][path].port = newInstance(currentPort);
       for (const port of confServer[host][path].proxy) {
         if (!(port in proxyRouter)) proxyRouter[port] = {};
@@ -800,10 +802,13 @@ const buildKindPorts = (from, to) =>
  * @param {object} options.proxyRouter - The proxy router.
  * @param {object} [options.hosts] - The hosts.
  * @param {boolean} [options.orderByPathLength=false] - Whether to order by path length.
+ * @param {boolean} [options.devProxyContext=false] - Whether to use dev proxy context.
  * @returns {object} - The port proxy router.
  * @memberof ServerConfBuilder
  */
-const buildPortProxyRouter = (options = { port: 4000, proxyRouter, hosts, orderByPathLength: false }) => {
+const buildPortProxyRouter = (
+  options = { port: 4000, proxyRouter, hosts, orderByPathLength: false, devProxyContext: false },
+) => {
   let { port, proxyRouter, hosts, orderByPathLength } = options;
   hosts = hosts || proxyRouter[port] || {};
 
@@ -821,16 +826,52 @@ const buildPortProxyRouter = (options = { port: 4000, proxyRouter, hosts, orderB
     }
 
     const absoluteHost = [80, 443].includes(port)
-      ? `${host}${process.env.NODE_ENV === 'development' ? `:${port}` : ''}${path === '/' ? '' : path}`
+      ? `${host}${process.env.NODE_ENV === 'development' && !isDevProxyContext() ? `:${port}` : ''}${path === '/' ? '' : path}`
       : `${host}:${port}${path === '/' ? '' : path}`;
 
     if (absoluteHost in router)
       logger.warn('Overwrite: Absolute host already exists on router', { absoluteHost, target });
 
-    router[absoluteHost] = target;
+    if (options.devProxyContext === true) {
+      const appDevPort = parseInt(target.split(':')[2]) - process.env.DEV_PROXY_PORT_OFFSET;
+      router[absoluteHost] = `http://localhost:${appDevPort}`;
+    } else router[absoluteHost] = target;
   }); // order router
 
   if (Object.keys(router).length === 0) return router;
+
+  if (options.devProxyContext === true && process.env.NODE_ENV === 'development') {
+    const confDevApiServer = JSON.parse(
+      fs.readFileSync(`./engine-private/conf/${process.argv[3]}/conf.server.dev.${process.argv[4]}-dev-api.json`),
+      'utf8',
+    );
+    let devApiHosts = [];
+    let origins = [];
+    for (const _host of Object.keys(confDevApiServer))
+      for (const _path of Object.keys(confDevApiServer[_host])) {
+        if (confDevApiServer[_host][_path].origins && confDevApiServer[_host][_path].origins.length) {
+          origins.push(...confDevApiServer[_host][_path].origins);
+          if (_path !== 'peer' && devApiHosts.length === 0)
+            devApiHosts.push(
+              `${_host}${[80, 443].includes(port) && isDevProxyContext() ? '' : `:${port}`}${_path == '/' ? '' : _path}`,
+            );
+        }
+      }
+    origins = Array.from(new Set(origins));
+    console.log({
+      origins,
+      devApiHosts,
+    });
+    for (const devApiHost of devApiHosts) {
+      if (devApiHost in router) {
+        const target = router[devApiHost];
+        delete router[devApiHost];
+        router[`${devApiHost}/${process.env.BASE_API}`] = target;
+        router[`${devApiHost}/socket.io`] = target;
+        for (const origin of origins) router[devApiHost] = origin;
+      }
+    }
+  }
 
   if (orderByPathLength === true) {
     const reOrderRouter = {};
@@ -1424,11 +1465,14 @@ const buildApiConf = async (options = { deployId: '', subConf: '', host: '', pat
  * @param {string} options.apiBaseHost - The API base host.
  * @param {string} options.host - The host.
  * @param {string} options.path - The path.
+ * @param {boolean} options.devProxy - The dev proxy flag.
  * @returns {void}
  * @memberof ServerConfBuilder
  */
-const buildClientStaticConf = async (options = { deployId: '', subConf: '', apiBaseHost: '', host: '', path: '' }) => {
-  let { deployId, subConf, host, path } = options;
+const buildClientStaticConf = async (
+  options = { deployId: '', subConf: '', apiBaseHost: '', host: '', path: '', devProxy: false },
+) => {
+  let { deployId, subConf, host, path, devProxy } = options;
   if (!deployId) deployId = process.argv[2].trim();
   if (!subConf) subConf = process.argv[3].trim();
   if (!host) host = process.argv[4].trim();
@@ -1440,10 +1484,14 @@ const buildClientStaticConf = async (options = { deployId: '', subConf: '', apiB
     fs.readFileSync(`./engine-private/conf/${deployId}/.env.${process.env.NODE_ENV}.${subConf}-dev-api`, 'utf8'),
   );
   envObj.PORT = parseInt(envObj.PORT);
-  const apiBaseHost = options?.apiBaseHost ? options.apiBaseHost : `localhost:${envObj.PORT + 1}`;
+  const apiBaseHost = devProxy
+    ? devProxyHostFactory({ host, tls: isTlsDevProxy() })
+    : options?.apiBaseHost
+      ? options.apiBaseHost
+      : `localhost:${envObj.PORT + 1}`;
   confServer[host][path].apiBaseHost = apiBaseHost;
   confServer[host][path].apiBaseProxyPath = path;
-  logger.info('Build client static conf', { host, path, apiBaseHost });
+  logger.warn('Build client static conf', { host, path, apiBaseHost });
   envObj.PORT = parseInt(confServer[host][path].origins[0].split(':')[2]) - 1;
   writeEnv(`./engine-private/conf/${deployId}/.env.${process.env.NODE_ENV}.${subConf}-dev-client`, envObj);
   fs.writeFileSync(
@@ -1462,6 +1510,56 @@ const buildClientStaticConf = async (options = { deployId: '', subConf: '', apiB
  * @memberof ServerConfBuilder
  */
 const isDeployRunnerContext = (path, options) => !options.build && path && path !== 'template-deploy';
+
+/**
+ * @method isDevProxyContext
+ * @description Checks if the dev proxy context is valid.
+ * @returns {boolean} - The dev proxy context.
+ * @memberof ServerConfBuilder
+ */
+const isDevProxyContext = () => {
+  try {
+    if (process.argv[2] === 'proxy') return true;
+    if (!process.argv[6].startsWith('localhost')) return false;
+    return new URL('http://' + process.argv[6]).hostname ? true : false;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * @method devProxyHostFactory
+ * @description Creates the dev proxy host.
+ * @param {object} options - The options.
+ * @param {string} [options.host='default.net'] - The host.
+ * @param {boolean} [options.includeHttp=false] - Whether to include HTTP.
+ * @param {number} [options.port=443] - The port.
+ * @param {boolean} [options.tls=false] - Whether to use TLS.
+ * @returns {string} - The dev proxy host.
+ * @memberof ServerConfBuilder
+ */
+const devProxyHostFactory = (options = { host: 'default.net', includeHttp: false, port: 80, tls: false }) =>
+  `${options.includeHttp ? (options.tls ? 'https://' : 'http://') : ''}${options.host ? options.host : 'localhost'}:${
+    (options.port ? options.port : options.tls ? 443 : 80) + parseInt(process.env.DEV_PROXY_PORT_OFFSET)
+  }`;
+
+/**
+ * @method isTlsDevProxy
+ * @description Checks if TLS is used in the dev proxy.
+ * @returns {boolean} - The TLS dev proxy status.
+ * @memberof ServerConfBuilder
+ */
+const isTlsDevProxy = () => process.env.NODE_ENV !== 'production' && process.argv[7] === 'tls';
+
+/**
+ * @method getTlsHosts
+ * @description Gets the TLS hosts.
+ * @param {object} confServer - The server configuration.
+ * @returns {Array} - The TLS hosts.
+ * @memberof ServerConfBuilder
+ */
+const getTlsHosts = (confServer) =>
+  Array.from(new Set(Object.keys(confServer).map((h) => new URL('https://' + h).hostname)));
 
 export {
   Cmd,
@@ -1499,4 +1597,8 @@ export {
   buildApiConf,
   buildClientStaticConf,
   isDeployRunnerContext,
+  isDevProxyContext,
+  devProxyHostFactory,
+  isTlsDevProxy,
+  getTlsHosts,
 };
