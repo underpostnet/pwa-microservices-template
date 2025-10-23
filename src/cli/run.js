@@ -5,7 +5,13 @@
  */
 
 import { daemonProcess, getTerminalPid, openTerminal, pbcopy, shellCd, shellExec } from '../server/process.js';
-import { getNpmRootPath, getUnderpostRootPath, isDeployRunnerContext } from '../server/conf.js';
+import {
+  awaitDeployMonitor,
+  Config,
+  getNpmRootPath,
+  getUnderpostRootPath,
+  isDeployRunnerContext,
+} from '../server/conf.js';
 import { actionInitLog, loggerFactory } from '../server/logger.js';
 import UnderpostTest from './test.js';
 import fs from 'fs-extra';
@@ -44,6 +50,9 @@ class UnderpostRun {
    * @property {boolean} k3s - Whether to run in k3s mode.
    * @property {boolean} kubeadm - Whether to run in kubeadm mode.
    * @property {boolean} force - Whether to force the operation.
+   * @property {string} tty - The TTY option for the container.
+   * @property {string} stdin - The stdin option for the container.
+   * @property {string} restartPolicy - The restart policy for the container.
    * @memberof UnderpostRun
    */
   static DEFAULT_OPTION = {
@@ -59,6 +68,9 @@ class UnderpostRun {
     k3s: false,
     kubeadm: false,
     force: false,
+    tty: '',
+    stdin: '',
+    restartPolicy: '',
   };
   /**
    * @static
@@ -330,7 +342,9 @@ class UnderpostRun {
       if (!fs.existsSync(`/home/dd/engine/engine-private`))
         shellExec(`cd /home/dd/engine && underpost clone ${process.env.GITHUB_USERNAME}/engine-private`);
       else
-        shellExec(`cd /home/dd/engine/engine-private underpost pull . ${process.env.GITHUB_USERNAME}/engine-private`);
+        shellExec(
+          `cd /home/dd/engine/engine-private && underpost pull . ${process.env.GITHUB_USERNAME}/engine-private`,
+        );
     },
     /**
      * @method release-deploy
@@ -439,6 +453,16 @@ class UnderpostRun {
      */
     'ls-deployments': async (path, options = UnderpostRun.DEFAULT_OPTION) => {
       console.table(await UnderpostDeploy.API.get(path, 'deployments'));
+    },
+    /**
+     * @method ls-images
+     * @description Retrieves and logs a table of currently loaded Docker images in the 'kind-worker' node using `UnderpostDeploy.API.getCurrentLoadedImages`.
+     * @param {string} path - The input value, identifier, or path for the operation.
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @memberof UnderpostRun
+     */
+    'ls-images': async (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      console.table(UnderpostDeploy.API.getCurrentLoadedImages('kind-worker', false));
     },
 
     /**
@@ -610,8 +634,12 @@ class UnderpostRun {
     'git-conf': (path = '', options = UnderpostRun.DEFAULT_OPTION) => {
       const defaultUsername = UnderpostRootEnv.API.get('GITHUB_USERNAME', '', { disableLog: true });
       const defaultEmail = UnderpostRootEnv.API.get('GITHUB_EMAIL', '', { disableLog: true });
-      const [username, email] = path && path.split(',').length > 0 ? path.split(',') : [defaultUsername, defaultEmail];
-
+      const validPath = path && path.split(',').length;
+      const [username, email] = validPath ? path.split(',') : [defaultUsername, defaultEmail];
+      if (validPath) {
+        UnderpostRootEnv.API.set('GITHUB_USERNAME', username);
+        UnderpostRootEnv.API.set('GITHUB_EMAIL', email);
+      }
       shellExec(
         `git config --global credential.helper "" && ` +
           `git config credential.helper "" && ` +
@@ -748,6 +776,28 @@ class UnderpostRun {
       await UnderpostDeploy.API.monitorReadyRunner(deployId, env, targetTraffic, ignorePods);
 
       UnderpostDeploy.API.switchTraffic(deployId, env, targetTraffic);
+    },
+
+    /**
+     * @method dev
+     * @description Starts development servers for client, API, and proxy based on provided parameters (deployId, host, path, clientHostPort).
+     * @param {string} path - The input value, identifier, or path for the operation (formatted as `deployId,host,path,clientHostPort`).
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @memberof UnderpostRun
+     */
+    dev: async (path = '', options = UnderpostRun.DEFAULT_OPTION) => {
+      let [deployId, subConf, host, _path, clientHostPort] = path.split(',');
+      if (!deployId) deployId = 'dd-default';
+      if (!host) host = 'default.net';
+      if (!path) path = '/';
+      if (!clientHostPort) clientHostPort = 'localhost:3999';
+      if (!subConf) subConf = 'local';
+      if (!fs.existsSync(`./engine-private/conf/${deployId}`)) Config.deployIdFactory(deployId, { subConf });
+      shellExec(`npm run dev-api ${deployId} ${subConf} ${host} ${path} ${clientHostPort}`, { async: true });
+      await awaitDeployMonitor(true);
+      shellExec(`npm run dev-client ${deployId} ${subConf} ${host} ${path}`, { async: true });
+      await awaitDeployMonitor(true);
+      shellExec(`npm run dev-proxy ${deployId} ${subConf} ${host} ${path}`);
     },
 
     /**
@@ -896,6 +946,9 @@ class UnderpostRun {
       const volumeMountPath = options.volumeMountPath || path;
       const volumeHostPath = options.volumeHostPath || path;
       const enableVolumeMount = volumeHostPath && volumeMountPath;
+      const tty = options.tty ? 'true' : 'false';
+      const stdin = options.stdin ? 'true' : 'false';
+      const restartPolicy = options.restartPolicy || 'Never';
 
       if (options.volumeType === 'dev') options.volumeType = 'FileOrCreate';
       const volumeType =
@@ -909,15 +962,17 @@ kind: Pod
 metadata:
   name: ${podName}
   namespace: ${namespace}
+  labels:
+    app: ${podName}
 spec:
-  restartPolicy: Never
+  restartPolicy: ${restartPolicy}
 ${runtimeClassName ? `  runtimeClassName: ${runtimeClassName}` : ''}
   containers:
     - name: ${containerName}
       image: ${imageName}
       imagePullPolicy: IfNotPresent
-      tty: true
-      stdin: true
+      tty: ${tty}
+      stdin: ${stdin}
       command: ${JSON.stringify(options.command ? options.command : ['/bin/bash', '-c'])}
 ${
   args.length > 0
@@ -953,7 +1008,7 @@ ${
     : ''
 }
 EOF`;
-      shellExec(`kubectl delete pod ${podName}`);
+      shellExec(`kubectl delete pod ${podName} --ignore-not-found`);
       console.log(cmd);
       shellExec(cmd, { disableLog: true });
       const successInstance = await UnderpostTest.API.statusMonitor(podName);
