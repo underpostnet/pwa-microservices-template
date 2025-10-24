@@ -11,6 +11,7 @@ import {
   getNpmRootPath,
   getUnderpostRootPath,
   isDeployRunnerContext,
+  writeEnv,
 } from '../server/conf.js';
 import { actionInitLog, loggerFactory } from '../server/logger.js';
 import UnderpostTest from './test.js';
@@ -21,6 +22,7 @@ import UnderpostRootEnv from './env.js';
 import UnderpostRepository from './repository.js';
 import os from 'os';
 import Underpost from '../index.js';
+import dotenv from 'dotenv';
 
 const logger = loggerFactory(import.meta);
 
@@ -55,6 +57,7 @@ class UnderpostRun {
    * @property {string} tty - The TTY option for the container.
    * @property {string} stdin - The stdin option for the container.
    * @property {string} restartPolicy - The restart policy for the container.
+   * @property {boolean} terminal - Whether to open a terminal.
    * @memberof UnderpostRun
    */
   static DEFAULT_OPTION = {
@@ -75,6 +78,8 @@ class UnderpostRun {
     tty: '',
     stdin: '',
     restartPolicy: '',
+    terminal: false,
+    devProxyPortOffset: 0,
   };
   /**
    * @static
@@ -122,13 +127,21 @@ class UnderpostRun {
     },
     /**
      * @method kill
-     * @description Kills the process running on the specified port by finding its PID using `lsof -t -i:${path}`.
+     * @description Kills processes listening on the specified port(s). If the `path` contains a `+`, it treats it as a range of ports to kill.
      * @param {string} path - The input value, identifier, or path for the operation (used as the port number).
      * @param {Object} options - The default underpost runner options for customizing workflow
      * @memberof UnderpostRun
      */
-    kill: (path, options = UnderpostRun.DEFAULT_OPTION) => {
-      shellExec(`sudo kill -9 $(lsof -t -i:${path})`);
+    kill: (path = '', options = UnderpostRun.DEFAULT_OPTION) => {
+      for (const _path of path.split(',')) {
+        if (_path.split('+')[1]) {
+          let [port, sumPortOffSet] = _path.split('+');
+          port = parseInt(port);
+          sumPortOffSet = parseInt(sumPortOffSet);
+          for (const sumPort of range(0, sumPortOffSet))
+            shellExec(`sudo kill -9 $(lsof -t -i:${parseInt(port) + parseInt(sumPort)})`);
+        } else shellExec(`sudo kill -9 $(lsof -t -i:${_path})`);
+      }
     },
     /**
      * @method secret
@@ -636,13 +649,15 @@ class UnderpostRun {
      * @memberof UnderpostRun
      */
     'git-conf': (path = '', options = UnderpostRun.DEFAULT_OPTION) => {
-      const defaultUsername = UnderpostRootEnv.API.get('GITHUB_USERNAME', '', { disableLog: true });
-      const defaultEmail = UnderpostRootEnv.API.get('GITHUB_EMAIL', '', { disableLog: true });
+      const defaultUsername = UnderpostRootEnv.API.get('GITHUB_USERNAME');
+      const defaultEmail = UnderpostRootEnv.API.get('GITHUB_EMAIL');
       const validPath = path && path.split(',').length;
       const [username, email] = validPath ? path.split(',') : [defaultUsername, defaultEmail];
       if (validPath) {
         UnderpostRootEnv.API.set('GITHUB_USERNAME', username);
         UnderpostRootEnv.API.set('GITHUB_EMAIL', email);
+        UnderpostRootEnv.API.get('GITHUB_USERNAME');
+        UnderpostRootEnv.API.get('GITHUB_EMAIL');
       }
       shellExec(
         `git config --global credential.helper "" && ` +
@@ -799,15 +814,26 @@ class UnderpostRun {
       if (options.reset && fs.existsSync(`./engine-private/conf/${deployId}`))
         fs.removeSync(`./engine-private/conf/${deployId}`);
       if (!fs.existsSync(`./engine-private/conf/${deployId}`)) Config.deployIdFactory(deployId, { subConf });
+      if (options.devProxyPortOffset) {
+        const envPath = `./engine-private/conf/${deployId}/.env.development`;
+        const envObj = dotenv.parse(fs.readFileSync(envPath, 'utf8'));
+        envObj.DEV_PROXY_PORT_OFFSET = options.devProxyPortOffset;
+        writeEnv(envPath, envObj);
+      }
       shellExec(`node bin run dev-cluster expose`);
-      shellExec(
-        `npm run dev-api ${deployId} ${subConf} ${host} ${_path} ${clientHostPort}${options.tls ? ' tls' : ''}`,
-        { async: true },
-      );
+      {
+        const cmd = `npm run dev-api ${deployId} ${subConf} ${host} ${_path} ${clientHostPort}${options.tls ? ' tls' : ''}`;
+        options.terminal ? openTerminal(cmd) : shellExec(cmd, { async: true });
+      }
       await awaitDeployMonitor(true);
-      shellExec(`npm run dev-client ${deployId} ${subConf} ${host} ${_path} proxy${options.tls ? ' tls' : ''}`, {
-        async: true,
-      });
+      {
+        const cmd = `npm run dev-client ${deployId} ${subConf} ${host} ${_path} proxy${options.tls ? ' tls' : ''}`;
+        options.terminal
+          ? openTerminal(cmd)
+          : shellExec(cmd, {
+              async: true,
+            });
+      }
       await awaitDeployMonitor(true);
       shellExec(`npm run dev-proxy ${deployId} ${subConf} ${host} ${_path}${options.tls ? ' tls' : ''}`);
     },
@@ -868,6 +894,21 @@ class UnderpostRun {
           break;
         }
       }
+    },
+
+    /**
+     * @method release-cmt
+     * @description Commits and pushes a new release for the `engine` repository with a message indicating the new version.
+     * @param {string} path - The input value, identifier, or path for the operation.
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @memberof UnderpostRun
+     */
+    'release-cmt': async (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      shellExec(`underpost run pull`);
+      shellExec(`underpost run secret`);
+      shellCd(`/home/dd/engine`);
+      shellExec(`underpost cmt --empty . ci engine ' New engine release $(underpost --version)'`);
+      shellExec(`underpost push . ${process.env.GITHUB_USERNAME}/engine`);
     },
 
     /**
