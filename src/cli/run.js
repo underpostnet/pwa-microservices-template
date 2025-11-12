@@ -42,6 +42,9 @@ class UnderpostRun {
    * @type {Object}
    * @property {boolean} dev - Whether to run in development mode.
    * @property {string} podName - The name of the pod to run.
+   * @property {string} nodeName - The name of the node to run.
+   * @property {number} port - Custom port to use.
+   * @property {boolean} etcHosts - Whether to modify /etc/hosts.
    * @property {string} volumeHostPath - The host path for the volume.
    * @property {string} volumeMountPath - The mount path for the volume.
    * @property {string} imageName - The name of the image to run.
@@ -65,6 +68,8 @@ class UnderpostRun {
   static DEFAULT_OPTION = {
     dev: false,
     podName: '',
+    nodeName: '',
+    port: 0,
     volumeHostPath: '',
     volumeMountPath: '',
     imageName: '',
@@ -216,13 +221,66 @@ class UnderpostRun {
         );
         shellExec(`${baseCommand} cluster${options.dev ? ' --dev' : ''} --valkey --pull-image`);
       }
-      shellExec(`${baseCommand} deploy --expose mongo`, { async: true });
-      shellExec(`${baseCommand} deploy --expose valkey`, { async: true });
+      shellExec(`${baseCommand} deploy --expose --disable-update-underpost-config mongo`, { async: true });
+      shellExec(`${baseCommand} deploy --expose --disable-update-underpost-config valkey`, { async: true });
       {
         const hostListenResult = UnderpostDeploy.API.etcHostFactory(mongoHosts);
         logger.info(hostListenResult.renderHosts);
       }
     },
+
+    /**
+     * @method metadata
+     * @description Generates metadata for the specified path after exposing the development cluster.
+     * @param {string} path - The input value, identifier, or path for the operation.
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @memberof UnderpostRun
+     */
+    metadata: async (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      const ports = '6379,27017';
+      shellExec(`node bin run kill '${ports}'`);
+      shellExec(`node bin run dev-cluster --dev expose`, { async: true });
+      console.log('Loading fordward services...');
+      await timer(5000);
+      shellExec(`node bin metadata --generate ${path}`);
+      shellExec(`node bin run kill '${ports}'`);
+    },
+
+    /**
+     * @method svc-ls
+     * @description Lists systemd services and installed packages, optionally filtering by the provided path.
+     * @param {string} path - The input value, identifier, or path for the operation (used as the optional filter for services and packages).
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @memberof UnderpostRun
+     */
+    'svc-ls': (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      const log = shellExec(`systemctl list-units --type=service${path ? ` | grep ${path}` : ''}`, {
+        silent: true,
+        stdout: true,
+      });
+      console.log(path ? log.replaceAll(path, path.red) : log);
+      const log0 = shellExec(`sudo dnf list installed${path ? ` | grep ${path}` : ''}`, {
+        silent: true,
+        stdout: true,
+      });
+      console.log(path ? log0.replaceAll(path, path.red) : log0);
+    },
+
+    /**
+     * @method svc-rm
+     * @description Removes a systemd service by stopping it, disabling it, uninstalling the package, and deleting related files.
+     * @param {string} path - The input value, identifier, or path for the operation (used as the service name).
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @memberof UnderpostRun
+     */
+    'svc-rm': (path, options = UnderpostRun.DEFAULT_OPTION) => {
+      shellExec(`sudo systemctl stop ${path}`);
+      shellExec(`sudo systemctl disable --now ${path}`);
+      shellExec(`sudo dnf remove -y ${path}*`);
+      shellExec(`sudo rm -f /usr/lib/systemd/system/${path}.service`);
+      shellExec(`sudo rm -f /etc/yum.repos.d/${path}*.repo`);
+    },
+
     /**
      * @method ssh-cluster-info
      * @description Executes the `ssh-cluster-info.sh` script to display cluster connection information.
@@ -498,7 +556,12 @@ class UnderpostRun {
      * @memberof UnderpostRun
      */
     'ls-images': async (path, options = UnderpostRun.DEFAULT_OPTION) => {
-      console.table(UnderpostDeploy.API.getCurrentLoadedImages('kind-worker', false));
+      console.table(
+        UnderpostDeploy.API.getCurrentLoadedImages(
+          options.nodeName ? options.nodeName : 'kind-worker',
+          path === 'spec' ? true : false,
+        ),
+      );
     },
 
     /**
@@ -883,51 +946,83 @@ class UnderpostRun {
     service: async (path = '', options = UnderpostRun.DEFAULT_OPTION) => {
       const env = options.dev ? 'development' : 'production';
       const baseCommand = options.dev ? 'node bin' : 'underpost';
-      // const baseClusterCommand = options.dev ? ' --dev' : '';
+      const baseClusterCommand = options.dev ? ' --dev' : '';
       shellCd(`/home/dd/engine`);
       let [deployId, serviceId, host, _path, replicas, image, node] = path.split(',');
+      // const confClient = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.client.json`, 'utf8'));
+      const confServer = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8'));
+      // const confSSR = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.ssr.json`, 'utf8'));
+      // const packageData = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/package.json`, 'utf8'));
       const services = fs.existsSync(`./engine-private/deploy/${deployId}/conf.services.json`)
         ? JSON.parse(fs.readFileSync(`./engine-private/deploy/${deployId}/conf.services.json`, 'utf8'))
         : [];
+      let serviceData = services.findIndex((s) => s.serviceId === serviceId);
+      const payload = {
+        serviceId,
+        path: _path,
+        port: options.port,
+        host,
+      };
+      let podToMonitor;
+      if (!payload.port)
+        switch (serviceId) {
+          case 'mongo-express-service': {
+            payload.port = 8081;
+            break;
+          }
+          case 'grafana': {
+            payload.port = 3000;
+            // payload.pathRewritePolicy = [
+            //   {
+            //     prefix: '/grafana',
+            //     replacement: '/',
+            //   },
+            // ];
+            break;
+          }
+        }
+      if (serviceData == -1) {
+        services.push(payload);
+      } else {
+        services[serviceData] = payload;
+      }
+      fs.writeFileSync(
+        `./engine-private/conf/${deployId}/conf.services.json`,
+        JSON.stringify(services, null, 4),
+        'utf8',
+      );
       switch (serviceId) {
         case 'mongo-express-service': {
-          let serviceData = services.findIndex((s) => s.serviceId === serviceId);
-          const payload = {
-            serviceId,
-            path: _path,
-            port: 8081,
-            host,
-          };
-          if (serviceData == -1) {
-            services.push(payload);
-          } else {
-            services[serviceData] = payload;
-          }
-          fs.writeFileSync(
-            `./engine-private/conf/${deployId}/conf.services.json`,
-            JSON.stringify(services, null, 4),
-            'utf8',
-          );
           shellExec(`kubectl delete svc mongo-express-service --ignore-not-found`);
           shellExec(`kubectl delete deployment mongo-express --ignore-not-found`);
           shellExec(`kubectl apply -f manifests/deployment/mongo-express/deployment.yaml`);
-
-          const success = await UnderpostTest.API.statusMonitor('mongo-express');
-
-          if (success) {
-            const versions = UnderpostDeploy.API.getCurrentTraffic(deployId) || 'blue';
-            if (!node) node = os.hostname();
-            shellExec(
-              `${baseCommand} deploy --kubeadm --build-manifest --sync --info-router --replicas ${
-                replicas ? replicas : 1
-              } --node ${node}${image ? ` --image ${image}` : ''}${versions ? ` --versions ${versions}` : ''} dd ${env}`,
-            );
-            shellExec(
-              `${baseCommand} deploy --kubeadm --disable-update-deployment ${deployId} ${env} --versions ${versions}`,
-            );
-          } else logger.error('Mongo Express deployment failed');
+          podToMonitor = 'mongo-express';
           break;
         }
+        case 'grafana': {
+          shellExec(
+            `node bin cluster${baseClusterCommand} --grafana --hosts '${host}' --prom '${Object.keys(confServer)}'`,
+          );
+          podToMonitor = 'grafana';
+          break;
+        }
+      }
+      const success = await UnderpostTest.API.statusMonitor(podToMonitor);
+      if (success) {
+        const versions = UnderpostDeploy.API.getCurrentTraffic(deployId) || 'blue';
+        if (!node) node = os.hostname();
+        shellExec(
+          `${baseCommand} deploy${options.dev ? '' : ' --kubeadm'}${options.devProxyPortOffset ? ' --disable-deployment-proxy' : ''} --build-manifest --sync --info-router --replicas ${
+            replicas ? replicas : 1
+          } --node ${node}${image ? ` --image ${image}` : ''}${versions ? ` --versions ${versions}` : ''} dd ${env}`,
+        );
+        shellExec(
+          `${baseCommand} deploy${options.dev ? '' : ' --kubeadm'}${options.devProxyPortOffset ? ' --disable-deployment-proxy' : ''} --disable-update-deployment ${deployId} ${env} --versions ${versions}`,
+        );
+      } else logger.error('Mongo Express deployment failed');
+      if (options.etcHosts === true) {
+        const hostListenResult = UnderpostDeploy.API.etcHostFactory([host]);
+        logger.info(hostListenResult.renderHosts);
       }
     },
 
