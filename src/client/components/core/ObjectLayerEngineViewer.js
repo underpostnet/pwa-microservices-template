@@ -1,11 +1,12 @@
 import { loggerFactory } from './Logger.js';
-import { getProxyPath, listenQueryPathInstance } from './Router.js';
+import { getProxyPath, listenQueryPathInstance, setPath, setQueryParams } from './Router.js';
 import { ObjectLayerService } from '../../services/object-layer/object-layer.service.js';
 import { NotificationManager } from './NotificationManager.js';
 import { htmls, s } from './VanillaJs.js';
 import { BtnIcon } from './BtnIcon.js';
 import { darkTheme, ThemeEvents } from './Css.js';
-import { ObjectLayerCyberiaPortal } from '../cyberia-portal/ObjectLayerCyberiaPortal.js';
+import { ObjectLayerManagement } from '../../services/object-layer/object-layer.management.js';
+import { ObjectLayerEngineModal } from './ObjectLayerEngineModal.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -66,7 +67,7 @@ const ObjectLayerEngineViewer = {
           if (cid) {
             await this.loadObjectLayer(cid);
           } else {
-            this.renderEmpty();
+            this.renderEmpty({ Elements });
           }
         },
       },
@@ -103,9 +104,15 @@ const ObjectLayerEngineViewer = {
     `;
   },
 
-  renderEmpty: async function () {
+  renderEmpty: async function ({ Elements }) {
     const id = 'object-layer-engine-viewer';
-    htmls(`#${id}`, await ObjectLayerCyberiaPortal.Render());
+    htmls(
+      `#${id}`,
+      await ObjectLayerManagement.RenderTable({
+        Elements,
+        idModal: 'modal-object-layer-engine-viewer',
+      }),
+    );
   },
 
   loadObjectLayer: async function (objectLayerId) {
@@ -398,6 +405,14 @@ const ObjectLayerEngineViewer = {
             transform: none;
           }
 
+          .edit-btn {
+            background: ${darkTheme ? '#4a9eff' : '#2196F3'};
+          }
+
+          .edit-btn:hover {
+            background: ${darkTheme ? '#3a8eff' : '#1186f2'};
+          }
+
           @media (max-width: 768px) {
             .gif-display-area {
               max-height: 500px;
@@ -440,7 +455,8 @@ const ObjectLayerEngineViewer = {
           .item-data-value-label {
             font-size: 20px;
             font-weight: 700;
-            color: ${darkTheme ? '#4a9eff' : '#2196F3'};
+            color: ${darkTheme ? '#aaa' : '#666'};
+            text-align: center;
           }
           .item-stat-entry {
             display: flex;
@@ -490,6 +506,32 @@ const ObjectLayerEngineViewer = {
                 <span class="item-data-key-label">Activable</span>
                 <span style="font-weight: 600;">${itemActivable ? 'Yes' : 'No'}</span>
               </div>
+            </div>
+          </div>
+
+          <!-- Stats Data Section -->
+          <div class="control-group" style="margin-bottom: 20px;">
+            <h4><i class="fa-solid fa-chart-bar"></i> Stats Data</h4>
+            <div
+              style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; padding: 10px 0;"
+            >
+              ${Object.keys(stats).length > 0
+                ? Object.entries(stats)
+                    .map(([statKey, statValue]) => {
+                      const statInfo = ObjectLayerEngineModal.statDescriptions[statKey];
+                      if (!statInfo) return '';
+                      return html`
+                        <div class="item-stat-entry">
+                          <div style="display: flex; align-items: center; gap: 8px;">
+                            <i class="${statInfo.icon}" id="stat-icon-${statKey}-${id}"></i>
+                            <span class="item-data-key-label">${statInfo.title}</span>
+                          </div>
+                          <span class="item-data-value-label">${statValue}</span>
+                        </div>
+                      `;
+                    })
+                    .join('')
+                : html`<div class="no-data-container">No stats data available</div>`}
             </div>
           </div>
 
@@ -587,30 +629,17 @@ const ObjectLayerEngineViewer = {
               </div>
             </div>
           </div>
-          <!-- Stats Data Section -->
-          <div class="control-group" style="margin-bottom: 20px;">
-            <h4><i class="fa-solid fa-chart-bar"></i> Stats Data</h4>
-            <div
-              style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; padding: 10px 0;"
-            >
-              ${Object.keys(stats).length > 0
-                ? Object.entries(stats)
-                    .map(
-                      ([statKey, statValue]) => html`
-                        <div class="item-stat-entry">
-                          <span class="item-data-key-label"> ${statKey} </span>
-                          <span style="item-data-value-label"> ${statValue} </span>
-                        </div>
-                      `,
-                    )
-                    .join('')
-                : html`<div class="no-data-container">No stats data available</div>`}
-            </div>
+
+          <div style="display: flex; gap: 10px; margin-top: 20px;">
+            <button class="download-btn" id="download-gif-btn" style="width: 100%;">
+              <i class="fa-solid fa-download"></i>
+              <span>Download GIF</span>
+            </button>
+            <button class="download-btn edit-btn" id="edit-object-layer-btn" style="width: 100%;">
+              <i class="fa-solid fa-edit"></i>
+              <span>Edit</span>
+            </button>
           </div>
-          <button class="download-btn" id="download-gif-btn">
-            <i class="fa-solid fa-download"></i>
-            <span>Download GIF</span>
-          </button>
         </div>
       `,
     );
@@ -655,6 +684,13 @@ const ObjectLayerEngineViewer = {
     if (downloadBtn) {
       downloadBtn.addEventListener('click', () => {
         this.downloadGif();
+      });
+    }
+
+    const editBtn = s('#edit-object-layer-btn');
+    if (editBtn) {
+      editBtn.addEventListener('click', () => {
+        this.toEngine();
       });
     }
 
@@ -1046,14 +1082,30 @@ const ObjectLayerEngineViewer = {
     });
   },
 
-  Reload: async function () {
+  toEngine: function () {
+    const { objectLayer } = this.Data;
+    if (!objectLayer || !objectLayer._id) return;
+
+    // Navigate to editor route first
+    setPath(`${getProxyPath()}object-layer-engine`);
+    // Then add query param without replacing history
+    setQueryParams({ cid: objectLayer._id }, { replace: true });
+
+    if (s(`.modal-object-layer-engine`)) {
+      ObjectLayerEngineModal.Reload();
+    } else {
+      s(`.main-btn-object-layer-engine`)?.click();
+    }
+  },
+
+  Reload: async function ({ Elements }) {
     const queryParams = new URLSearchParams(window.location.search);
     const cid = queryParams.get('cid');
 
     if (cid) {
       await this.loadObjectLayer(cid);
     } else {
-      this.renderEmpty();
+      this.renderEmpty({ Elements });
     }
   },
 };
