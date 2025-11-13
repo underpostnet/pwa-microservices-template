@@ -163,6 +163,7 @@ program
   .option('--chown', 'Sets the appropriate ownership for Kubernetes kubeconfig files.')
   .option('--k3s', 'Initializes the cluster using K3s (Lightweight Kubernetes).')
   .option('--hosts <hosts>', 'A comma-separated list of cluster hostnames or IP addresses.')
+  .option('--remove-volume-host-paths', 'Removes specified volume host paths after execution.')
   .action(Underpost.cluster.init)
   .description('Manages Kubernetes clusters, defaulting to Kind cluster initialization.');
 
@@ -392,6 +393,14 @@ program
   .option('--image-name <image-name>', 'Optional: Specifies the image name for test execution.')
   .option('--container-name <container-name>', 'Optional: Specifies the container name for test execution.')
   .option('--namespace <namespace>', 'Optional: Specifies the namespace for test execution.')
+  .option('--tty', 'Enables TTY for the container in deploy-job.')
+  .option('--stdin', 'Keeps STDIN open for the container in deploy-job.')
+  .option('--restart-policy <policy>', 'Sets the restart policy for the job in deploy-job.')
+  .option('--runtime-class-name <name>', 'Sets the runtime class name for the job in deploy-job.')
+  .option('--image-pull-policy <policy>', 'Sets the image pull policy for the job in deploy-job.')
+  .option('--api-version <version>', 'Sets the API version for the job manifest in deploy-job.')
+  .option('--claim-name <name>', 'Optional: Specifies the claim name for volume mounting in deploy-job.')
+  .option('--kind <kind-type>', 'Specifies the kind of Kubernetes resource (e.g., Job, Deployment) for deploy-job.')
   .option('--kubeadm', 'Flag to indicate Kubeadm cluster type context')
   .option('--k3s', 'Flag to indicate K3s cluster type context')
   .option('--force', 'Forces operation, overriding any warnings or conflicts.')
@@ -400,6 +409,7 @@ program
   .option('--terminal', 'Enables terminal mode for interactive script execution.')
   .option('--dev-proxy-port-offset <port-offset>', 'Sets a custom port offset for development proxy.')
   .option('--conf-server-path <conf-server-path>', 'Sets a custom configuration server path.')
+  .option('--underpost-root <underpost-root>', 'Sets a custom Underpost root path.')
   .description('Runs a script from the specified path.')
   .action(UnderpostRun.API.callback);
 
