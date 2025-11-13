@@ -78,6 +78,8 @@ program
   .option('--msg <msg>', 'Sets a custom commit message.')
   .option('--deploy-id <deploy-id>', 'Sets the deployment configuration ID for the commit context.')
   .option('--cached', 'Commit staged changes only or context.')
+  .option('--hashes <hashes>', 'Comma-separated list of specific file hashes of commits.')
+  .option('--extension <extension>', 'specific file extensions of commits.')
   .description('Manages commits to a GitHub repository, supporting various commit types and options.')
   .action(Underpost.repo.commit);
 
@@ -194,6 +196,7 @@ program
   .option('--disable-update-deployment', 'Disables updates to deployments.')
   .option('--disable-update-proxy', 'Disables updates to proxies.')
   .option('--disable-deployment-proxy', 'Disables proxies of deployments.')
+  .option('--disable-update-volume', 'Disables updates to volume mounts during deployment.')
   .option(
     '--status',
     'Retrieves current network traffic data from resource deployments and the host machine network configuration.',
