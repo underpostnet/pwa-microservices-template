@@ -66,7 +66,7 @@ Run dev client server
 npm run dev
 ```
 <!-- -->
-## underpost ci/cd cli v2.89.355
+## underpost ci/cd cli v2.89.35
 
 ### Usage: `underpost [options] [command]`
   ```
@@ -106,4 +106,3 @@ Commands:
 ```
 
 <a target="_top" href="https://github.com/underpostnet/pwa-microservices-template/blob/master/cli.md">See complete CLI Docs here.</a>
-
