@@ -17,7 +17,7 @@ spec:
     spec:
       containers:
         - name: dd-test-development-blue
-          image: localhost/rockylinux9-underpost:v2.89.35
+          image: localhost/rockylinux9-underpost:v2.89.37
 #          resources:
 #            requests:
 #              memory: "96294Ki"
@@ -35,11 +35,11 @@ spec:
               underpost start --build --run dd-test development
     
           volumeMounts:
-            - name: config-volume
+            - name: config-volume-dd-test-development-blue
               mountPath: /etc/config
     
       volumes:
-        - name: config-volume
+        - name: config-volume-dd-test-development-blue
           configMap:
             name: underpost-config
     
@@ -108,7 +108,7 @@ spec:
     spec:
       containers:
         - name: dd-test-development-green
-          image: localhost/rockylinux9-underpost:v2.89.35
+          image: localhost/rockylinux9-underpost:v2.89.37
 #          resources:
 #            requests:
 #              memory: "96294Ki"
@@ -126,11 +126,11 @@ spec:
               underpost start --build --run dd-test development
     
           volumeMounts:
-            - name: config-volume
+            - name: config-volume-dd-test-development-green
               mountPath: /etc/config
     
       volumes:
-        - name: config-volume
+        - name: config-volume-dd-test-development-green
           configMap:
             name: underpost-config
     

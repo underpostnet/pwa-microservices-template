@@ -179,7 +179,7 @@ spec:
               npm install -g underpost &&
               underpost secret underpost --create-from-file /etc/config/.env.${env} &&
               underpost start --build --run ${deployId} ${env}
-${UnderpostDeploy.API.volumeFactory(volumes)
+${UnderpostDeploy.API.volumeFactory(volumes.map((v) => ((v.version = `${deployId}-${env}-${suffix}`), v)))
   .render.split(`\n`)
   .map((l) => '    ' + l)
   .join(`\n`)}
@@ -443,6 +443,7 @@ node bin run template-deploy
 node bin run ssh-deploy (sync-)engine-core
 node bin run cluster --dev 'express,dd-test+dd-core'
 node bin run dd-container --dev
+node bin run promote dd-default production
 node bin dockerfile-pull-base-images --dev --path 'image-path' --kind-load
 node bin/deploy update-default-conf <deploy-id>
 
@@ -532,30 +533,34 @@ EOF`);
           continue;
         }
 
-        if (!options.disableUpdateDeployment)
-          for (const version of options.versions.split(',')) {
-            shellExec(`sudo kubectl delete svc ${deployId}-${env}-${version}-service`);
-            shellExec(`sudo kubectl delete deployment ${deployId}-${env}-${version}`);
-          }
-
         const confServer = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8'));
         const confVolume = fs.existsSync(`./engine-private/conf/${deployId}/conf.volume.json`)
           ? JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.volume.json`, 'utf8'))
           : [];
 
-        if (!options.disableUpdateVolume) {
-          for (const volume of confVolume) {
-            shellExec(`kubectl delete pvc ${volume.claimName}`);
-            shellExec(`kubectl delete pv ${volume.claimName.replace('pvc-', 'pv-')}`);
-            shellExec(`kubectl apply -f - <<EOF
+        if (!options.disableUpdateDeployment)
+          for (const version of options.versions.split(',')) {
+            shellExec(`sudo kubectl delete svc ${deployId}-${env}-${version}-service`);
+            shellExec(`sudo kubectl delete deployment ${deployId}-${env}-${version}`);
+            if (!options.disableUpdateVolume) {
+              for (const volume of confVolume) {
+                const pvcId = `${volume.claimName}-${deployId}-${env}-${version}`;
+                const pvId = `${volume.claimName.replace('pvc-', 'pv-')}-${deployId}-${env}-${version}`;
+                const rootVolumeHostPath = `/home/dd/engine/volume/${pvId}`;
+                if (!fs.existsSync(rootVolumeHostPath)) fs.mkdirSync(rootVolumeHostPath, { recursive: true });
+                fs.copySync(volume.volumeMountPath, rootVolumeHostPath);
+                shellExec(`kubectl delete pvc ${pvcId}`);
+                shellExec(`kubectl delete pv ${pvId}`);
+                shellExec(`kubectl apply -f - <<EOF
 ${UnderpostDeploy.API.persistentVolumeFactory({
-  hostPath: volume.volumeMountPath,
-  pvcId: volume.claimName,
+  hostPath: rootVolumeHostPath,
+  pvcId,
 })}
 EOF
 `);
+              }
+            }
           }
-        }
 
         for (const host of Object.keys(confServer)) {
           if (!options.disableUpdateProxy) {
@@ -760,6 +765,7 @@ EOF
           volumeType: 'Directory',
           claimName: null,
           configMap: null,
+          version: null,
         },
       ],
     ) {
@@ -768,7 +774,11 @@ EOF
       let _volumes = `
   volumes:`;
       volumes.map((volumeData) => {
-        const { volumeName, volumeMountPath, volumeHostPath, volumeType, claimName, configMap } = volumeData;
+        let { volumeName, volumeMountPath, volumeHostPath, volumeType, claimName, configMap, version } = volumeData;
+        if (version) {
+          volumeName = `${volumeName}-${version}`;
+          claimName = claimName ? `${claimName}-${version}` : null;
+        }
         _volumeMounts += `
         - name: ${volumeName}
           mountPath: ${volumeMountPath}
