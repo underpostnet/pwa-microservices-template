@@ -3,10 +3,13 @@ import { getProxyPath, listenQueryPathInstance, setPath, setQueryParams } from '
 import { ObjectLayerService } from '../../services/object-layer/object-layer.service.js';
 import { NotificationManager } from './NotificationManager.js';
 import { htmls, s } from './VanillaJs.js';
-import { BtnIcon } from './BtnIcon.js';
+
 import { darkTheme, ThemeEvents } from './Css.js';
 import { ObjectLayerManagement } from '../../services/object-layer/object-layer.management.js';
 import { ObjectLayerEngineModal } from './ObjectLayerEngineModal.js';
+import { Modal } from './Modal.js';
+import { DefaultManagement } from '../../services/default/default.management.js';
+import { AgGrid } from './AgGrid.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -40,23 +43,12 @@ const ObjectLayerEngineViewer = {
     return directionCodeMap[key] || null;
   },
 
-  // Get all possible direction names for a direction code
-  getDirectionsFromDirectionCode: function (directionCode) {
-    const directionMap = {
-      '08': ['down_idle', 'none_idle', 'default_idle'],
-      18: ['down_walking'],
-      '02': ['up_idle'],
-      12: ['up_walking'],
-      '04': ['left_idle', 'up_left_idle', 'down_left_idle'],
-      14: ['left_walking', 'up_left_walking', 'down_left_walking'],
-      '06': ['right_idle', 'up_right_idle', 'down_right_idle'],
-      16: ['right_walking', 'up_right_walking', 'down_right_walking'],
-    };
-    return directionMap[directionCode] || [];
-  },
-
   Render: async function ({ Elements }) {
     const id = 'object-layer-engine-viewer';
+
+    Modal.Data[`modal-${id}`].onReloadModalListener[id] = async () => {
+      ObjectLayerEngineViewer.Reload({ Elements });
+    };
 
     // Listen for cid query parameter
     listenQueryPathInstance(
@@ -65,7 +57,7 @@ const ObjectLayerEngineViewer = {
         routeId: 'object-layer-engine-viewer',
         event: async (cid) => {
           if (cid) {
-            await this.loadObjectLayer(cid);
+            await this.loadObjectLayer(cid, Elements);
           } else {
             this.renderEmpty({ Elements });
           }
@@ -73,25 +65,6 @@ const ObjectLayerEngineViewer = {
       },
       'cid',
     );
-
-    setTimeout(async () => {
-      htmls(
-        `#${id}`,
-        html` <div class="inl section-mp">
-          <div class="in">
-            <div class="fl">
-              <div class="in fll">
-                ${await BtnIcon.Render({
-                  class: 'section-mp main-button',
-                  label: html`<i class="fa-solid fa-arrow-left"></i> ${' Back'}`,
-                  attrs: `data-id="btn-back"`,
-                })}
-              </div>
-            </div>
-          </div>
-        </div>`,
-      );
-    });
 
     return html`
       <div class="fl">
@@ -106,16 +79,22 @@ const ObjectLayerEngineViewer = {
 
   renderEmpty: async function ({ Elements }) {
     const id = 'object-layer-engine-viewer';
-    htmls(
-      `#${id}`,
-      await ObjectLayerManagement.RenderTable({
-        Elements,
-        idModal: 'modal-object-layer-engine-viewer',
-      }),
-    );
+    const idModal = 'modal-object-layer-engine-viewer';
+    const serviceId = 'object-layer-engine-management';
+    const gridId = `${serviceId}-grid-${idModal}`;
+    if (s(`.${serviceId}-grid-${idModal}`) && AgGrid.grids[gridId])
+      await DefaultManagement.loadTable(idModal, { reload: true });
+    else
+      htmls(
+        `#${id}`,
+        await ObjectLayerManagement.RenderTable({
+          Elements,
+          idModal,
+        }),
+      );
   },
 
-  loadObjectLayer: async function (objectLayerId) {
+  loadObjectLayer: async function (objectLayerId, Elements) {
     const id = 'object-layer-engine-viewer';
 
     try {
@@ -141,7 +120,7 @@ const ObjectLayerEngineViewer = {
       this.selectFirstAvailableDirectionMode();
 
       // Render the viewer UI
-      await this.renderViewer();
+      await this.renderViewer({ Elements });
 
       // Initialize gif.js worker
       await this.initGifJs();
@@ -169,7 +148,7 @@ const ObjectLayerEngineViewer = {
     }
   },
 
-  renderViewer: async function () {
+  renderViewer: async function ({ Elements }) {
     const id = 'object-layer-engine-viewer';
     const { objectLayer, frameCounts } = this.Data;
 
@@ -179,8 +158,6 @@ const ObjectLayerEngineViewer = {
     const itemId = objectLayer.data.item.id;
     const itemDescription = objectLayer.data.item.description || '';
     const itemActivable = objectLayer.data.item.activable || false;
-    const frameDuration = objectLayer.data.render.frame_duration || 100;
-    const isStateless = objectLayer.data.render.is_stateless || false;
 
     // Get stats data
     const stats = objectLayer.data.stats || {};
@@ -363,7 +340,7 @@ const ObjectLayerEngineViewer = {
             font-size: 16px;
           }
 
-          .download-btn {
+          .default-viewer-btn {
             width: 100%;
             padding: 15px;
             background: ${darkTheme ? '#4caf50' : '#4CAF50'};
@@ -380,7 +357,7 @@ const ObjectLayerEngineViewer = {
             gap: 10px;
           }
 
-          .download-btn:hover {
+          .default-viewer-btn:hover {
             background: ${darkTheme ? '#45a049' : '#45a049'};
             transform: translateY(-2px);
             box-shadow: 0 4px 12px rgba(76, 175, 80, 0.3);
@@ -399,7 +376,7 @@ const ObjectLayerEngineViewer = {
             margin-left: 4px;
           }
 
-          .download-btn:disabled {
+          .default-viewer-btn:disabled {
             background: ${darkTheme ? '#555' : '#ccc'};
             cursor: not-allowed;
             transform: none;
@@ -472,6 +449,12 @@ const ObjectLayerEngineViewer = {
             text-align: center;
             color: ${darkTheme ? '#666' : '#999'};
             padding: 20px;
+          }
+
+          @media (max-width: 850px) {
+            .object-layer-viewer-container {
+              padding: 5px;
+            }
           }
         </style>`,
       );
@@ -631,11 +614,15 @@ const ObjectLayerEngineViewer = {
           </div>
 
           <div style="display: flex; gap: 10px; margin-top: 20px;">
-            <button class="download-btn" id="download-gif-btn" style="width: 100%;">
+            <button class="default-viewer-btn" id="return-to-list-btn">
+              <i class="fa-solid fa-arrow-left"></i>
+              <span>Return to List</span>
+            </button>
+            <button class="default-viewer-btn" id="download-gif-btn">
               <i class="fa-solid fa-download"></i>
               <span>Download GIF</span>
             </button>
-            <button class="download-btn edit-btn" id="edit-object-layer-btn" style="width: 100%;">
+            <button class="default-viewer-btn edit-btn" id="edit-object-layer-btn">
               <i class="fa-solid fa-edit"></i>
               <span>Edit</span>
             </button>
@@ -645,10 +632,10 @@ const ObjectLayerEngineViewer = {
     );
     ThemeEvents[id]();
     // Attach event listeners
-    this.attachEventListeners();
+    this.attachEventListeners({ Elements });
   },
 
-  attachEventListeners: function () {
+  attachEventListeners: function ({ Elements }) {
     // Direction buttons
     const directionButtons = document.querySelectorAll('[data-direction]');
     directionButtons.forEach((btn) => {
@@ -657,8 +644,8 @@ const ObjectLayerEngineViewer = {
         const direction = e.currentTarget.getAttribute('data-direction');
         if (direction !== this.Data.currentDirection) {
           this.Data.currentDirection = direction;
-          await this.renderViewer();
-          await this.attachEventListeners();
+          await this.renderViewer({ Elements });
+          await this.attachEventListeners({ Elements });
           await this.generateGif();
         }
       });
@@ -672,8 +659,8 @@ const ObjectLayerEngineViewer = {
         const mode = e.currentTarget.getAttribute('data-mode');
         if (mode !== this.Data.currentMode) {
           this.Data.currentMode = mode;
-          await this.renderViewer();
-          await this.attachEventListeners();
+          await this.renderViewer({ Elements });
+          await this.attachEventListeners({ Elements });
           await this.generateGif();
         }
       });
@@ -687,22 +674,21 @@ const ObjectLayerEngineViewer = {
       });
     }
 
+    const listBtn = s('#return-to-list-btn');
+    if (listBtn) {
+      listBtn.addEventListener('click', () => {
+        setPath(`${getProxyPath()}object-layer-engine-viewer`);
+        setQueryParams({ cid: null });
+        ObjectLayerEngineViewer.renderEmpty({ Elements });
+      });
+    }
+
     const editBtn = s('#edit-object-layer-btn');
     if (editBtn) {
       editBtn.addEventListener('click', () => {
         this.toEngine();
       });
     }
-
-    // Back button
-    setTimeout(() => {
-      const backBtn = s('[data-id="btn-back"]');
-      if (backBtn) {
-        backBtn.addEventListener('click', () => {
-          window.history.back();
-        });
-      }
-    }, 100);
   },
 
   selectFirstAvailableDirectionMode: function () {
@@ -1103,7 +1089,7 @@ const ObjectLayerEngineViewer = {
     const cid = queryParams.get('cid');
 
     if (cid) {
-      await this.loadObjectLayer(cid);
+      await this.loadObjectLayer(cid, Elements);
     } else {
       this.renderEmpty({ Elements });
     }

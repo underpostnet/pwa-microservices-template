@@ -5,7 +5,7 @@ import { DropDown } from './DropDown.js';
 import { EventsUI } from './EventsUI.js';
 import { Translate } from './Translate.js';
 import { s, append, hexToRgbA } from './VanillaJs.js';
-import { getProxyPath, getQueryParams, setPath, setQueryParams } from './Router.js';
+import { getProxyPath, getQueryParams, setPath, setQueryParams, RouterEvents } from './Router.js';
 import { s4 } from './CommonJs.js';
 import { Input } from './Input.js';
 import { ToggleSwitch } from './ToggleSwitch.js';
@@ -376,72 +376,82 @@ const ObjectLayerEngineModal = {
     }
 
     setTimeout(async () => {
-      showFrameLoading();
-      for (const directionCode of directionCodes) {
-        // Use IIFE to properly capture directionCode and handle async operations
-        await (async (currentDirectionCode) => {
-          // Register frame add button handler after DOM is ready
-          // Wait longer to ensure all direction bars are rendered
+      const loadFrames = async () => {
+        showFrameLoading();
+        for (const directionCode of directionCodes) {
+          // Use IIFE to properly capture directionCode and handle async operations
+          await (async (currentDirectionCode) => {
+            // Register frame add button handler after DOM is ready
+            // Wait longer to ensure all direction bars are rendered
 
-          if (loadedData && loadedData.metadata && loadedData.metadata.data && currentDirectionCode) {
-            // Show loading animation only once on first direction that has frames
+            if (loadedData && loadedData.metadata && loadedData.metadata.data && currentDirectionCode) {
+              // Show loading animation only once on first direction that has frames
 
-            const { type, id } = loadedData.metadata.data.item;
-            const directions = ObjectLayerEngineModal.getDirectionsFromDirectionCode(currentDirectionCode);
+              const { type, id } = loadedData.metadata.data.item;
+              const directions = ObjectLayerEngineModal.getDirectionsFromDirectionCode(currentDirectionCode);
 
-            console.log(`Loading frames for direction code: ${currentDirectionCode}, directions:`, directions);
+              console.log(`Loading frames for direction code: ${currentDirectionCode}, directions:`, directions);
 
-            // Check if frames exist for any direction mapped to this direction code
-            const { frames } = loadedData.renderData.data.render;
-            for (const direction of directions) {
-              if (frames[direction] && frames[direction].length > 0) {
-                // Track this direction code as having original data
-                if (!originalDirectionCodes.includes(currentDirectionCode)) {
-                  originalDirectionCodes.push(currentDirectionCode);
+              // reset frames
+              s(`.frames-${currentDirectionCode}`).innerHTML = '';
+
+              // Check if frames exist for any direction mapped to this direction code
+              const { frames } = loadedData.renderData.data.render;
+              for (const direction of directions) {
+                if (frames[direction] && frames[direction].length > 0) {
+                  // Track this direction code as having original data
+                  if (!originalDirectionCodes.includes(currentDirectionCode)) {
+                    originalDirectionCodes.push(currentDirectionCode);
+                  }
+                  // Load frames from static PNG URLs sequentially to avoid race conditions
+                  const frameCount = frames[direction].length;
+                  console.log(`Found ${frameCount} frames for direction: ${direction} (code: ${currentDirectionCode})`);
+                  for (let frameIndex = 0; frameIndex < frameCount; frameIndex++) {
+                    const pngUrl = `${getProxyPath()}assets/${type}/${id}/${currentDirectionCode}/${frameIndex}.png`;
+                    console.log(
+                      `Loading frame ${frameIndex} for direction code ${currentDirectionCode} from: ${pngUrl}`,
+                    );
+                    await processAndAddFrameFromPngUrl(currentDirectionCode, pngUrl);
+                  }
+                  console.log(`Completed loading ${frameCount} frames for direction code: ${currentDirectionCode}`);
+                  // Once we found frames for this direction code, we can break to avoid duplicates
+                  break;
                 }
-                // Load frames from static PNG URLs sequentially to avoid race conditions
-                const frameCount = frames[direction].length;
-                console.log(`Found ${frameCount} frames for direction: ${direction} (code: ${currentDirectionCode})`);
-                for (let frameIndex = 0; frameIndex < frameCount; frameIndex++) {
-                  const pngUrl = `${getProxyPath()}assets/${type}/${id}/${currentDirectionCode}/${frameIndex}.png`;
-                  console.log(`Loading frame ${frameIndex} for direction code ${currentDirectionCode} from: ${pngUrl}`);
-                  await processAndAddFrameFromPngUrl(currentDirectionCode, pngUrl);
-                }
-                console.log(`Completed loading ${frameCount} frames for direction code: ${currentDirectionCode}`);
-                // Once we found frames for this direction code, we can break to avoid duplicates
-                break;
               }
             }
-          }
 
-          const buttonSelector = `.direction-code-bar-frames-btn-${currentDirectionCode}`;
-          console.log(`Registering click handler for: ${buttonSelector}`);
+            const buttonSelector = `.direction-code-bar-frames-btn-${currentDirectionCode}`;
+            console.log(`Registering click handler for: ${buttonSelector}`);
 
-          EventsUI.onClick(buttonSelector, async () => {
-            console.log(`Add frame button clicked for direction: ${currentDirectionCode}`);
-            const ole = s('object-layer-engine');
-            if (!ole) {
-              console.error('object-layer-engine not found');
-              return;
-            }
-            const image = await ole.toBlob();
-            const json = ole.exportMatrixJSON();
-            const id = `frame-capture-${s4()}-${s4()}`;
-            console.log(`Creating new frame ${id} for direction ${currentDirectionCode}`);
+            EventsUI.onClick(buttonSelector, async () => {
+              console.log(`Add frame button clicked for direction: ${currentDirectionCode}`);
+              const ole = s('object-layer-engine');
+              if (!ole) {
+                console.error('object-layer-engine not found');
+                return;
+              }
+              const image = await ole.toBlob();
+              const json = ole.exportMatrixJSON();
+              const id = `frame-capture-${s4()}-${s4()}`;
+              console.log(`Creating new frame ${id} for direction ${currentDirectionCode}`);
 
-            if (!ObjectLayerEngineModal.ObjectLayerData[currentDirectionCode])
-              ObjectLayerEngineModal.ObjectLayerData[currentDirectionCode] = [];
-            ObjectLayerEngineModal.ObjectLayerData[currentDirectionCode].push({ id, image, json });
-            console.log(
-              `Stored frame ${id} in direction code ${currentDirectionCode}. Total frames:`,
-              ObjectLayerEngineModal.ObjectLayerData[currentDirectionCode].length,
-            );
+              if (!ObjectLayerEngineModal.ObjectLayerData[currentDirectionCode])
+                ObjectLayerEngineModal.ObjectLayerData[currentDirectionCode] = [];
+              ObjectLayerEngineModal.ObjectLayerData[currentDirectionCode].push({ id, image, json });
+              console.log(
+                `Stored frame ${id} in direction code ${currentDirectionCode}. Total frames:`,
+                ObjectLayerEngineModal.ObjectLayerData[currentDirectionCode].length,
+              );
 
-            await addFrameToBar(currentDirectionCode, id, image, json);
-          });
-        })(directionCode);
-      }
-      hideFrameLoading();
+              await addFrameToBar(currentDirectionCode, id, image, json);
+            });
+          })(directionCode);
+        }
+        hideFrameLoading();
+      };
+      RouterEvents[`router-${options.idModal}`] = loadFrames;
+
+      await loadFrames();
       s('object-layer-engine').clear();
 
       EventsUI.onClick(`.ol-btn-save`, async () => {
@@ -937,20 +947,22 @@ const ObjectLayerEngineModal = {
   },
   toManagement: async () => {
     await ObjectLayerEngineModal.clearData();
+    const subModalId = 'viewer' || 'management';
+    const modalId = `modal-object-layer-engine-${subModalId}`;
     const queryParams = getQueryParams();
+    queryParams.cid = '';
     queryParams.page = 1;
     setQueryParams(queryParams);
-    const modalId = 'modal-object-layer-engine-management';
     const managerComponent = DefaultManagement.Tokens[modalId];
     if (managerComponent) {
       managerComponent.page = 1;
       if (!managerComponent.readyRowDataEvent) managerComponent.readyRowDataEvent = {};
       let readyLoad = false;
       const gridId = `object-layer-engine-management-grid-${modalId}`;
-      managerComponent.readyRowDataEvent['object-layer-engine-management'] = async () => {
+      managerComponent.readyRowDataEvent[`object-layer-engine-${subModalId}`] = async () => {
         if (readyLoad) {
           AgGrid.grids[gridId].setGridOption('getRowClass', null);
-          return delete managerComponent.readyRowDataEvent['object-layer-engine-management'];
+          return delete managerComponent.readyRowDataEvent[`object-layer-engine-${subModalId}`];
         }
 
         AgGrid.grids[gridId].setGridOption('getRowClass', (params) => {
@@ -962,10 +974,10 @@ const ObjectLayerEngineModal = {
       };
     }
 
-    const _s = s(`.management-table-btn-reload-${modalId}`);
+    const _s = s(` .management-table-btn-reload-${modalId}`);
     if (_s) _s.click();
 
-    s(`.main-btn-object-layer-engine-management`).click();
+    s(`.main-btn-object-layer-engine-${subModalId}`).click();
   },
   Reload: async function () {
     // Clear data before reload to prevent contamination
