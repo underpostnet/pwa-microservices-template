@@ -19,12 +19,8 @@ const ObjectLayerEngineViewer = {
     frameCounts: null,
     currentDirection: 'down',
     currentMode: 'idle',
-    gif: null,
-    gifWorkerBlob: null,
+    webp: null,
     isGenerating: false,
-    // Binary transparency settings for GIF export
-    gifTransparencyPlaceholder: { r: 100, g: 100, b: 100 }, // magenta - unlikely to exist in sprites
-    transparencyThreshold: 16, // alpha threshold (0-255) for binary transparency
   },
 
   // Map user-friendly direction/mode to numeric direction codes
@@ -115,18 +111,18 @@ const ObjectLayerEngineViewer = {
       }
 
       this.Data.frameCounts = frameData.frameCounts;
-
-      // Auto-select first available direction/mode combination
-      this.selectFirstAvailableDirectionMode();
+      // Priority order for directions
+      const directions = ['down', 'up', 'left', 'right'];
+      // Priority order for modes
+      const modes = ['idle', 'walking'];
+      this.Data.currentDirection = 'down';
+      this.Data.currentMode = 'idle';
 
       // Render the viewer UI
       await this.renderViewer({ Elements });
 
-      // Initialize gif.js worker
-      await this.initGifJs();
-
-      // Generate initial GIF
-      await this.generateGif();
+      // Generate WebP
+      await this.generateWebp();
     } catch (error) {
       logger.error('Error loading object layer:', error);
       NotificationManager.Push({
@@ -197,7 +193,7 @@ const ObjectLayerEngineViewer = {
             color: ${darkTheme ? '#fff' : '#333'};
           }
 
-          .gif-display-area {
+          .webp-display-area {
             background: ${darkTheme ? '#2a2a2a' : '#f5f5f5'};
             border: 2px solid ${darkTheme ? '#444' : '#ddd'};
             border-radius: 12px;
@@ -213,7 +209,7 @@ const ObjectLayerEngineViewer = {
             overflow: auto;
           }
 
-          .gif-canvas-container {
+          .webp-canvas-container {
             position: relative;
             display: flex;
             justify-content: center;
@@ -222,8 +218,8 @@ const ObjectLayerEngineViewer = {
             height: 100%;
           }
 
-          .gif-canvas-container canvas,
-          .gif-canvas-container img {
+          .webp-canvas-container canvas,
+          .webp-canvas-container img {
             image-rendering: pixelated;
             image-rendering: -moz-crisp-edges;
             image-rendering: crisp-edges;
@@ -239,13 +235,13 @@ const ObjectLayerEngineViewer = {
             display: block;
           }
 
-          .gif-canvas-container canvas {
+          .webp-canvas-container canvas {
             background: repeating-conic-gradient(#80808020 0% 25%, #fff0 0% 50%) 50% / 20px 20px;
             min-width: 128px;
             min-height: 128px;
           }
 
-          .gif-info-badge {
+          .webp-info-badge {
             position: absolute;
             bottom: 10px;
             right: 10px;
@@ -258,7 +254,7 @@ const ObjectLayerEngineViewer = {
             backdrop-filter: blur(4px);
           }
 
-          .gif-info-badge .info-label {
+          .webp-info-badge .info-label {
             opacity: 0.7;
             margin-right: 4px;
           }
@@ -391,28 +387,28 @@ const ObjectLayerEngineViewer = {
           }
 
           @media (max-width: 768px) {
-            .gif-display-area {
+            .webp-display-area {
               max-height: 500px;
               min-height: 300px;
               padding: 20px;
             }
 
-            .gif-canvas-container canvas,
-            .gif-canvas-container img {
+            .webp-canvas-container canvas,
+            .webp-canvas-container img {
               max-width: 100%;
               max-height: 440px;
             }
           }
 
           @media (max-width: 600px) {
-            .gif-display-area {
+            .webp-display-area {
               max-height: 400px;
               min-height: 250px;
               padding: 15px;
             }
 
-            .gif-canvas-container canvas,
-            .gif-canvas-container img {
+            .webp-canvas-container canvas,
+            .webp-canvas-container img {
               max-height: 340px;
             }
 
@@ -518,16 +514,16 @@ const ObjectLayerEngineViewer = {
             </div>
           </div>
 
-          <div class="gif-display-area">
-            <div class="gif-canvas-container" id="gif-canvas-container">
+          <div class="webp-display-area">
+            <div class="webp-canvas-container" id="webp-canvas-container">
               <div style="text-align: center; color: ${darkTheme ? '#aaa' : '#666'};">
                 <i class="fa-solid fa-image" style="font-size: 48px; opacity: 0.3; margin-bottom: 16px;"></i>
-                <p style="margin: 0; font-size: 14px;">GIF preview will appear here</p>
+                <p style="margin: 0; font-size: 14px;">WebP preview will appear here</p>
               </div>
-              <div id="gif-loading-overlay" class="loading-overlay" style="display: none;">
+              <div id="webp-loading-overlay" class="loading-overlay" style="display: none;">
                 <div>
                   <i class="fa-solid fa-spinner fa-spin"></i>
-                  <span style="margin-left: 10px;">Generating GIF...</span>
+                  <span style="margin-left: 10px;">Generating WebP...</span>
                 </div>
               </div>
             </div>
@@ -618,9 +614,9 @@ const ObjectLayerEngineViewer = {
               <i class="fa-solid fa-arrow-left"></i>
               <span>Return to List</span>
             </button>
-            <button class="default-viewer-btn" id="download-gif-btn">
+            <button class="default-viewer-btn" id="download-webp-btn">
               <i class="fa-solid fa-download"></i>
-              <span>Download GIF</span>
+              <span>Download WebP</span>
             </button>
             <button class="default-viewer-btn edit-btn" id="edit-object-layer-btn">
               <i class="fa-solid fa-edit"></i>
@@ -646,7 +642,7 @@ const ObjectLayerEngineViewer = {
           this.Data.currentDirection = direction;
           await this.renderViewer({ Elements });
           await this.attachEventListeners({ Elements });
-          await this.generateGif();
+          await this.generateWebp();
         }
       });
     });
@@ -661,19 +657,20 @@ const ObjectLayerEngineViewer = {
           this.Data.currentMode = mode;
           await this.renderViewer({ Elements });
           await this.attachEventListeners({ Elements });
-          await this.generateGif();
+          await this.generateWebp();
         }
       });
     });
 
     // Download button
-    const downloadBtn = s('#download-gif-btn');
+    const downloadBtn = s('#download-webp-btn');
     if (downloadBtn) {
       downloadBtn.addEventListener('click', () => {
-        this.downloadGif();
+        this.downloadWebp();
       });
     }
 
+    // Return to list button
     const listBtn = s('#return-to-list-btn');
     if (listBtn) {
       listBtn.addEventListener('click', () => {
@@ -683,6 +680,7 @@ const ObjectLayerEngineViewer = {
       });
     }
 
+    // Edit button
     const editBtn = s('#edit-object-layer-btn');
     if (editBtn) {
       editBtn.addEventListener('click', () => {
@@ -691,71 +689,7 @@ const ObjectLayerEngineViewer = {
     }
   },
 
-  selectFirstAvailableDirectionMode: function () {
-    const { frameCounts } = this.Data;
-    if (!frameCounts) return;
-
-    // Priority order for directions
-    const directions = ['down', 'up', 'left', 'right'];
-    // Priority order for modes
-    const modes = ['idle', 'walking'];
-
-    // Try to find first available combination using numeric codes
-    for (const mode of modes) {
-      for (const direction of directions) {
-        const numericCode = this.getDirectionCode(direction, mode);
-        if (numericCode && frameCounts[numericCode] && frameCounts[numericCode] > 0) {
-          this.Data.currentDirection = direction;
-          this.Data.currentMode = mode;
-          logger.info(`Auto-selected: ${direction} ${mode} (code: ${numericCode}, ${frameCounts[numericCode]} frames)`);
-          return;
-        }
-      }
-    }
-
-    // If no frames found, log warning
-    logger.warn('No frames found for any direction/mode combination');
-  },
-
-  initGifJs: async function () {
-    if (this.Data.gifWorkerBlob) return; // Already initialized
-
-    try {
-      // Load gif.js library
-      await this.loadScript('https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.min.js');
-
-      // Fetch worker script
-      const response = await fetch('https://cdn.jsdelivr.net/npm/gif.js@0.2.0/dist/gif.worker.js');
-      if (!response.ok) {
-        throw new Error('Failed to fetch gif.worker.js');
-      }
-      const workerBlob = await response.blob();
-      this.Data.gifWorkerBlob = URL.createObjectURL(workerBlob);
-
-      logger.info('gif.js initialized successfully');
-    } catch (error) {
-      logger.error('Error initializing gif.js:', error);
-      throw error;
-    }
-  },
-
-  loadScript: function (src) {
-    return new Promise((resolve, reject) => {
-      // Check if already loaded
-      if (document.querySelector(`script[src="${src}"]`)) {
-        resolve();
-        return;
-      }
-
-      const script = document.createElement('script');
-      script.src = src;
-      script.onload = resolve;
-      script.onerror = reject;
-      document.head.appendChild(script);
-    });
-  },
-
-  generateGif: async function () {
+  generateWebp: async function () {
     if (this.Data.isGenerating) return;
 
     const { objectLayer, frameCounts, currentDirection, currentMode } = this.Data;
@@ -788,128 +722,74 @@ const ObjectLayerEngineViewer = {
     this.Data.isGenerating = true;
     this.showLoading(true);
 
+    // Update loading overlay text
+    const loadingOverlay = s('#webp-loading-overlay');
+    if (loadingOverlay) {
+      const loadingText = loadingOverlay.querySelector('span');
+      if (loadingText) {
+        loadingText.textContent = `Loading WebP animation for ${currentDirection} ${currentMode}...`;
+      }
+    }
+
     try {
-      // Build frame paths based on frame count using numeric code
-      const frames = [];
-      for (let i = 0; i < frameCount; i++) {
-        frames.push(`${getProxyPath()}assets/${itemType}/${itemId}/${numericCode}/${i}.png`);
-      }
-
-      // Update loading message
-      const loadingOverlay = s('#gif-loading-overlay');
-      if (loadingOverlay) {
-        loadingOverlay.querySelector('span').textContent = `Loading frames... (0/${frames.length})`;
-      }
-
-      // Load all frames to find maximum dimensions
-      const loadedImages = [];
-      let maxWidth = 0;
-      let maxHeight = 0;
-
-      for (let i = 0; i < frames.length; i++) {
-        const img = await this.loadImage(frames[i]);
-        loadedImages.push(img);
-        maxWidth = Math.max(maxWidth, img.naturalWidth);
-        maxHeight = Math.max(maxHeight, img.naturalHeight);
-
-        // Update progress
-        if (loadingOverlay && (i === 0 || i % 5 === 0)) {
-          loadingOverlay.querySelector('span').textContent = `Loading frames... (${i + 1}/${frames.length})`;
-        }
-      }
-
-      // Update loading message for GIF generation
-      if (loadingOverlay) {
-        loadingOverlay.querySelector('span').textContent = 'Generating GIF...';
-      }
-
-      logger.info(`GIF dimensions calculated: ${maxWidth}x${maxHeight} from ${frames.length} frames`);
-
-      // Use binary transparency with placeholder color (magenta)
-      const placeholder = this.Data.gifTransparencyPlaceholder;
-      const transparentColorHex = (placeholder.r << 16) | (placeholder.g << 8) | placeholder.b;
-
-      // Create new GIF instance with binary transparency
-      const gif = new GIF({
-        workers: 2,
-        workerScript: this.Data.gifWorkerBlob,
-        quality: 10,
-        width: maxWidth,
-        height: maxHeight,
-        transparent: transparentColorHex, // Use magenta as transparent color
-        repeat: 0,
+      // Call the WebP generation API endpoint
+      const { status, data } = await ObjectLayerService.generateWebp({
+        itemType,
+        itemId,
+        directionCode: numericCode,
       });
 
-      // Process each frame with binary transparency threshold
-      for (let i = 0; i < loadedImages.length; i++) {
-        const img = loadedImages[i];
+      if (status === 'success' && data) {
+        // Store the blob URL
+        this.Data.webp = data;
 
-        // Create canvas for this frame
-        const canvas = document.createElement('canvas');
-        canvas.width = maxWidth;
-        canvas.height = maxHeight;
-        const ctx = canvas.getContext('2d', { alpha: true, willReadFrequently: true });
+        // Display the WebP in the viewer
+        const container = s('#webp-canvas-container');
+        if (container) {
+          // Clear container
+          container.innerHTML = '';
 
-        // Start with transparent canvas (don't fill with magenta yet)
-        ctx.clearRect(0, 0, maxWidth, maxHeight);
+          // Create and append image
+          const img = document.createElement('img');
+          img.src = data;
+          img.alt = 'WebP Animation';
+          container.appendChild(img);
 
-        // Center the image
-        const x = Math.floor((maxWidth - img.naturalWidth) / 2);
-        const y = Math.floor((maxHeight - img.naturalHeight) / 2);
-
-        // Disable smoothing to keep pixel-art sharp
-        ctx.imageSmoothingEnabled = false;
-
-        // Draw the original image centered on transparent canvas
-        ctx.drawImage(img, x, y);
-
-        // Apply binary transparency threshold: replace ONLY transparent pixels with placeholder color
-        const threshold = this.Data.transparencyThreshold;
-        try {
-          const imageData = ctx.getImageData(0, 0, maxWidth, maxHeight);
-          const data = imageData.data;
-
-          for (let p = 0; p < data.length; p += 4) {
-            const alpha = data[p + 3];
-            // If alpha is below threshold, replace with opaque placeholder color (for GIF transparency)
-            if (alpha < threshold) {
-              data[p] = placeholder.r; // R
-              data[p + 1] = placeholder.g; // G
-              data[p + 2] = placeholder.b; // B
-              data[p + 3] = 255; // A (fully opaque)
-            }
+          // Create and append info badge
+          const infoBadge = document.createElement('div');
+          infoBadge.className = 'webp-info-badge';
+          infoBadge.innerHTML = html`
+            <span class="info-label" style="margin-left: 8px;">Frames:</span>
+            <span>${frameCount}</span><br />
+            <span class="info-label" style="margin-left: 8px;">Duration:</span>
+            <span>${frameDuration}ms</span><br />
+            <span class="info-label" style="margin-left: 8px;">Direction:</span>
+            <span>${currentDirection}</span><br />
+            <span class="info-label" style="margin-left: 8px;">Mode:</span>
+            <span>${currentMode}</span><br />
+            <span class="info-label" style="margin-left: 8px;">Code:</span>
+            <span>${numericCode}</span>
+          `;
+          const displayArea = s('.webp-display-area');
+          if (displayArea) {
+            displayArea.appendChild(infoBadge);
           }
-
-          ctx.putImageData(imageData, 0, 0);
-        } catch (err) {
-          logger.warn(
-            'Could not access image data for transparency threshold (CORS issue). Transparency may not work correctly.',
-            err,
-          );
         }
 
-        // Add frame to GIF with dispose mode to clear between frames
-        gif.addFrame(canvas, {
-          delay: frameDuration,
-          copy: true,
-          dispose: 2, // Restore to background color before drawing next frame (prevents overlap)
-        });
+        // NotificationManager.Push({
+        //   html: `WebP generated successfully (${frameCount} frames, ${frameDuration}ms duration)`,
+        //   status: 'success',
+        // });
+      } else {
+        throw new Error('Failed to generate WebP');
       }
 
-      // Handle GIF finished event
-      gif.on('finished', (blob) => {
-        this.displayGif(blob, maxWidth, maxHeight, frameDuration, frameCount);
-        this.Data.gif = blob;
-        this.Data.isGenerating = false;
-        this.showLoading(false);
-      });
-
-      // Render the GIF
-      gif.render();
+      this.Data.isGenerating = false;
+      this.showLoading(false);
     } catch (error) {
-      logger.error('Error generating GIF:', error);
+      logger.error('Error generating WebP:', error);
       NotificationManager.Push({
-        html: `Failed to generate GIF: ${error.message}`,
+        html: `Failed to generate WebP: ${error.message}`,
         status: 'error',
       });
       this.Data.isGenerating = false;
@@ -917,133 +797,35 @@ const ObjectLayerEngineViewer = {
     }
   },
 
-  loadImage: function (src) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => resolve(img);
-      img.onerror = reject;
-      img.src = src;
-    });
-  },
-
-  displayGif: function (blob, originalWidth, originalHeight, frameDuration, frameCount) {
-    const container = s('#gif-canvas-container');
-    if (!container) return;
-
-    const url = URL.createObjectURL(blob);
-
-    // Create img element for the animated GIF
-    const gifImg = document.createElement('img');
-    gifImg.src = url;
-
-    gifImg.onload = () => {
-      // Use provided dimensions or get from image
-      const naturalWidth = originalWidth || gifImg.naturalWidth;
-      const naturalHeight = originalHeight || gifImg.naturalHeight;
-
-      // Calculate intelligent scaling based on container and image size
-      const containerEl = s('.gif-display-area');
-      const containerWidth = containerEl ? containerEl.clientWidth - 60 : 400; // subtract padding
-      const containerHeight = containerEl ? containerEl.clientHeight - 60 : 400;
-
-      // Calculate scale to fit container while maintaining aspect ratio
-      const scaleToFitWidth = containerWidth / naturalWidth;
-      const scaleToFitHeight = containerHeight / naturalHeight;
-      const scaleToFit = Math.min(scaleToFitWidth, scaleToFitHeight);
-
-      // For pixel art, use integer scaling for better visuals
-      // Minimum 2x for small sprites, but respect container size
-      let scale = Math.max(1, Math.floor(scaleToFit));
-
-      // For very small sprites (< 100px), try to scale up more
-      if (Math.max(naturalWidth, naturalHeight) < 100) {
-        scale = Math.min(4, Math.floor(scaleToFit));
-      }
-
-      // Make sure scaled image fits in container
-      const displayWidth = naturalWidth * scale;
-      const displayHeight = naturalHeight * scale;
-
-      if (displayWidth > containerWidth || displayHeight > containerHeight) {
-        scale = Math.max(1, scale - 1);
-      }
-
-      gifImg.style.width = `${naturalWidth * scale}px !important`;
-      gifImg.style.height = `${naturalHeight * scale}px !important`;
-      gifImg.style.maxWidth = '100%';
-      gifImg.style.maxHeight = '540px';
-
-      // Force pixel-perfect rendering (no antialiasing/blur)
-      // gifImg.style.imageRendering = 'pixelated';
-      // gifImg.style.imageRendering = '-moz-crisp-edges';
-      // gifImg.style.imageRendering = 'crisp-edges';
-      // gifImg.style.msInterpolationMode = 'nearest-neighbor';
-
-      // Prevent any browser scaling optimizations
-      // gifImg.style.transform = 'translateZ(0)'; // Force GPU rendering
-      // gifImg.style.backfaceVisibility = 'hidden'; // Prevent subpixel rendering
-
-      // Clear container and add the GIF
-      container.innerHTML = '';
-      container.appendChild(gifImg);
-
-      // Re-add loading overlay
-      const overlay = document.createElement('div');
-      overlay.id = 'gif-loading-overlay';
-      overlay.className = 'loading-overlay';
-      overlay.style.display = 'none';
-      overlay.innerHTML = html`
-        <div>
-          <i class="fa-solid fa-spinner fa-spin"></i>
-          <span style="margin-left: 10px;">Generating GIF...</span>
-        </div>
-      `;
-      container.appendChild(overlay);
-
-      // Add info badge with dimensions and scale
-      const infoBadge = document.createElement('div');
-      infoBadge.className = 'gif-info-badge';
-      const displayW = Math.round(naturalWidth * scale);
-      const displayH = Math.round(naturalHeight * scale);
-      infoBadge.innerHTML = html`
-        <span class="info-label">Dimensions:</span> ${naturalWidth}x${naturalHeight}px<br />
-        <span class="info-label">Display:</span> ${displayW}x${displayH}px<br />
-        ${scale > 1 ? `<span class="info-label">Scale:</span> ${scale}x<br />` : ''}
-        <span class="info-label">Frames:</span> ${frameCount}<br />
-        <span class="info-label">Frame Duration:</span> ${frameDuration}ms<br />
-        <span class="info-label">Total Duration:</span> ${(frameDuration * frameCount) / 1000}s
-      `;
-      s(`.gif-display-area`).appendChild(infoBadge);
-
-      logger.info(`Displaying GIF: ${naturalWidth}x${naturalHeight} at ${scale}x scale (${displayW}x${displayH})`);
-    };
-
-    gifImg.onerror = () => {
-      logger.error('Failed to load GIF image');
-      NotificationManager.Push({
-        html: 'Failed to display GIF',
-        status: 'error',
-      });
-    };
-  },
-
   showLoading: function (show) {
-    const overlay = s('#gif-loading-overlay');
+    const overlay = s('#webp-loading-overlay');
     if (overlay) {
       overlay.style.display = show ? 'flex' : 'none';
+      if (!show) {
+        // Reset loading text when hiding
+        const loadingText = overlay.querySelector('span');
+        if (loadingText) {
+          loadingText.textContent = 'Generating WebP...';
+        }
+      }
     }
 
-    const downloadBtn = s('#download-gif-btn');
+    const downloadBtn = s('#download-webp-btn');
     if (downloadBtn) {
       downloadBtn.disabled = show;
     }
+
+    // Remove old info badge if exists
+    const oldBadge = s('.webp-info-badge');
+    if (oldBadge && show) {
+      oldBadge.remove();
+    }
   },
 
-  downloadGif: function () {
-    if (!this.Data.gif) {
+  downloadWebp: function () {
+    if (!this.Data.webp) {
       NotificationManager.Push({
-        html: 'No GIF available to download',
+        html: 'No WebP available to download',
         status: 'warning',
       });
       return;
@@ -1051,19 +833,18 @@ const ObjectLayerEngineViewer = {
 
     const { objectLayer, currentDirection, currentMode } = this.Data;
     const numericCode = this.getDirectionCode(currentDirection, currentMode);
-    const filename = `${objectLayer.data.item.id}_${currentDirection}_${currentMode}_${numericCode}.gif`;
+    const filename = `${objectLayer.data.item.id}_${currentDirection}_${currentMode}_${numericCode}.webp`;
 
-    const url = URL.createObjectURL(this.Data.gif);
+    // Create a temporary anchor element to trigger download
     const a = document.createElement('a');
-    a.href = url;
+    a.href = this.Data.webp;
     a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
 
     NotificationManager.Push({
-      html: `GIF downloaded: ${filename}`,
+      html: `WebP downloaded: ${filename}`,
       status: 'success',
     });
   },
