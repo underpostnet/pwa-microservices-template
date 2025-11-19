@@ -7,6 +7,8 @@ import { commitData } from '../client/components/core/CommonJs.js';
 import UnderpostLxd from './lxd.js';
 import UnderpostBaremetal from './baremetal.js';
 import UnderpostRun from './run.js';
+import Dns from '../server/dns.js';
+import { pbcopy } from '../server/process.js';
 
 // Load environment variables from .env file
 const underpostRootPath = getUnderpostRootPath();
@@ -129,6 +131,16 @@ program
   .description('Displays the root path of the npm installation.')
   .action(() => console.log(getNpmRootPath()));
 
+program
+  .command('ip')
+  .option('--copy', 'Copies the IP addresses to the clipboard.')
+  .description('Displays the current public machine IP addresses.')
+  .action(async (options) => {
+    const ip = await Dns.getPublicIp();
+    if (options.copy) return pbcopy(ip);
+    return console.log(ip);
+  });
+
 // 'cluster' command: Manage Kubernetes clusters
 program
   .command('cluster')
@@ -146,7 +158,10 @@ program
   .option('--dedicated-gpu', 'Initializes the cluster with dedicated GPU base resources and environment settings.')
   .option('--info', 'Retrieves information about all deployed Kubernetes objects.')
   .option('--full', 'Initializes the cluster with all available statefulsets and services.')
-  .option('--ns-use <ns-name>', 'Switches the current Kubernetes context to the specified namespace.')
+  .option(
+    '--ns-use <ns-name>',
+    "Switches the current Kubernetes context to the specified namespace (creates if it doesn't exist).",
+  )
   .option('--kubeadm', 'Initializes the cluster using kubeadm for control plane management.')
   .option('--grafana', 'Initializes the cluster with a Grafana deployment.')
   .option(
@@ -166,6 +181,7 @@ program
   .option('--k3s', 'Initializes the cluster using K3s (Lightweight Kubernetes).')
   .option('--hosts <hosts>', 'A comma-separated list of cluster hostnames or IP addresses.')
   .option('--remove-volume-host-paths', 'Removes specified volume host paths after execution.')
+  .option('--namespace <namespace>', 'Kubernetes namespace for cluster operations (defaults to "default").')
   .action(Underpost.cluster.init)
   .description('Manages Kubernetes clusters, defaulting to Kind cluster initialization.');
 
@@ -205,6 +221,7 @@ program
   .option('--etc-hosts', 'Enables the etc-hosts context for deployment operations.')
   .option('--restore-hosts', 'Restores default `/etc/hosts` entries.')
   .option('--disable-update-underpost-config', 'Disables updates to Underpost configuration during deployment.')
+  .option('--namespace <namespace>', 'Kubernetes namespace for deployment operations (defaults to "default").')
   .description('Manages application deployments, defaulting to deploying development pods.')
   .action(Underpost.deploy.callback);
 
@@ -402,6 +419,10 @@ program
   .option('--runtime-class-name <name>', 'Sets the runtime class name for the job in deploy-job.')
   .option('--image-pull-policy <policy>', 'Sets the image pull policy for the job in deploy-job.')
   .option('--api-version <version>', 'Sets the API version for the job manifest in deploy-job.')
+  .option(
+    '--labels <labels>',
+    'Optional: Specifies a comma-separated list of key-value pairs for labels (e.g., "app=my-app,env=prod").',
+  )
   .option('--claim-name <name>', 'Optional: Specifies the claim name for volume mounting in deploy-job.')
   .option('--kind <kind-type>', 'Specifies the kind of Kubernetes resource (e.g., Job, Deployment) for deploy-job.')
   .option('--kubeadm', 'Flag to indicate Kubeadm cluster type context')

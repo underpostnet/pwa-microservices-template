@@ -17,7 +17,7 @@ kind: StatefulSet
 metadata:
   name: mysql
 spec:
-  serviceName: "mysql"
+  serviceName: 'mysql'
   selector:
     matchLabels:
       app: mysql
