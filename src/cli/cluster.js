@@ -51,6 +51,8 @@ class UnderpostCluster {
      * @param {boolean} [options.pullImage=false] - Pull necessary Docker images before deployment.
      * @param {boolean} [options.dedicatedGpu=false] - Configure for dedicated GPU usage (e.g., NVIDIA GPU Operator).
      * @param {boolean} [options.kubeadm=false] - Initialize the cluster using Kubeadm.
+     * @param {string} [options.podNetworkCidr='192.168.0.0/16'] - Custom pod network CIDR for Kubeadm cluster initialization. Defaults to '192.168.0.0/16'.
+     * @param {string} [options.controlPlaneEndpoint=''] - Custom control plane endpoint for Kubeadm cluster initialization. Defaults to '${os.hostname()}:6443'.
      * @param {boolean} [options.k3s=false] - Initialize the cluster using K3s.
      * @param {boolean} [options.initHost=false] - Perform initial host setup (install Docker, Podman, Kind, Kubeadm, Helm).
      * @param {boolean} [options.grafana=false] - Initialize the cluster with a Grafana deployment.
@@ -86,6 +88,8 @@ class UnderpostCluster {
         pullImage: false,
         dedicatedGpu: false,
         kubeadm: false,
+        podNetworkCidr: '192.168.0.0/16',
+        controlPlaneEndpoint: '',
         k3s: false,
         initHost: false,
         grafana: false,
@@ -138,39 +142,6 @@ class UnderpostCluster {
 
         shellExec(`kubectl config set-context --current --namespace=${options.nsUse}`);
         logger.info(`Context switched to namespace: ${options.nsUse}`);
-        return;
-      }
-      if (options.info === true) {
-        shellExec(`kubectl config get-contexts`);
-        shellExec(`kubectl config get-clusters`);
-        shellExec(`kubectl get nodes -o wide`);
-        shellExec(`kubectl config view | grep namespace`);
-        shellExec(`kubectl get ns -o wide`);
-        shellExec(`kubectl get pvc --all-namespaces -o wide`);
-        shellExec(`kubectl get pv --all-namespaces -o wide`);
-        shellExec(`kubectl get cronjob --all-namespaces -o wide`);
-        shellExec(`kubectl get svc --all-namespaces -o wide`);
-        shellExec(`kubectl get statefulsets --all-namespaces -o wide`);
-        shellExec(`kubectl get deployments --all-namespaces -o wide`);
-        shellExec(`kubectl get configmap --all-namespaces -o wide`);
-        shellExec(`kubectl get pods --all-namespaces -o wide`);
-        shellExec(
-          `kubectl get pod --all-namespaces -o="custom-columns=NAME:.metadata.name,INIT-CONTAINERS:.spec.initContainers[*].name,CONTAINERS:.spec.containers[*].name"`,
-        );
-        shellExec(
-          `kubectl get pods --all-namespaces -o=jsonpath='{range .items[*]}{"\\n"}{.metadata.name}{":\\t"}{range .spec.containers[*]}{.image}{", "}{end}{end}'`,
-        );
-        shellExec(`sudo crictl images`);
-        console.log();
-        logger.info('contour -------------------------------------------------');
-        for (const _k of ['Cluster', 'HTTPProxy', 'ClusterIssuer', 'Certificate']) {
-          shellExec(`kubectl get ${_k} --all-namespaces -o wide`);
-        }
-        logger.info('----------------------------------------------------------------');
-        shellExec(`kubectl get secrets --all-namespaces -o wide`);
-        shellExec(`docker secret ls`);
-        shellExec(`kubectl get crd --all-namespaces -o wide`);
-        shellExec(`sudo kubectl api-resources`);
         return;
       }
 
@@ -250,9 +221,13 @@ class UnderpostCluster {
           logger.info('K3s comes with local-path-provisioner by default. Skipping explicit installation.');
         } else if (options.kubeadm === true) {
           logger.info('Initializing Kubeadm control plane...');
+          // Set default values if not provided
+          const podNetworkCidr = options.podNetworkCidr || '192.168.0.0/16';
+          const controlPlaneEndpoint = options.controlPlaneEndpoint || `${os.hostname()}:6443`;
+
           // Initialize kubeadm control plane
           shellExec(
-            `sudo kubeadm init --pod-network-cidr=192.168.0.0/16 --control-plane-endpoint="${os.hostname()}:6443"`,
+            `sudo kubeadm init --pod-network-cidr=${podNetworkCidr} --control-plane-endpoint="${controlPlaneEndpoint}"`,
           );
           // Configure kubectl for the current user
           UnderpostCluster.API.chown('kubeadm'); // Pass 'kubeadm' to chown
@@ -263,8 +238,9 @@ class UnderpostCluster {
             `sudo kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.3/manifests/tigera-operator.yaml`,
           );
           shellExec(
-            `sudo kubectl apply -f ${underpostRoot}/manifests/kubeadm-calico-config.yaml -n ${options.namespace}`,
+            `kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.3/manifests/custom-resources.yaml`,
           );
+          shellExec(`sudo kubectl apply -f ${underpostRoot}/manifests/kubeadm-calico-config.yaml`);
 
           // Untaint control plane node to allow scheduling pods
           const nodeName = os.hostname();
@@ -272,7 +248,7 @@ class UnderpostCluster {
           // Install local-path-provisioner for dynamic PVCs (optional but recommended)
           logger.info('Installing local-path-provisioner...');
           shellExec(
-            `kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml -n ${options.namespace}`,
+            `kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml`,
           );
         } else {
           // Kind cluster initialization (if not using kubeadm or k3s)
@@ -479,7 +455,7 @@ EOF
       }
 
       if (options.full === true || options.contour === true) {
-        shellExec(`kubectl apply -f https://projectcontour.io/quickstart/contour.yaml -n ${options.namespace}`);
+        shellExec(`kubectl apply -f https://projectcontour.io/quickstart/contour.yaml`);
         if (options.kubeadm === true) {
           // Envoy service might need NodePort for kubeadm
           shellExec(

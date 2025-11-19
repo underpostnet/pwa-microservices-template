@@ -39,6 +39,7 @@ class UnderpostMonitor {
      * @param {string} [options.type=''] - Type of deployment (e.g., 'blue-green', 'remote').
      * @param {string} [options.replicas=''] - Number of replicas for the deployment.
      * @param {boolean} [options.sync=false] - Synchronize traffic switching with the deployment.
+     * @param {string} [options.namespace=''] - Kubernetes namespace for the deployment.
      * @param {object} [commanderOptions] - Options passed from the command line interface.
      * @param {object} [auxRouter] - Optional router configuration for the deployment.
      * @memberof UnderpostMonitor
@@ -46,10 +47,11 @@ class UnderpostMonitor {
     async callback(
       deployId,
       env = 'development',
-      options = { now: false, single: false, msInterval: '', type: '', replicas: '', sync: false },
+      options = { now: false, single: false, msInterval: '', type: '', replicas: '', sync: false, namespace: '' },
       commanderOptions,
       auxRouter,
     ) {
+      if (!options.namespace) options.namespace = 'default';
       if (deployId === 'dd' && fs.existsSync(`./engine-private/deploy/dd.router`)) {
         for (const _deployId of fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8').split(','))
           UnderpostMonitor.API.callback(
