@@ -130,18 +130,28 @@ class UnderpostDeploy {
      * @param {number} replicas - Number of replicas for the deployment.
      * @param {string} image - Docker image for the deployment.
      * @param {string} namespace - Kubernetes namespace for the deployment.
+     * @param {Array<object>} volumes - Volume configurations for the deployment.
+     * @param {Array<string>} cmd - Command to run in the deployment container.
      * @returns {string} - YAML deployment configuration for the specified deployment.
      * @memberof UnderpostDeploy
      */
-    deploymentYamlPartsFactory({ deployId, env, suffix, resources, replicas, image, namespace }) {
+    deploymentYamlPartsFactory({ deployId, env, suffix, resources, replicas, image, namespace, volumes, cmd }) {
+      if (!cmd)
+        cmd = [
+          `npm install -g npm@11.2.0`,
+          `npm install -g underpost`,
+          `underpost secret underpost --create-from-file /etc/config/.env.${env}`,
+          `underpost start --build --run ${deployId} ${env}`,
+        ];
       const packageJson = JSON.parse(fs.readFileSync('./package.json', 'utf8'));
-      let volumes = [
-        {
-          volumeMountPath: '/etc/config',
-          volumeName: 'config-volume',
-          configMap: 'underpost-config',
-        },
-      ];
+      if (!volumes)
+        volumes = [
+          {
+            volumeMountPath: '/etc/config',
+            volumeName: 'config-volume',
+            configMap: 'underpost-config',
+          },
+        ];
       const confVolume = fs.existsSync(`./engine-private/conf/${deployId}/conf.volume.json`)
         ? JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.volume.json`, 'utf8'))
         : [];
@@ -177,10 +187,8 @@ spec:
             - /bin/sh
             - -c
             - >
-              npm install -g npm@11.2.0 &&
-              npm install -g underpost &&
-              underpost secret underpost --create-from-file /etc/config/.env.${env} &&
-              underpost start --build --run ${deployId} ${env}
+              ${cmd.join(` && `)}
+
 ${UnderpostDeploy.API.volumeFactory(volumes.map((v) => ((v.version = `${deployId}-${env}-${suffix}`), v)))
   .render.split(`\n`)
   .map((l) => '    ' + l)
@@ -257,23 +265,7 @@ ${UnderpostDeploy.API.deploymentYamlPartsFactory({
 
           const pathPortAssignment = pathPortAssignmentData[host];
           // logger.info('', { host, pathPortAssignment });
-          let _proxyYaml = `
----
-apiVersion: projectcontour.io/v1
-kind: HTTPProxy
-metadata:
-  name: ${host}
-  namespace: ${options.namespace}
-spec:
-  virtualhost:
-    fqdn: ${host}${
-      env === 'development'
-        ? ''
-        : `
-    tls:
-      secretName: ${host}`
-    }
-  routes:`;
+          let _proxyYaml = UnderpostDeploy.API.baseProxyYamlFactory({ host, env, options });
           const deploymentVersions =
             options.traffic && typeof options.traffic === 'string' ? options.traffic.split(',') : ['blue'];
           let proxyRoutes = '';
@@ -347,16 +339,52 @@ spec:
     /**
      * Retrieves the current traffic status for a deployment.
      * @param {string} deployId - Deployment ID for which the traffic status is being retrieved.
+     * @param {object} options - Options for the traffic retrieval.
+     * @param {string} options.hostTest - Hostname to test for traffic status.
+     * @param {string} options.namespace - Kubernetes namespace for the deployment.
      * @returns {string|null} - Current traffic status ('blue' or 'green') or null if not found.
      * @memberof UnderpostDeploy
      */
-    getCurrentTraffic(deployId) {
+    getCurrentTraffic(deployId, options = { hostTest: '', namespace: '' }) {
+      if (!options.namespace) options.namespace = 'default';
       // kubectl get deploy,sts,svc,configmap,secret -n default -o yaml --export > default.yaml
-      const hostTest = Object.keys(
-        JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8')),
-      )[0];
-      const info = shellExec(`sudo kubectl get HTTPProxy/${hostTest} -o yaml`, { silent: true, stdout: true });
+      const hostTest = options?.hostTest
+        ? options.hostTest
+        : Object.keys(JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8')))[0];
+      const info = shellExec(`sudo kubectl get HTTPProxy/${hostTest} -n ${options.namespace} -o yaml`, {
+        silent: true,
+        stdout: true,
+      });
       return info.match('blue') ? 'blue' : info.match('green') ? 'green' : null;
+    },
+
+    /**
+     * Creates a base YAML configuration for an HTTPProxy resource.
+     * @param {string} host - Hostname for which the HTTPProxy is being created.
+     * @param {string} env - Environment for which the HTTPProxy is being created.
+     * @param {object} options - Options for the HTTPProxy creation.
+     * @param {string} options.namespace - Kubernetes namespace for the HTTPProxy.
+     * @returns {string} - Base YAML configuration for the HTTPProxy resource.
+     * @memberof UnderpostDeploy
+     */
+    baseProxyYamlFactory({ host, env, options }) {
+      return `
+---
+apiVersion: projectcontour.io/v1
+kind: HTTPProxy
+metadata:
+  name: ${host}
+  namespace: ${options.namespace}
+spec:
+  virtualhost:
+    fqdn: ${host}${
+      env === 'development'
+        ? ''
+        : `
+    tls:
+      secretName: ${host}`
+    }
+  routes:`;
     },
 
     /**
@@ -434,7 +462,7 @@ EOF`);
           logger.info('', {
             deployId,
             env,
-            traffic: UnderpostDeploy.API.getCurrentTraffic(deployId),
+            traffic: UnderpostDeploy.API.getCurrentTraffic(deployId, { namespace }),
             router: await UnderpostDeploy.API.routerFactory(deployId, env),
             pods: await UnderpostDeploy.API.get(deployId),
           });
@@ -496,24 +524,15 @@ EOF`);
             shellExec(
               `sudo kubectl delete deployment ${deployId}-${env}-${version} -n ${namespace} --ignore-not-found`,
             );
-            if (!options.disableUpdateVolume) {
-              for (const volume of confVolume) {
-                const pvcId = `${volume.claimName}-${deployId}-${env}-${version}`;
-                const pvId = `${volume.claimName.replace('pvc-', 'pv-')}-${deployId}-${env}-${version}`;
-                const rootVolumeHostPath = `/home/dd/engine/volume/${pvId}`;
-                if (!fs.existsSync(rootVolumeHostPath)) fs.mkdirSync(rootVolumeHostPath, { recursive: true });
-                fs.copySync(volume.volumeMountPath, rootVolumeHostPath);
-                shellExec(`kubectl delete pvc ${pvcId} -n ${namespace} --ignore-not-found`);
-                shellExec(`kubectl delete pv ${pvId} --ignore-not-found`);
-                shellExec(`kubectl apply -f - -n ${namespace} <<EOF
-${UnderpostDeploy.API.persistentVolumeFactory({
-  hostPath: rootVolumeHostPath,
-  pvcId,
-})}
-EOF
-`);
-              }
-            }
+            if (!options.disableUpdateVolume)
+              for (const volume of confVolume)
+                UnderpostDeploy.API.deployVolume(volume, {
+                  deployId,
+                  env,
+                  version,
+                  namespace,
+                  nodeName: options.node ? options.node : env === 'development' ? 'kind-worker' : os.hostname(),
+                });
           }
 
         for (const host of Object.keys(confServer)) {
@@ -707,6 +726,60 @@ EOF
     },
 
     /**
+     * Deploys a volume for a deployment.
+     * @param {object} volume - Volume configuration.
+     * @param {string} volume.claimName - Name of the persistent volume claim.
+     * @param {string} volume.volumeMountPath - Mount path of the volume in the container.
+     * @param {string} volume.volumeName - Name of the volume.
+     * @param {object} options - Options for the volume deployment.
+     * @param {string} options.deployId - Deployment ID.
+     * @param {string} options.env - Environment for the deployment.
+     * @param {string} options.version - Version of the deployment.
+     * @param {string} options.namespace - Kubernetes namespace for the deployment.
+     * @param {string} options.nodeName - Node name for the deployment.
+     * @memberof UnderpostDeploy
+     */
+    deployVolume(
+      volume = { claimName: '', volumeMountPath: '', volumeName: '' },
+      options = {
+        deployId: '',
+        env: '',
+        version: '',
+        namespace: '',
+        nodeName: '',
+      },
+    ) {
+      if (!volume.claimName) {
+        logger.warn('Volume claimName is required to deploy volume', volume);
+        return;
+      }
+      const { deployId, env, version, namespace } = options;
+      const pvcId = `${volume.claimName}-${deployId}-${env}-${version}`;
+      const pvId = `${volume.claimName.replace('pvc-', 'pv-')}-${deployId}-${env}-${version}`;
+      const rootVolumeHostPath = `/home/dd/engine/volume/${pvId}`;
+      if (options.nodeName) {
+        if (!fs.existsSync(rootVolumeHostPath)) fs.mkdirSync(rootVolumeHostPath, { recursive: true });
+        fs.copySync(volume.volumeMountPath, rootVolumeHostPath);
+      } else {
+        shellExec(`docker exec -i kind-worker bash -c "mkdir -p ${rootVolumeHostPath}"`);
+        // shellExec(`docker cp ${volume.volumeMountPath} kind-worker:${rootVolumeHostPath}`);
+        shellExec(`tar -C ${volume.volumeMountPath} -c . | docker cp - kind-worker:${rootVolumeHostPath}`);
+        shellExec(
+          `docker exec -i kind-worker bash -c "chown -R 1000:1000 ${rootVolumeHostPath} || true; chmod -R 755 ${rootVolumeHostPath}"`,
+        );
+      }
+      shellExec(`kubectl delete pvc ${pvcId} -n ${namespace} --ignore-not-found`);
+      shellExec(`kubectl delete pv ${pvId} --ignore-not-found`);
+      shellExec(`kubectl apply -f - -n ${namespace} <<EOF
+${UnderpostDeploy.API.persistentVolumeFactory({
+  hostPath: rootVolumeHostPath,
+  pvcId,
+})}
+EOF
+`);
+    },
+
+    /**
      * Creates volume mounts and volumes for a deployment.
      * @param {Array<volume>} volumes - List of volume configurations.
      * @param {string} volume.volumeName - Name of the volume.
@@ -838,19 +911,32 @@ ${renderHosts}`,
      * @param {string} env - Environment for which the ready status is being monitored.
      * @param {string} targetTraffic - Target traffic status for the deployment.
      * @param {Array<string>} ignorePods - List of pod names to ignore.
+     * @returns {object} - Object containing the ready status of the deployment.
      * @memberof UnderpostDeploy
      */
     async monitorReadyRunner(deployId, env, targetTraffic, ignorePods = []) {
       let checkStatusIteration = 0;
       const checkStatusIterationMsDelay = 1000;
+      const maxIterations = 500;
       const iteratorTag = `[${deployId}-${env}-${targetTraffic}]`;
       logger.info('Deployment init', { deployId, env, targetTraffic, checkStatusIterationMsDelay });
       const minReadyOk = 3;
       let readyOk = 0;
+      let result = {
+        ready: false,
+        notReadyPods: [],
+        readyPods: [],
+      };
 
       while (readyOk < minReadyOk) {
-        const ready = UnderpostDeploy.API.checkDeploymentReadyStatus(deployId, env, targetTraffic, ignorePods).ready;
-        if (ready === true) {
+        if (checkStatusIteration >= maxIterations) {
+          logger.error(
+            `${iteratorTag} | Deployment check ready status timeout. Max iterations reached: ${maxIterations}`,
+          );
+          break;
+        }
+        result = UnderpostDeploy.API.checkDeploymentReadyStatus(deployId, env, targetTraffic, ignorePods);
+        if (result.ready === true) {
           readyOk++;
           logger.info(`${iteratorTag} | Deployment ready. Verification number: ${readyOk}`);
         }
@@ -861,6 +947,7 @@ ${renderHosts}`,
         );
       }
       logger.info(`${iteratorTag} | Deployment ready. | Total delay number check iterations: ${checkStatusIteration}`);
+      return result;
     },
 
     /**
