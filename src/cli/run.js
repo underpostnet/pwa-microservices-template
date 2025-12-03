@@ -19,6 +19,7 @@ import UnderpostTest from './test.js';
 import fs from 'fs-extra';
 import { range, setPad, timer } from '../client/components/core/CommonJs.js';
 import UnderpostDeploy from './deploy.js';
+import UnderpostDB from './db.js';
 import UnderpostRootEnv from './env.js';
 import UnderpostRepository from './repository.js';
 import os from 'os';
@@ -250,10 +251,26 @@ class UnderpostRun {
         );
         shellExec(`${baseCommand} cluster${options.dev ? ' --dev' : ''} --valkey --pull-image`);
       }
-      shellExec(`${baseCommand} deploy --expose --disable-update-underpost-config mongo`, { async: true });
-      shellExec(`${baseCommand} deploy --expose --disable-update-underpost-config valkey`, { async: true });
+
       {
-        const hostListenResult = UnderpostDeploy.API.etcHostFactory(mongoHosts);
+        // Detect MongoDB primary pod using centralized method
+        let primaryMongoHost = 'mongodb-0.mongodb-service';
+        try {
+          const primaryPodName = UnderpostDB.API.getMongoPrimaryPodName({
+            namespace: options.namespace,
+            podName: 'mongodb-0',
+          });
+          // shellExec(`${baseCommand} deploy --expose --disable-update-underpost-config mongo`, { async: true });
+          shellExec(`kubectl port-forward -n ${options.namespace} pod/${primaryPodName} 27017:27017`, { async: true });
+          shellExec(`${baseCommand} deploy --expose --disable-update-underpost-config valkey`, { async: true });
+        } catch (error) {
+          logger.warn('Failed to detect MongoDB primary pod, using default', {
+            error: error.message,
+            default: primaryMongoHost,
+          });
+        }
+
+        const hostListenResult = UnderpostDeploy.API.etcHostFactory([primaryMongoHost]);
         logger.info(hostListenResult.renderHosts);
       }
     },
@@ -408,8 +425,8 @@ class UnderpostRun {
      * @param {Object} options - The default underpost runner options for customizing workflow
      * @memberof UnderpostRun
      */
-    clean: (path, options = UnderpostRun.DEFAULT_OPTION) => {
-      shellCd(path ?? `/home/dd/engine`);
+    clean: (path = '', options = UnderpostRun.DEFAULT_OPTION) => {
+      shellCd(path ? path : `/home/dd/engine`);
       shellExec(`node bin/deploy clean-core-repo`);
     },
     /**
@@ -422,7 +439,9 @@ class UnderpostRun {
     pull: (path, options = UnderpostRun.DEFAULT_OPTION) => {
       if (!fs.existsSync(`/home/dd`) || !fs.existsSync(`/home/dd/engine`)) {
         fs.mkdirSync(`/home/dd`, { recursive: true });
-        shellExec(`cd /home/dd && underpost clone ${process.env.GITHUB_USERNAME}/engine`);
+        shellExec(`cd /home/dd && underpost clone ${process.env.GITHUB_USERNAME}/engine`, {
+          silent: true,
+        });
       } else {
         shellExec(`underpost run clean`);
         shellExec(`cd /home/dd/engine && underpost pull . ${process.env.GITHUB_USERNAME}/engine`, {
@@ -436,6 +455,9 @@ class UnderpostRun {
       else
         shellExec(
           `cd /home/dd/engine/engine-private && underpost pull . ${process.env.GITHUB_USERNAME}/engine-private`,
+          {
+            silent: true,
+          },
         );
     },
     /**

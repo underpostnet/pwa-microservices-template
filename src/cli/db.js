@@ -167,51 +167,6 @@ class UnderpostDB {
     },
 
     /**
-     * Helper: Gets MongoDB primary pod name
-     * @private
-     * @param {string} namespace - Kubernetes namespace
-     * @param {Array<PodInfo>} pods - List of MongoDB pods
-     * @returns {string|null} Primary pod name or null if not found
-     */
-    _getMongoPrimaryPod(namespace, pods) {
-      try {
-        if (!pods || pods.length === 0) {
-          logger.warn('No MongoDB pods available to check for primary');
-          return null;
-        }
-
-        // Try the first pod to get replica set status
-        const firstPod = pods[0].NAME;
-        logger.info('Checking for MongoDB primary pod', { namespace, checkingPod: firstPod });
-
-        const command = `sudo kubectl exec -n ${namespace} -i ${firstPod} -- mongosh --quiet --eval 'rs.status().members.filter(m => m.stateStr=="PRIMARY").map(m=>m.name)'`;
-        const output = shellExec(command, { stdout: true, silent: true });
-
-        if (!output || output.trim() === '') {
-          logger.warn('No primary pod found in replica set');
-          return null;
-        }
-
-        // Parse the output to get the primary pod name
-        // Output format: [ 'mongodb-0:27017' ] or [ 'mongodb-1.mongodb-service:27017' ] or similar
-        const match = output.match(/['"]([^'"]+)['"]/);
-        if (match && match[1]) {
-          let primaryName = match[1].split(':')[0]; // Extract pod name without port
-          // Remove service suffix if present (e.g., "mongodb-1.mongodb-service" -> "mongodb-1")
-          primaryName = primaryName.split('.')[0];
-          logger.info('Found MongoDB primary pod', { primaryPod: primaryName });
-          return primaryName;
-        }
-
-        logger.warn('Could not parse primary pod from replica set status', { output });
-        return null;
-      } catch (error) {
-        logger.error('Failed to get MongoDB primary pod', { error: error.message });
-        return null;
-      }
-    },
-
-    /**
      * Helper: Executes kubectl command with error handling
      * @private
      * @param {string} command - kubectl command to execute
@@ -776,6 +731,51 @@ class UnderpostDB {
     },
 
     /**
+     * Public API: Gets MongoDB primary pod name
+     * @public
+     * @param {Object} options - Options for getting primary pod
+     * @param {string} [options.namespace='default'] - Kubernetes namespace
+     * @param {string} [options.podName='mongodb-0'] - Initial pod name to query replica set status
+     * @returns {string|null} Primary pod name or null if not found
+     * @memberof UnderpostDB
+     * @example
+     * const primaryPod = UnderpostDB.API.getMongoPrimaryPodName({ namespace: 'production' });
+     * console.log(primaryPod); // 'mongodb-1'
+     */
+    getMongoPrimaryPodName(options = { namespace: 'default', podName: 'mongodb-0' }) {
+      const { namespace = 'default', podName = 'mongodb-0' } = options;
+
+      try {
+        logger.info('Checking for MongoDB primary pod', { namespace, checkingPod: podName });
+
+        const command = `sudo kubectl exec -n ${namespace} -i ${podName} -- mongosh --quiet --eval 'rs.status().members.filter(m => m.stateStr=="PRIMARY").map(m=>m.name)'`;
+        const output = shellExec(command, { stdout: true, silent: true });
+
+        if (!output || output.trim() === '') {
+          logger.warn('No primary pod found in replica set');
+          return null;
+        }
+
+        // Parse the output to get the primary pod name
+        // Output format: [ 'mongodb-0:27017' ] or [ 'mongodb-1.mongodb-service:27017' ] or similar
+        const match = output.match(/['"]([^'"]+)['"]/);
+        if (match && match[1]) {
+          let primaryName = match[1].split(':')[0]; // Extract pod name without port
+          // Remove service suffix if present (e.g., "mongodb-1.mongodb-service" -> "mongodb-1")
+          primaryName = primaryName.split('.')[0];
+          logger.info('Found MongoDB primary pod', { primaryPod: primaryName });
+          return primaryName;
+        }
+
+        logger.warn('Could not parse primary pod from replica set status', { output });
+        return null;
+      } catch (error) {
+        logger.error('Failed to get MongoDB primary pod', { error: error.message });
+        return null;
+      }
+    },
+
+    /**
      * Main callback: Initiates database backup workflow
      * @method callback
      * @description Orchestrates the backup process for multiple deployments, handling
@@ -980,40 +980,31 @@ class UnderpostDB {
 
             // Handle primary pod detection for MongoDB
             let podsToProcess = [];
-            if (provider === 'mongoose' && !options.podName && !options.allPods) {
-              // When no pod name is specified for MongoDB, always use primary pod
-              const primaryPodName = UnderpostDB.API._getMongoPrimaryPod(namespace, targetPods);
-              if (primaryPodName) {
-                const primaryPod = targetPods.find((p) => p.NAME === primaryPodName);
-                if (primaryPod) {
-                  podsToProcess = [primaryPod];
-                  logger.info('Using MongoDB primary pod', { primaryPod: primaryPodName });
+            if (provider === 'mongoose' && !options.allPods) {
+              // For MongoDB, always use primary pod unless allPods is true
+              if (!targetPods || targetPods.length === 0) {
+                logger.warn('No MongoDB pods available to check for primary');
+                podsToProcess = [];
+              } else {
+                const firstPod = targetPods[0].NAME;
+                const primaryPodName = UnderpostDB.API.getMongoPrimaryPodName({ namespace, podName: firstPod });
+
+                if (primaryPodName) {
+                  const primaryPod = targetPods.find((p) => p.NAME === primaryPodName);
+                  if (primaryPod) {
+                    podsToProcess = [primaryPod];
+                    logger.info('Using MongoDB primary pod', { primaryPod: primaryPodName });
+                  } else {
+                    logger.warn('Primary pod not in filtered list, using first pod', { primaryPodName });
+                    podsToProcess = [targetPods[0]];
+                  }
                 } else {
-                  logger.warn('Primary pod not in filtered list, using first pod', { primaryPodName });
+                  logger.warn('Could not detect primary pod, using first pod');
                   podsToProcess = [targetPods[0]];
                 }
-              } else {
-                logger.warn('Could not detect primary pod, using first pod');
-                podsToProcess = [targetPods[0]];
-              }
-            } else if (options.primaryPod === true && provider === 'mongoose') {
-              // Explicit primaryPod flag
-              const primaryPodName = UnderpostDB.API._getMongoPrimaryPod(namespace, targetPods);
-              if (primaryPodName) {
-                const primaryPod = targetPods.find((p) => p.NAME === primaryPodName);
-                if (primaryPod) {
-                  podsToProcess = [primaryPod];
-                  logger.info('Using MongoDB primary pod', { primaryPod: primaryPodName });
-                } else {
-                  logger.warn('Primary pod not in filtered list, using first pod', { primaryPodName });
-                  podsToProcess = [targetPods[0]];
-                }
-              } else {
-                logger.warn('Could not detect primary pod, using first pod');
-                podsToProcess = [targetPods[0]];
               }
             } else {
-              // Limit to first pod unless allPods is true
+              // For MariaDB or when allPods is true, limit to first pod unless allPods is true
               podsToProcess = options.allPods === true ? targetPods : [targetPods[0]];
             }
 
@@ -1318,7 +1309,7 @@ class UnderpostDB {
      * @returns {void}
      * @memberof UnderpostDB
      */
-    clusterMetadataBackupCallback(
+    async clusterMetadataBackupCallback(
       deployId = process.env.DEFAULT_DEPLOY_ID,
       host = process.env.DEFAULT_DEPLOY_HOST,
       path = process.env.DEFAULT_DEPLOY_PATH,
@@ -1344,7 +1335,7 @@ class UnderpostDB {
 
       if (options.generate === true) {
         logger.info('Generating cluster metadata');
-        UnderpostDB.API.clusterMetadataFactory(deployId, host, path);
+        await UnderpostDB.API.clusterMetadataFactory(deployId, host, path);
       }
 
       if (options.instances === true) {
@@ -1357,14 +1348,14 @@ class UnderpostDB {
         if (options.export === true) {
           logger.info('Exporting instances collection', { outputPath });
           shellExec(
-            `node bin db --export --collections ${collection} --out-path ${outputPath} --hosts ${host} --paths '${path}' ${deployId}`,
+            `node bin db --export --primary-pod --collections ${collection} --out-path ${outputPath} --hosts ${host} --paths '${path}' ${deployId}`,
           );
         }
 
         if (options.import === true) {
           logger.info('Importing instances collection', { outputPath });
           shellExec(
-            `node bin db --import --drop --preserveUUID --out-path ${outputPath} --hosts ${host} --paths '${path}' ${deployId}`,
+            `node bin db --import --primary-pod --drop --preserveUUID --out-path ${outputPath} --hosts ${host} --paths '${path}' ${deployId}`,
           );
         }
       }
@@ -1379,14 +1370,14 @@ class UnderpostDB {
         if (options.export === true) {
           logger.info('Exporting crons collection', { outputPath });
           shellExec(
-            `node bin db --export --collections ${collection} --out-path ${outputPath} --hosts ${host} --paths '${path}' ${deployId}`,
+            `node bin db --export --primary-pod --collections ${collection} --out-path ${outputPath} --hosts ${host} --paths '${path}' ${deployId}`,
           );
         }
 
         if (options.import === true) {
           logger.info('Importing crons collection', { outputPath });
           shellExec(
-            `node bin db --import --drop --preserveUUID --out-path ${outputPath} --hosts ${host} --paths '${path}' ${deployId}`,
+            `node bin db --import --primary-pod --drop --preserveUUID --out-path ${outputPath} --hosts ${host} --paths '${path}' ${deployId}`,
           );
         }
       }
