@@ -509,8 +509,23 @@ program
 // 'ssh' command: SSH management
 program
   .command('ssh')
+  .option('--deploy-id <deploy-id>', 'Sets deploy id context for ssh operations.')
   .option('--generate', 'Generates new ssh credential and stores it in current private keys file storage.')
-  .description('Import and start ssh server and client based on current default deployment ID.')
+  .option('--user <user>', 'Sets custom ssh user')
+  .option('--password <password>', 'Sets custom ssh password')
+  .option('--host <host>', 'Sets custom ssh host')
+  .option('--port <port>', 'Sets custom ssh port')
+  .option('--filter <filter>', 'Filters ssh user credentials from current private keys file storage.')
+  .option('--groups <groups>', 'Sets comma-separated ssh user groups for the ssh user credential.')
+  .option('--user-add', 'Adds a new ssh user credential to current private keys file storage.')
+  .option('--user-remove', 'Removes an existing ssh user credential from current private keys file storage.')
+  .option('--user-ls', 'Lists all ssh user credentials from current private keys file storage.')
+  .option('--start', 'Starts an SSH session with the specified credentials.')
+  .option('--reset', 'Resets ssh configuration and deletes all stored credentials.')
+  .option('--keys-list', 'Lists all ssh keys from current private keys file storage.')
+  .option('--hosts-list', 'Lists all ssh hosts from current private keys file storage.')
+  .option('--import-keys', "Imports SSH keys from the private key folder to the user's SSH home directory.")
+  .option('--export-keys', "Exports SSH keys from the user's SSH home directory to the private key folder.")
   .action(Underpost.ssh.callback);
 
 // 'run' command: Run a script
