@@ -432,16 +432,20 @@ program
   .option('--kind', 'Set kind cluster env image context management.')
   .option('--kubeadm', 'Set kubeadm cluster env image context management.')
   .option('--k3s', 'Set k3s cluster env image context management.')
+  .option('--node-name', 'Set node name for kubeadm or k3s cluster env image context management.')
   .option('--secrets', 'Includes Dockerfile environment secrets during the build.')
   .option('--secrets-path [secrets-path]', 'Specifies a custom path for Dockerfile environment secrets.')
   .option('--reset', 'Performs a build without using the cache.')
   .option('--dev', 'Use development mode.')
+  .option('--pull-dockerhub <dockerhub-image>', 'Sets a custom Docker Hub image for base image pulls.')
   .description('Manages Docker images, including building, saving, and loading into Kubernetes clusters.')
   .action(async (options) => {
     if (options.rm) Underpost.image.rm({ ...options, imageName: options.rm });
     if (options.ls) Underpost.image.list({ ...options, log: true });
     if (options.pullBase) Underpost.image.pullBaseImages(options);
     if (options.build) Underpost.image.build(options);
+    if (options.pullDockerhub)
+      Underpost.image.pullDockerHubImage({ ...options, dockerhubImage: options.pullDockerhub });
   });
 
 // 'install' command: Fast import npm dependencies
@@ -687,7 +691,7 @@ program
     '--delete-expose <vm-name-ports>',
     'Removes exposed ports on a VM (e.g., "k8s-control:80,443"). Multiple VM-port pairs can be comma-separated.',
   )
-  .option('--run-workflow <workflow-id>', 'Runs the specified workflow ID on the LXD VM environment.')
+  .option('--workflow-id <workflow-id>', 'Sets the workflow ID context for LXD operations.')
   .option('--vm-id <vm-id>', 'Sets the VM ID context for LXD operations.')
   .option('--deploy-id <deploy-id>', 'Sets the deployment ID context for LXD operations.')
   .option('--namespace <namespace>', 'Kubernetes namespace for LXD operations (defaults to "default").')
