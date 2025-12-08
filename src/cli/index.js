@@ -8,7 +8,6 @@ import UnderpostLxd from './lxd.js';
 import UnderpostBaremetal from './baremetal.js';
 import UnderpostRun from './run.js';
 import Dns from '../server/dns.js';
-import { pbcopy } from '../server/process.js';
 import UnderpostStatic from './static.js';
 
 // Load environment variables from .env file
@@ -35,6 +34,8 @@ program
   .option('--sync-conf', 'Sync configuration to private repositories (requires --deploy-id)')
   .option('--purge', 'Remove deploy ID conf and all related repositories (requires --deploy-id)')
   .option('--dev', 'Sets the development cli context')
+  .option('--default-conf', 'Create default deploy ID conf env files')
+  .option('--conf-workflow-id <workflow-id>', 'Set custom configuration workflow ID for conf generation')
   .description('Initializes a new Underpost project, service, or configuration.')
   .action(Underpost.repo.new);
 
@@ -256,57 +257,7 @@ program
   .option('--ban-both-add', 'Adds IP addresses to both banned ingress and egress lists.')
   .option('--ban-both-remove', 'Removes IP addresses from both banned ingress and egress lists.')
   .description('Displays the current public machine IP addresses.')
-  .action(async (ips = '', options) => {
-    const ipList = ips
-      ? ips
-          .split(',')
-          .map((i) => i.trim())
-          .filter(Boolean)
-      : [];
-
-    if (options.banIngressAdd) {
-      return ipList.forEach((ip) => Dns.banIngress(ip));
-    }
-    if (options.banIngressRemove) {
-      return ipList.forEach((ip) => Dns.unbanIngress(ip));
-    }
-    if (options.banIngressList) {
-      return Dns.listBannedIngress();
-    }
-    if (options.banIngressClear) {
-      return Dns.clearBannedIngress();
-    }
-
-    if (options.banEgressAdd) {
-      return ipList.forEach((ip) => Dns.banEgress(ip));
-    }
-    if (options.banEgressRemove) {
-      return ipList.forEach((ip) => Dns.unbanEgress(ip));
-    }
-    if (options.banEgressList) {
-      return Dns.listBannedEgress();
-    }
-    if (options.banEgressClear) {
-      return Dns.clearBannedEgress();
-    }
-
-    if (options.banBothAdd) {
-      return ipList.forEach((ip) => {
-        Dns.banIngress(ip);
-        Dns.banEgress(ip);
-      });
-    }
-    if (options.banBothRemove) {
-      return ipList.forEach((ip) => {
-        Dns.unbanIngress(ip);
-        Dns.unbanEgress(ip);
-      });
-    }
-
-    const ip = await Dns.getPublicIp();
-    if (options.copy) return pbcopy(ip);
-    return console.log(ip);
-  });
+  .action(Dns.ipDispatcher);
 
 // 'cluster' command: Manage Kubernetes clusters
 program
@@ -479,7 +430,10 @@ program
   .option('--hosts <hosts>', 'Comma-separated list of database hosts to filter operations.')
   .option('--paths <paths>', 'Comma-separated list of paths to filter database operations.')
   .option('--ns <ns-name>', 'Kubernetes namespace context for database operations (defaults to "default").')
-  .option('--dry-run', 'Simulates operations without executing them (useful for testing).')
+  .option(
+    '--macro-rollback-export <n-commits-reset>',
+    'Exports a macro rollback script that reverts the last n commits (Git integration required).',
+  )
   .description(
     'Manages database operations with support for MariaDB and MongoDB, including import/export, multi-pod targeting, and Git integration.',
   )

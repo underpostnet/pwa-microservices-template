@@ -398,7 +398,7 @@ class UnderpostRun {
       shellExec(`node bin run sync-replica template-deploy${nodeOptions}`);
       shellExec(`node bin env clean`);
       for (const deployId of fs.readFileSync('./engine-private/deploy/dd.router', 'utf8').split(','))
-        shellExec(`node bin/deploy update-default-conf ${deployId.trim()}`);
+        shellExec(`node bin new --default-conf --deploy-id ${deployId.trim()}`);
       if (path === 'cmt') {
         shellExec(`git add . && underpost cmt . build cluster-build`);
         shellExec(`cd engine-private && git add . && underpost cmt . build cluster-build`);
@@ -636,7 +636,7 @@ chmod 600 "$SSH_KEY"
 ssh -i "$SSH_KEY" -o BatchMode=yes "$REMOTE_USER@$REMOTE_HOST" -p $REMOTE_PORT sh <<EOF
 cd /home/dd/engine
 sudo -n -- /bin/bash -lc "${[
-        `${baseCommand} run${baseClusterCommand} stop${path ? path : ` ${path}`}`,
+        `${baseCommand} run${baseClusterCommand} stop${path ? ` ${path}` : ''}`,
         ` --deploy-id ${options.deployId}${options.instanceId ? ` --instance-id ${options.instanceId}` : ''}`,
         ` --namespace ${options.namespace}`,
       ].join('')}"
