@@ -13,6 +13,7 @@ import fs from 'fs-extra';
 import Downloader from '../server/downloader.js';
 import UnderpostCloudInit from './cloud-init.js';
 import { s4, timer } from '../client/components/core/CommonJs.js';
+import { spawnSync } from 'child_process';
 
 const logger = loggerFactory(import.meta);
 
@@ -25,6 +26,19 @@ const logger = loggerFactory(import.meta);
  */
 class UnderpostBaremetal {
   static API = {
+    /**
+     * @method installPacker
+     * @description Installs Packer CLI.
+     * @memberof UnderpostBaremetal
+     * @returns {Promise<void>}
+     */
+    async installPacker(underpostRoot) {
+      const scriptPath = `${underpostRoot}/scripts/packer-setup.sh`;
+      logger.info(`Installing Packer using script: ${scriptPath}`);
+      shellExec(`sudo chmod +x ${scriptPath}`);
+      shellExec(`sudo ${scriptPath}`);
+    },
+
     /**
      * @method callback
      * @description Initiates a baremetal provisioning workflow based on the provided options.
@@ -40,6 +54,9 @@ class UnderpostBaremetal {
      * @param {boolean} [options.controlServerUninstall=false] - Flag to uninstall the control server.
      * @param {boolean} [options.controlServerDbInstall=false] - Flag to install the control server's database.
      * @param {boolean} [options.controlServerDbUninstall=false] - Flag to uninstall the control server's database.
+     * @param {boolean} [options.installPacker=false] - Flag to install Packer CLI.
+     * @param {string} [options.packerMaasImageBuild] - Workflow ID to build a Packer MAAS image.
+     * @param {string} [options.packerMaasImageUpload] - Workflow ID to upload a Packer MAAS image.
      * @param {boolean} [options.cloudInitUpdate=false] - Flag to update cloud-init configuration on the baremetal machine.
      * @param {boolean} [options.commission=false] - Flag to commission the baremetal machine.
      * @param {boolean} [options.nfsBuild=false] - Flag to build the NFS root filesystem.
@@ -60,6 +77,9 @@ class UnderpostBaremetal {
         controlServerUninstall: false,
         controlServerDbInstall: false,
         controlServerDbUninstall: false,
+        installPacker: false,
+        packerMaasImageBuild: false,
+        packerMaasImageUpload: false,
         cloudInitUpdate: false,
         commission: false,
         nfsBuild: false,
@@ -107,6 +127,103 @@ class UnderpostBaremetal {
 
       // Log the initiation of the baremetal callback with relevant metadata.
       logger.info('Baremetal callback', callbackMetaData);
+
+      if (options.installPacker) {
+        await UnderpostBaremetal.API.installPacker(underpostRoot);
+        return;
+      }
+
+      if (options.packerMaasImageBuild || options.packerMaasImageUpload) {
+        // Determine workflow ID
+        if (typeof options.packerMaasImageBuild === 'string') {
+          workflowId = options.packerMaasImageBuild;
+        } else if (typeof options.packerMaasImageUpload === 'string') {
+          workflowId = options.packerMaasImageUpload;
+        }
+
+        const workflow = UnderpostBaremetal.API.packerMaasImageBuildWorkflow[workflowId];
+        if (!workflow) {
+          throw new Error(`Packer MAAS image build workflow not found: ${workflowId}`);
+        }
+        const packerDir = `${underpostRoot}/${workflow.dir}`;
+        const tarballPath = `${packerDir}/${workflow.maas.content}`;
+
+        // Build phase (skip if upload-only mode)
+        if (options.packerMaasImageBuild) {
+          if (shellExec('packer version', { silent: true }).code !== 0) {
+            throw new Error('Packer is not installed. Please install Packer to proceed.');
+          }
+
+          logger.info(`Building Packer image for ${workflowId} in ${packerDir}...`);
+
+          const init = spawnSync('packer', ['init', '.'], { stdio: 'inherit', cwd: packerDir });
+          if (init.status !== 0) {
+            throw new Error('Packer init failed');
+          }
+
+          const build = spawnSync('packer', ['build', '.'], {
+            stdio: 'inherit',
+            cwd: packerDir,
+            env: { ...process.env, PACKER_LOG: '1' },
+          });
+
+          if (build.status !== 0) {
+            throw new Error('Packer build failed');
+          }
+        } else {
+          // Upload-only mode: verify tarball exists
+          logger.info(`Upload-only mode: checking for existing build artifact...`);
+          if (!fs.existsSync(tarballPath)) {
+            throw new Error(
+              `Build artifact not found: ${tarballPath}\n` +
+                `Please build first with: --packer-maas-image-build ${workflowId}`,
+            );
+          }
+          const stats = fs.statSync(tarballPath);
+          logger.info(`Found existing artifact: ${tarballPath} (${(stats.size / 1024 / 1024 / 1024).toFixed(2)} GB)`);
+        }
+
+        logger.info(`Uploading image to MAAS...`);
+
+        // Detect MAAS profile from 'maas list' output
+        let maasProfile = process.env.MAAS_ADMIN_USERNAME;
+        if (!maasProfile) {
+          const profileList = shellExec('maas list', { silent: true, stdout: true });
+          if (profileList) {
+            const firstLine = profileList.trim().split('\n')[0];
+            const match = firstLine.match(/^(\S+)\s+http/);
+            if (match) {
+              maasProfile = match[1];
+              logger.info(`Detected MAAS profile: ${maasProfile}`);
+            }
+          }
+        }
+
+        if (!maasProfile) {
+          throw new Error(
+            'MAAS profile not found. Please run "maas login" first or set MAAS_ADMIN_USERNAME environment variable.',
+          );
+        }
+
+        // Use the upload script to avoid MAAS CLI bugs
+        const uploadScript = `${underpostRoot}/scripts/maas-upload-boot-resource.sh`;
+        const uploadCmd = `${uploadScript} ${maasProfile} "${workflow.maas.name}" "${workflow.maas.title}" "${workflow.maas.architecture}" "${workflow.maas.base_image}" "${workflow.maas.filetype}" "${tarballPath}"`;
+
+        logger.info(`Uploading to MAAS using: ${uploadScript}`);
+        const uploadResult = shellExec(uploadCmd);
+        if (uploadResult.code !== 0) {
+          logger.error(`Upload failed with exit code: ${uploadResult.code}`);
+          if (uploadResult.stdout) {
+            logger.error(`Upload output:\n${uploadResult.stdout}`);
+          }
+          if (uploadResult.stderr) {
+            logger.error(`Upload error output:\n${uploadResult.stderr}`);
+          }
+          throw new Error('MAAS upload failed - see output above for details');
+        }
+        logger.info(`Successfully uploaded ${workflow.maas.name} to MAAS!`);
+        return;
+      }
 
       // Handle various log display options.
       if (options.logs === 'dhcp') {
@@ -1309,6 +1426,29 @@ GATEWAY=${gateway}`;
             bind: ['/proc', '/sys', '/run'], // Standard bind mounts.
             rbind: ['/dev'], // Recursive bind mount for /dev.
           },
+        },
+      },
+    },
+    /**
+     * @property {object} packerMaasImageBuildWorkflow
+     * @description Configuration for PACKe mass image workflows.
+     * @memberof UnderpostBaremetal
+     */
+    packerMaasImageBuildWorkflow: {
+      /**
+       * @property {object} Rocky9Amd64
+       * @description Configuration for the Rocky Linux 9 cloud image build workflow.
+       * @memberof UnderpostBaremetal.packerMaasImageBuildWorkflow
+       */
+      Rocky9Amd64: {
+        dir: 'packer/images/Rocky9Amd64',
+        maas: {
+          name: 'custom/rocky9',
+          title: 'Rocky 9 Custom',
+          architecture: 'amd64/generic',
+          base_image: 'rhel/9',
+          filetype: 'tgz',
+          content: 'rocky9.tar.gz',
         },
       },
     },
