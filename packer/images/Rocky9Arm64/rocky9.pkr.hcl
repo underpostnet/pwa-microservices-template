@@ -32,7 +32,7 @@ variable "timeout" {
 
 variable "architecture" {
   type        = string
-  default     = "amd64"
+  default     = "arm64"
   description = "The architecture to build the image for (amd64 or arm64)"
 }
 
@@ -61,7 +61,7 @@ locals {
     "arm64"   = "aarch64"
     "aarch64" = "aarch64"
   }
-  iso_arch = lookup(local.iso_arch_map, var.architecture, "x86_64")
+  iso_arch = lookup(local.iso_arch_map, var.architecture, "aarch64")
 
   qemu_arch = {
     "amd64"   = "x86_64"
@@ -101,7 +101,7 @@ locals {
 }
 
 source "qemu" "rocky9" {
-  boot_command     = ["<up><wait>", "e", "<down><down><down><left>", " console=ttyS0 inst.cmdline inst.text inst.ks=http://{{.HTTPIP}}:{{.HTTPPort}}/rocky9.ks <f10>"]
+  boot_command     = ["<up><wait>", "e", "<down><down><down><left>", " console=ttyAMA0 inst.cmdline inst.text inst.ks=http://{{.HTTPIP}}:{{.HTTPPort}}/rocky9.ks <f10>"]
   boot_wait        = "5s"
   communicator     = "none"
   disk_size        = "45G"

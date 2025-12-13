@@ -87,6 +87,7 @@ class UnderpostBaremetal {
         packerWorkflowId: '',
         packerMaasImageBuild: false,
         packerMaasImageUpload: false,
+        packerMaasImageCached: false,
         cloudInitUpdate: false,
         commission: false,
         nfsBuild: false,
@@ -141,8 +142,9 @@ class UnderpostBaremetal {
       }
 
       if (options.packerMaasImageTemplate) {
+        workflowId = options.packerWorkflowId;
         if (!workflowId) {
-          throw new Error('workflow-id is required when using --packer-maas-image-template');
+          throw new Error('--packer-workflow-id is required when using --packer-maas-image-template');
         }
 
         const templatePath = options.packerMaasImageTemplate;
@@ -187,7 +189,7 @@ class UnderpostBaremetal {
           logger.info(`1. Review and customize the Packer template files in: ${targetDir}`);
           logger.info(`2. Review the workflow configuration in engine/baremetal/packer-workflows.json`);
           logger.info(
-            `3. Build the image with: underpost baremetal ${workflowId} --packer-maas-image-build ${workflowId}`,
+            `3. Build the image with: underpost baremetal --packer-workflow-id ${workflowId} --packer-maas-image-build`,
           );
         } catch (error) {
           throw new Error(`Failed to extract template: ${error.message}`);
@@ -217,10 +219,26 @@ class UnderpostBaremetal {
             throw new Error('Packer is not installed. Please install Packer to proceed.');
           }
 
+          // Check for QEMU support if building for a different architecture (validator bots case)
+          UnderpostBaremetal.API.checkQemuCrossArchSupport(workflow);
+
           logger.info(`Building Packer image for ${workflowId} in ${packerDir}...`);
-          const artifacts = ['output-rocky9', 'packer_cache', 'x86_64_VARS.fd', 'rocky9.tar.gz'];
-          shellExec(`cd packer/images/${workflowId}
+
+          // Only remove artifacts if not using cached mode
+          if (!options.packerMaasImageCached) {
+            const artifacts = [
+              'output-rocky9',
+              'packer_cache',
+              'x86_64_VARS.fd',
+              'aarch64_VARS.fd',
+              workflow.maas.content,
+            ];
+            shellExec(`cd packer/images/${workflowId}
 rm -rf ${artifacts.join(' ')}`);
+            logger.info('Removed previous build artifacts');
+          } else {
+            logger.info('Cached mode: Keeping existing artifacts for incremental build');
+          }
           shellExec(`chmod +x ${underpostRoot}/scripts/packer-init-vars-file.sh`);
           shellExec(`${underpostRoot}/scripts/packer-init-vars-file.sh`);
 
@@ -229,7 +247,8 @@ rm -rf ${artifacts.join(' ')}`);
             throw new Error('Packer init failed');
           }
 
-          const build = spawnSync('packer', ['build', '.'], {
+          const isArm = process.arch === 'arm64';
+          const build = spawnSync('packer', ['build', '-var', `host_is_arm=${isArm}`, '.'], {
             stdio: 'inherit',
             cwd: packerDir,
             env: { ...process.env, PACKER_LOG: '1' },
@@ -244,7 +263,7 @@ rm -rf ${artifacts.join(' ')}`);
           if (!fs.existsSync(tarballPath)) {
             throw new Error(
               `Build artifact not found: ${tarballPath}\n` +
-                `Please build first with: --packer-maas-image-build ${workflowId}`,
+                `Please build first with: --packer-workflow-id ${workflowId} --packer-maas-image-build`,
             );
           }
           const stats = fs.statSync(tarballPath);
@@ -1386,6 +1405,80 @@ udp-port = 32766
       logger.info('Restarting nfs-server service...');
       shellExec(`sudo systemctl restart nfs-server`);
       logger.info('NFS server restarted.');
+    },
+
+    /**
+     * @method checkQemuCrossArchSupport
+     * @description Checks for QEMU support when building for a different architecture.
+     * This is essential for validator bots that need to build images for architectures
+     * different from the host system (e.g., building arm64 on x86_64 or vice versa).
+     * @param {object} workflow - The workflow configuration object.
+     * @param {object} workflow.maas - The MAAS configuration.
+     * @param {string} workflow.maas.architecture - Target architecture (e.g., 'arm64/generic', 'amd64/generic').
+     * @memberof UnderpostBaremetal
+     * @throws {Error} If QEMU is not installed or doesn't support required machine types.
+     * @returns {void}
+     */
+    checkQemuCrossArchSupport(workflow) {
+      // Check for QEMU support if building for a different architecture (validator bots case)
+      if (workflow.maas.architecture.startsWith('arm64') && process.arch !== 'arm64') {
+        // Building arm64/aarch64 on x86_64 host
+        // Check both /usr/local/bin (compiled) and system paths
+        let qemuAarch64Path = null;
+
+        if (shellExec('test -x /usr/local/bin/qemu-system-aarch64', { silent: true }).code === 0) {
+          qemuAarch64Path = '/usr/local/bin/qemu-system-aarch64';
+        } else if (shellExec('which qemu-system-aarch64', { silent: true }).code === 0) {
+          qemuAarch64Path = shellExec('which qemu-system-aarch64', { silent: true }).stdout.trim();
+        }
+
+        if (!qemuAarch64Path) {
+          throw new Error(
+            'qemu-system-aarch64 is not installed. Please install it to build ARM64 images on x86_64 hosts.\n' +
+              'Run: node bin baremetal --dev --install-packer',
+          );
+        }
+
+        logger.info(`Found qemu-system-aarch64 at: ${qemuAarch64Path}`);
+
+        // Verify that the installed qemu supports the 'virt' machine type (required for arm64)
+        const machineHelp = shellExec(`${qemuAarch64Path} -machine help`, { silent: true }).stdout;
+        if (!machineHelp.includes('virt')) {
+          throw new Error(
+            'The installed qemu-system-aarch64 does not support the "virt" machine type.\n' +
+              'This usually happens if qemu-system-aarch64 is a symlink to qemu-kvm on x86_64.\n' +
+              'Run: node bin baremetal --dev --install-packer',
+          );
+        }
+      } else if (workflow.maas.architecture.startsWith('amd64') && process.arch !== 'x64') {
+        // Building amd64/x86_64 on aarch64 host
+        // Check both /usr/local/bin (compiled) and system paths
+        let qemuX86Path = null;
+
+        if (shellExec('test -x /usr/local/bin/qemu-system-x86_64', { silent: true }).code === 0) {
+          qemuX86Path = '/usr/local/bin/qemu-system-x86_64';
+        } else if (shellExec('which qemu-system-x86_64', { silent: true }).code === 0) {
+          qemuX86Path = shellExec('which qemu-system-x86_64', { silent: true }).stdout.trim();
+        }
+
+        if (!qemuX86Path) {
+          throw new Error(
+            'qemu-system-x86_64 is not installed. Please install it to build x86_64 images on aarch64 hosts.\n' +
+              'Run: node bin baremetal --dev --install-packer',
+          );
+        }
+
+        logger.info(`Found qemu-system-x86_64 at: ${qemuX86Path}`);
+
+        // Verify that the installed qemu supports the 'pc' or 'q35' machine type (required for x86_64)
+        const machineHelp = shellExec(`${qemuX86Path} -machine help`, { silent: true }).stdout;
+        if (!machineHelp.includes('pc') && !machineHelp.includes('q35')) {
+          throw new Error(
+            'The installed qemu-system-x86_64 does not support the "pc" or "q35" machine type.\n' +
+              'Run: node bin baremetal --dev --install-packer',
+          );
+        }
+      }
     },
 
     /**

@@ -9,5 +9,16 @@
       "filetype": "tgz",
       "content": "rocky9.tar.gz"
     }
+  },
+  "Rocky9Arm64": {
+    "dir": "packer/images/Rocky9Arm64",
+    "maas": {
+      "name": "custom/rocky9-arm64",
+      "title": "Rocky 9 Arm64 Custom",
+      "architecture": "arm64/generic",
+      "base_image": "rhel/9",
+      "filetype": "tgz",
+      "content": "rocky9.tar.gz"
+    }
   }
 }
