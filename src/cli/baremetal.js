@@ -62,6 +62,8 @@ class UnderpostBaremetal {
      * @param {string} [options.packerWorkflowId] - Workflow ID for Packer MAAS image operations (used with --packer-maas-image-build or --packer-maas-image-upload).
      * @param {boolean} [options.packerMaasImageBuild=false] - Flag to build a Packer MAAS image for the workflow specified by packerWorkflowId.
      * @param {boolean} [options.packerMaasImageUpload=false] - Flag to upload a Packer MAAS image artifact without rebuilding for the workflow specified by packerWorkflowId.
+     * @param {boolean} [options.packerMaasImageCached=false] - Flag to use cached artifacts when building the Packer MAAS image.
+     * @param {string} [options.removeMachines=''] - Comma-separated list of machine system IDs or '*' to remove existing machines from MAAS before commissioning.
      * @param {boolean} [options.cloudInitUpdate=false] - Flag to update cloud-init configuration on the baremetal machine.
      * @param {boolean} [options.commission=false] - Flag to commission the baremetal machine.
      * @param {boolean} [options.nfsBuild=false] - Flag to build the NFS root filesystem.
@@ -88,6 +90,7 @@ class UnderpostBaremetal {
         packerMaasImageBuild: false,
         packerMaasImageUpload: false,
         packerMaasImageCached: false,
+        removeMachines: '',
         cloudInitUpdate: false,
         commission: false,
         nfsBuild: false,
@@ -371,7 +374,7 @@ rm -rf ${artifacts.join(' ')}`);
         shellExec(`chmod +x ${underpostRoot}/scripts/maas-setup.sh`);
         shellExec(`chmod +x ${underpostRoot}/scripts/nat-iptables.sh`);
         shellExec(`${underpostRoot}/scripts/maas-setup.sh`);
-        shellExec(`${underpostRoot}/scripts/nat-iptables.sh`);
+        shellExec(`${underpostRoot}/scripts/nat-iptables.sh`, { silent: true });
         return;
       }
 
@@ -544,9 +547,15 @@ rm -rf ${artifacts.join(' ')}`);
         console.table(machines);
       }
 
+      // Handle remove existing machines from MAAS.
+      if (options.removeMachines)
+        machines = UnderpostBaremetal.API.removeMachines({
+          machines: options.removeMachines === '*' ? machines : options.removeMachines.split(','),
+        });
+
       // Handle commissioning tasks (placeholder for future implementation).
       if (options.commission === true) {
-        const { firmwares, networkInterfaceName, maas, netmask, menuentryStr } = workflowsConfig[workflowId];
+        const { firmwares, networkInterfaceName, maas, netmask, menuentryStr, nfs } = workflowsConfig[workflowId];
         const resource = resources.find(
           (o) => o.architecture === maas.image.architecture && o.name === maas.image.name,
         );
@@ -587,9 +596,10 @@ rm -rf ${artifacts.join(' ')}`);
         }
 
         // Rebuild NFS server configuration.
-        UnderpostBaremetal.API.rebuildNfsServer({
-          nfsHostPath,
-        });
+        if (nfs)
+          UnderpostBaremetal.API.rebuildNfsServer({
+            nfsHostPath,
+          });
 
         // Configure GRUB for PXE boot.
         {
@@ -609,61 +619,14 @@ rm -rf ${artifacts.join(' ')}`);
             'initrd.img': `${kernelPath}/${bootFiles['boot-initrd' + suffix].filename_on_disk}`,
             squashfs: `${kernelPath}/${bootFiles['squashfs'].filename_on_disk}`,
           };
-          // Construct kernel command line arguments for NFS boot.
-          const cmd = [
-            `console=serial0,115200`,
-            // `console=ttyAMA0,115200`,
-            `console=tty1`,
-            // `initrd=-1`,
-            // `net.ifnames=0`,
-            // `dwc_otg.lpm_enable=0`,
-            // `elevator=deadline`,
-            `root=/dev/nfs`,
-            `nfsroot=${callbackMetaData.runnerHost.ip}:${process.env.NFS_EXPORT_PATH}/rpi4mb,${[
-              'tcp',
-              'vers=3',
-              'nfsvers=3',
-              'nolock',
-              // 'protocol=tcp',
-              // 'hard=true',
-              'port=2049',
-              // 'sec=none',
-              'rw',
-              'hard',
-              'intr',
-              'rsize=32768',
-              'wsize=32768',
-              'acregmin=0',
-              'acregmax=0',
-              'acdirmin=0',
-              'acdirmax=0',
-              'noac',
-              // 'nodev',
-              // 'nosuid',
-            ]}`,
-            `ip=${ipAddress}:${callbackMetaData.runnerHost.ip}:${callbackMetaData.runnerHost.ip}:${netmask}:${hostname}:${networkInterfaceName}:static`,
-            `rootfstype=nfs`,
-            `rw`,
-            `rootwait`,
-            `fixrtc`,
-            'initrd=initrd.img',
-            // 'boot=casper',
-            // 'ro',
-            'netboot=nfs',
-            `init=/sbin/init`,
-            // `cloud-config-url=/dev/null`,
-            // 'ip=dhcp',
-            // 'ip=dfcp',
-            // 'autoinstall',
-            // 'rd.break',
-
-            // Disable services that not apply over nfs
-            `systemd.mask=systemd-network-generator.service`,
-            `systemd.mask=systemd-networkd.service`,
-            `systemd.mask=systemd-fsck-root.service`,
-            `systemd.mask=systemd-udev-trigger.service`,
-          ];
-          const nfsConnectStr = cmd.join(' ');
+          const { cmd } = UnderpostBaremetal.API.kernelCmdBootParamsFactory({
+            ipClient: ipAddress,
+            ipHost: callbackMetaData.runnerHost.ip,
+            netmask,
+            hostname,
+            networkInterfaceName,
+            nfsBoot: nfs ? true : false,
+          });
 
           // Copy EFI bootloaders to TFTP path.
           for (const file of ['bootaa64.efi', 'grubaa64.efi']) {
@@ -686,7 +649,7 @@ set default=0
 
 menuentry '${menuentryStr}' {
   set root=(tftp,${callbackMetaData.runnerHost.ip})
-  linux /${hostname}/pxe/vmlinuz-efi ${nfsConnectStr}
+  linux /${hostname}/pxe/vmlinuz-efi ${cmd}
   initrd /${hostname}/pxe/initrd.img
   boot
 }
@@ -771,9 +734,6 @@ menuentry '${menuentryStr}' {
           ],
         });
 
-        // Remove existing machines from MAAS.
-        machines = UnderpostBaremetal.API.removeMachines({ machines });
-
         // Monitor commissioning process.
         UnderpostBaremetal.API.commissionMonitor({
           macAddress,
@@ -784,6 +744,90 @@ menuentry '${menuentryStr}' {
           networkInterfaceName,
         });
       }
+    },
+
+    /**
+     * @method kernelCmdBootParamsFactory
+     * @description Constructs kernel command line parameters for NFS booting.
+     * @param {object} options - Options for constructing the command line.
+     * @param {string} options.ipClient - The IP address of the client.
+     * @param {string} options.ipHost - The IP address of the host.
+     * @param {string} options.netmask - The network mask.
+     * @param {string} options.hostname - The hostname of the client.
+     * @param {string} options.networkInterfaceName - The name of the network interface.
+     * @param {boolean} options.nfsBoot - Flag indicating if NFS boot is enabled.
+     * @returns {object} An object containing the constructed command line string.
+     * @memberof UnderpostBaremetal
+     */
+    kernelCmdBootParamsFactory(
+      options = {
+        ipClient: '',
+        ipHost: '',
+        netmask: '',
+        hostname: '',
+        networkInterfaceName: '',
+        nfsBoot: false,
+      },
+    ) {
+      // Construct kernel command line arguments for NFS boot.
+      const { ipClient, ipHost, netmask, hostname, networkInterfaceName, nfsBoot } = options;
+      let cmd = [];
+      if (nfsBoot === true) {
+        cmd = [
+          `console=serial0,115200`,
+          // `console=ttyAMA0,115200`,
+          `console=tty1`,
+          // `initrd=-1`,
+          // `net.ifnames=0`,
+          // `dwc_otg.lpm_enable=0`,
+          // `elevator=deadline`,
+          `root=/dev/nfs`,
+          `nfsroot=${ipHost}:${process.env.NFS_EXPORT_PATH}/rpi4mb,${[
+            'tcp',
+            'vers=3',
+            'nfsvers=3',
+            'nolock',
+            // 'protocol=tcp',
+            // 'hard=true',
+            'port=2049',
+            // 'sec=none',
+            'rw',
+            'hard',
+            'intr',
+            'rsize=32768',
+            'wsize=32768',
+            'acregmin=0',
+            'acregmax=0',
+            'acdirmin=0',
+            'acdirmax=0',
+            'noac',
+            // 'nodev',
+            // 'nosuid',
+          ]}`,
+          `ip=${ipClient}:${ipHost}:${ipHost}:${netmask}:${hostname}:${networkInterfaceName}:static`,
+          `rootfstype=nfs`,
+          `rw`,
+          `rootwait`,
+          `fixrtc`,
+          'initrd=initrd.img',
+          // 'boot=casper',
+          // 'ro',
+          'netboot=nfs',
+          `init=/sbin/init`,
+          // `cloud-config-url=/dev/null`,
+          // 'ip=dhcp',
+          // 'ip=dfcp',
+          // 'autoinstall',
+          // 'rd.break',
+
+          // Disable services that not apply over nfs
+          `systemd.mask=systemd-network-generator.service`,
+          `systemd.mask=systemd-networkd.service`,
+          `systemd.mask=systemd-fsck-root.service`,
+          `systemd.mask=systemd-udev-trigger.service`,
+        ];
+      }
+      return { cmd: cmd.join(' ') };
     },
 
     /**
