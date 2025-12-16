@@ -361,7 +361,7 @@ program
 // 'db' command: Manage databases
 program
   .command('db')
-  .argument('<deploy-list>', 'A comma-separated list of deployment IDs (e.g., "default-a,default-b").')
+  .argument('[deploy-list]', 'A comma-separated list of deployment IDs (e.g., "default-a,default-b").')
   .option('--import', 'Imports container backups from specified repositories.')
   .option('--export', 'Exports container backups to specified repositories.')
   .option(
@@ -370,6 +370,7 @@ program
   )
   .option('--all-pods', 'Target all matching pods instead of just the first one.')
   .option('--primary-pod', 'Automatically detect and use MongoDB primary pod (MongoDB only).')
+  .option('--primary-pod-ensure <pod-name>', 'Ensure setup of MongoDB replica set primary pod before operations.')
   .option('--stats', 'Display database statistics (collection/table names with document/row counts).')
   .option('--collections <collections>', 'Comma-separated list of database collections to operate on.')
   .option('--out-path <out-path>', 'Specifies a custom output path for backups.')
@@ -384,6 +385,10 @@ program
     '--macro-rollback-export <n-commits-reset>',
     'Exports a macro rollback script that reverts the last n commits (Git integration required).',
   )
+  .option('--dev', 'Sets the development cli context')
+  .option('--kubeadm', 'Enables the kubeadm context for database operations.')
+  .option('--kind', 'Enables the kind context for database operations.')
+  .option('--k3s', 'Enables the k3s context for database operations.')
   .description(
     'Manages database operations with support for MariaDB and MongoDB, including import/export, multi-pod targeting, and Git integration.',
   )
@@ -567,6 +572,7 @@ program
   .option('--user <user>', 'Sets user context for the runner execution.')
   .option('--hosts <hosts>', 'Comma-separated list of hosts for the runner execution.')
   .option('--instance-id <instance-id>', 'Sets instance id context for the runner execution.')
+  .option('--pid <process-id>', 'Sets process id context for the runner execution.')
   .description('Runs specified scripts using various runners.')
   .action(UnderpostRun.API.callback);
 
@@ -613,6 +619,7 @@ program
   .option('--control-server-uninstall', 'Uninstalls the baremetal control server.')
   .option('--control-server-db-install', 'Installs up the database for the baremetal control server.')
   .option('--control-server-db-uninstall', 'Uninstalls the database for the baremetal control server.')
+  .option('--mac <mac>', 'Specifies the MAC address for baremetal machine operations.')
   .option('--install-packer', 'Installs Packer CLI.')
   .option(
     '--packer-maas-image-template <template-path>',
@@ -631,7 +638,8 @@ program
     '--packer-maas-image-cached',
     'Continue last build without removing artifacts (used with --packer-maas-image-build).',
   )
-  .option('--remove-machines <system-ids>', 'Removes baremetal machines by comma-separated system IDs.')
+  .option('--remove-machines <system-ids>', 'Removes baremetal machines by comma-separated system IDs, or use "all"')
+  .option('--clear-discovered', 'Clears all discovered baremetal machines from the database.')
   .option('--commission', 'Init workflow for commissioning a physical machine.')
   .option('--nfs-build', 'Builds an NFS root filesystem for a workflow id config architecture using QEMU emulation.')
   .option('--nfs-mount', 'Mounts the NFS root filesystem for a workflow id config architecture.')

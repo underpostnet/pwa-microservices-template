@@ -88,6 +88,7 @@ class UnderpostRun {
    * @property {string} deployId - The deployment ID.
    * @property {string} instanceId - The instance ID.
    * @property {string} user - The user to run as.
+   * @property {string} pid - The process ID.
    * @memberof UnderpostRun
    */
   static DEFAULT_OPTION = {
@@ -136,6 +137,7 @@ class UnderpostRun {
     deployId: '',
     instanceId: '',
     user: '',
+    pid: '',
   };
   /**
    * @static
@@ -189,6 +191,7 @@ class UnderpostRun {
      * @memberof UnderpostRun
      */
     kill: (path = '', options = UnderpostRun.DEFAULT_OPTION) => {
+      if (options.pid) return shellExec(`sudo kill -9 ${options.pid}`);
       for (const _path of path.split(',')) {
         if (_path.split('+')[1]) {
           let [port, sumPortOffSet] = _path.split('+');
@@ -1459,6 +1462,32 @@ EOF
       console.log(result);
     },
 
+    /**
+     * @method ps
+     * @description Displays running processes that match a specified path or keyword.
+     * @param {string} path - The input value, identifier, or path for the operation (used as a keyword to filter processes).
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @memberof UnderpostRun
+     */
+    ps: async (path = '', options = UnderpostRun.DEFAULT_OPTION) => {
+      const out = shellExec(`ps aux${path ? `| grep '${path}' | grep -v grep` : ''}`, {
+        stdout: true,
+        silent: true,
+      });
+      console.log(path ? out.replaceAll(path, path.bgYellow.black.bold) : out);
+    },
+
+    /**
+     * @method ptls
+     * @description Set on ~/.bashrc alias: ports <port> Command to list listening ports that match the given keyword.
+     * @param {string} path - The input value, identifier, or path for the operation (used as a keyword to filter listening ports).
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @memberof UnderpostRun
+     */
+    ptls: async (path = '', options = UnderpostRun.DEFAULT_OPTION) => {
+      shellExec(`chmod +x ${options.underpostRoot}/scripts/ports-ls.sh`);
+      shellExec(`${options.underpostRoot}/scripts/ports-ls.sh`);
+    },
     /**
      * @method release-cmt
      * @description Commits and pushes a new release for the `engine` repository with a message indicating the new version.
