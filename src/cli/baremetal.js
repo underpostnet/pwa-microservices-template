@@ -609,161 +609,9 @@ rm -rf ${artifacts.join(' ')}`);
 
         // Configure GRUB for PXE boot.
         {
-          const resourceData = JSON.parse(
-            shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resource read ${resource.id}`, {
-              stdout: true,
-              silent: true,
-              disableLog: true,
-            }),
-          );
+          // Fetch kernel and initrd paths from MAAS boot resource.
+          const { kernelFilesPaths, resourcesPath } = UnderpostBaremetal.API.kernelFactory({ resource });
 
-          logger.info('Boot files info:', {
-            id: resourceData.id,
-            type: resourceData.type,
-            name: resourceData.name,
-            architecture: resourceData.architecture,
-            purpose: nfs ? 'NFS boot (target OS)' : 'Commissioning (ephemeral)',
-            note: 'MAAS uses content-addressable storage (hash-based IDs for files)',
-          });
-
-          const bootFiles = resourceData.sets[Object.keys(resourceData.sets)[0]].files;
-
-          logger.info('Available boot files:', Object.keys(bootFiles));
-          const suffix = resource.architecture.match('xgene') ? '.xgene' : '';
-          const arch = resource.architecture.split('/')[0];
-          const resourcesPath = `/var/snap/maas/common/maas/image-storage/bootloaders/uefi/${arch}`;
-          const kernelPath = `/var/snap/maas/common/maas/image-storage`;
-
-          // Handle different file structures for synced vs uploaded images
-          let kernelFilesPaths = {};
-
-          // Try standard synced image structure (Ubuntu, CentOS from MAAS repos)
-          if (bootFiles['boot-kernel' + suffix] && bootFiles['boot-initrd' + suffix] && bootFiles['squashfs']) {
-            kernelFilesPaths = {
-              'vmlinuz-efi': `${kernelPath}/${bootFiles['boot-kernel' + suffix].filename_on_disk}`,
-              'initrd.img': `${kernelPath}/${bootFiles['boot-initrd' + suffix].filename_on_disk}`,
-              squashfs: `${kernelPath}/${bootFiles['squashfs'].filename_on_disk}`,
-            };
-          }
-          // Try uploaded image structure (Packer-built images, custom uploads)
-          else if (bootFiles['boot-kernel'] && bootFiles['boot-initrd'] && bootFiles['root-tgz']) {
-            kernelFilesPaths = {
-              'vmlinuz-efi': `${kernelPath}/${bootFiles['boot-kernel'].filename_on_disk}`,
-              'initrd.img': `${kernelPath}/${bootFiles['boot-initrd'].filename_on_disk}`,
-              squashfs: `${kernelPath}/${bootFiles['root-tgz'].filename_on_disk}`,
-            };
-          }
-          // Try alternative uploaded structure with root-image-xz
-          else if (bootFiles['boot-kernel'] && bootFiles['boot-initrd'] && bootFiles['root-image-xz']) {
-            kernelFilesPaths = {
-              'vmlinuz-efi': `${kernelPath}/${bootFiles['boot-kernel'].filename_on_disk}`,
-              'initrd.img': `${kernelPath}/${bootFiles['boot-initrd'].filename_on_disk}`,
-              squashfs: `${kernelPath}/${bootFiles['root-image-xz'].filename_on_disk}`,
-            };
-          }
-          // Fallback: try to find any kernel, initrd, and root image
-          else {
-            logger.warn('Non-standard boot file structure detected. Available files:', Object.keys(bootFiles));
-
-            const rootArchiveKey = Object.keys(bootFiles).find(
-              (k) => k.includes('root') && (k.includes('tgz') || k.includes('tar.gz')),
-            );
-            const explicitKernel = Object.keys(bootFiles).find((k) => k.includes('kernel'));
-            const explicitInitrd = Object.keys(bootFiles).find((k) => k.includes('initrd'));
-
-            if (rootArchiveKey && (!explicitKernel || !explicitInitrd)) {
-              logger.info(`Root archive found (${rootArchiveKey}) and missing kernel/initrd. Attempting to extract.`);
-              const rootArchivePath = `${kernelPath}/${bootFiles[rootArchiveKey].filename_on_disk}`;
-              const tempExtractDir = `/tmp/maas-extract-${resource.id}`;
-              shellExec(`mkdir -p ${tempExtractDir}`);
-
-              // List files in archive to find kernel and initrd
-              const tarList = shellExec(`tar -tf ${rootArchivePath}`, { silent: true }).stdout.split('\n');
-
-              // Look for boot/vmlinuz* and boot/initrd* (handling potential leading ./)
-              // Skip rescue, kdump, and other special images
-              const vmlinuzPaths = tarList.filter(
-                (f) => f.match(/(\.\/)?boot\/vmlinuz-[0-9]/) && !f.includes('rescue') && !f.includes('kdump'),
-              );
-              const initrdPaths = tarList.filter(
-                (f) =>
-                  f.match(/(\.\/)?boot\/(initrd|initramfs)-[0-9]/) &&
-                  !f.includes('rescue') &&
-                  !f.includes('kdump') &&
-                  f.includes('.img'),
-              );
-
-              logger.info(`Found kernel candidates:`, { vmlinuzPaths, initrdPaths });
-
-              // Try to match kernel and initrd by version number
-              let vmlinuzPath = null;
-              let initrdPath = null;
-
-              if (vmlinuzPaths.length > 0 && initrdPaths.length > 0) {
-                // Extract version from kernel filename (e.g., "5.14.0-611.11.1.el9_7.aarch64")
-                for (const kernelPath of vmlinuzPaths.sort().reverse()) {
-                  const kernelVersion = kernelPath.match(/vmlinuz-(.+)$/)?.[1];
-                  if (kernelVersion) {
-                    // Look for matching initrd
-                    const matchingInitrd = initrdPaths.find((p) => p.includes(kernelVersion));
-                    if (matchingInitrd) {
-                      vmlinuzPath = kernelPath;
-                      initrdPath = matchingInitrd;
-                      logger.info(`Matched kernel and initrd by version: ${kernelVersion}`);
-                      break;
-                    }
-                  }
-                }
-              }
-
-              // Fallback: use newest versions if no match found
-              if (!vmlinuzPath && vmlinuzPaths.length > 0) {
-                vmlinuzPath = vmlinuzPaths.sort().pop();
-              }
-              if (!initrdPath && initrdPaths.length > 0) {
-                initrdPath = initrdPaths.sort().pop();
-              }
-
-              logger.info(`Selected kernel: ${vmlinuzPath}, initrd: ${initrdPath}`);
-
-              if (vmlinuzPath && initrdPath) {
-                // Extract specific files
-                // Extract all files in boot/ to ensure symlinks resolve
-                shellExec(`tar -xf ${rootArchivePath} -C ${tempExtractDir} --wildcards '*boot/*'`);
-
-                kernelFilesPaths = {
-                  'vmlinuz-efi': `${tempExtractDir}/${vmlinuzPath}`,
-                  'initrd.img': `${tempExtractDir}/${initrdPath}`,
-                  squashfs: rootArchivePath,
-                };
-                logger.info('Extracted kernel and initrd from root archive.');
-              } else {
-                logger.error(
-                  `Failed to find kernel/initrd in archive. Contents of boot/ directory:`,
-                  tarList.filter((f) => f.includes('boot/')),
-                );
-                throw new Error(`Could not find kernel or initrd in ${rootArchiveKey}`);
-              }
-            } else {
-              const kernelFile = Object.keys(bootFiles).find((k) => k.includes('kernel')) || Object.keys(bootFiles)[0];
-              const initrdFile = Object.keys(bootFiles).find((k) => k.includes('initrd')) || Object.keys(bootFiles)[1];
-              const rootFile =
-                Object.keys(bootFiles).find(
-                  (k) => k.includes('root') || k.includes('squashfs') || k.includes('tgz') || k.includes('xz'),
-                ) || Object.keys(bootFiles)[2];
-
-              if (kernelFile && initrdFile && rootFile) {
-                kernelFilesPaths = {
-                  'vmlinuz-efi': `${kernelPath}/${bootFiles[kernelFile].filename_on_disk}`,
-                  'initrd.img': `${kernelPath}/${bootFiles[initrdFile].filename_on_disk}`,
-                  squashfs: `${kernelPath}/${bootFiles[rootFile].filename_on_disk}`,
-                };
-                logger.info('Using detected files:', { kernel: kernelFile, initrd: initrdFile, root: rootFile });
-              } else {
-                throw new Error(`Cannot identify boot files. Available: ${Object.keys(bootFiles).join(', ')}`);
-              }
-            }
-          }
           const { cmd } = UnderpostBaremetal.API.kernelCmdBootParamsFactory({
             ipClient: ipAddress,
             ipHost: callbackMetaData.runnerHost.ip,
@@ -775,7 +623,9 @@ rm -rf ${artifacts.join(' ')}`);
           });
 
           // Copy EFI bootloaders to TFTP path.
-          const efiFiles = arch === 'arm64' ? ['bootaa64.efi', 'grubaa64.efi'] : ['bootx64.efi', 'grubx64.efi'];
+          const efiFiles = commissioningImage.architecture.match('arm64')
+            ? ['bootaa64.efi', 'grubaa64.efi']
+            : ['bootx64.efi', 'grubx64.efi'];
           for (const file of efiFiles) {
             shellExec(`sudo cp -L ${resourcesPath}/${file} ${tftpRootPath}/pxe/${file}`);
           }
@@ -798,8 +648,11 @@ set default=0
 
 menuentry '${menuentryStr}' {
   set root=(tftp,${callbackMetaData.runnerHost.ip})
+  echo "Loading kernel..."
   linux /${hostname}/pxe/vmlinuz-efi ${cmd}
+  echo "Loading initrd..."
   initrd /${hostname}/pxe/initrd.img
+  echo "Booting..."
   boot
 }
 
@@ -832,7 +685,7 @@ menuentry '${menuentryStr}' {
         }
 
         // Pass architecture from commissioning or deployment config
-        const grubArch = maas.commissioning?.architecture || maas.deployment?.architecture;
+        const grubArch = maas.commissioning.architecture;
         UnderpostBaremetal.API.efiGrubModulesFactory({ image: { architecture: grubArch } });
 
         // Set ownership and permissions for TFTP root.
@@ -868,6 +721,179 @@ menuentry '${menuentryStr}' {
     },
 
     /**
+     * @method kernelFactory
+     * @description Retrieves kernel, initrd, and root filesystem paths from a MAAS boot resource.
+     * @param {object} params - Parameters for the method.
+     * @param {object} params.resource - The MAAS boot resource object.
+     * @returns {object} An object containing paths to the kernel, initrd, and root filesystem.
+     * @memberof UnderpostBaremetal.API
+     */
+    kernelFactory({ resource }) {
+      const resourceData = JSON.parse(
+        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resource read ${resource.id}`, {
+          stdout: true,
+          silent: true,
+          disableLog: true,
+        }),
+      );
+      let kernelFilesPaths = {};
+      const bootFiles = resourceData.sets[Object.keys(resourceData.sets)[0]].files;
+      const arch = resource.architecture.split('/')[0];
+      const resourcesPath = `/var/snap/maas/common/maas/image-storage/bootloaders/uefi/${arch}`;
+      const kernelPath = `/var/snap/maas/common/maas/image-storage`;
+
+      logger.info('Available boot files', Object.keys(bootFiles));
+      logger.info('Boot files info', {
+        id: resourceData.id,
+        type: resourceData.type,
+        name: resourceData.name,
+        architecture: resourceData.architecture,
+        bootFiles,
+        arch,
+        resourcesPath,
+        kernelPath,
+      });
+
+      // Try standard synced image structure (Ubuntu, CentOS from MAAS repos)
+      const _suffix = resource.architecture.match('xgene') ? '.xgene' : '';
+      if (bootFiles['boot-kernel' + _suffix] && bootFiles['boot-initrd' + _suffix] && bootFiles['squashfs']) {
+        kernelFilesPaths = {
+          'vmlinuz-efi': `${kernelPath}/${bootFiles['boot-kernel' + _suffix].filename_on_disk}`,
+          'initrd.img': `${kernelPath}/${bootFiles['boot-initrd' + _suffix].filename_on_disk}`,
+          squashfs: `${kernelPath}/${bootFiles['squashfs'].filename_on_disk}`,
+        };
+      }
+      // Try uploaded image structure (Packer-built images, custom uploads)
+      else if (bootFiles['boot-kernel'] && bootFiles['boot-initrd'] && bootFiles['root-tgz']) {
+        kernelFilesPaths = {
+          'vmlinuz-efi': `${kernelPath}/${bootFiles['boot-kernel'].filename_on_disk}`,
+          'initrd.img': `${kernelPath}/${bootFiles['boot-initrd'].filename_on_disk}`,
+          squashfs: `${kernelPath}/${bootFiles['root-tgz'].filename_on_disk}`,
+        };
+      }
+      // Try alternative uploaded structure with root-image-xz
+      else if (bootFiles['boot-kernel'] && bootFiles['boot-initrd'] && bootFiles['root-image-xz']) {
+        kernelFilesPaths = {
+          'vmlinuz-efi': `${kernelPath}/${bootFiles['boot-kernel'].filename_on_disk}`,
+          'initrd.img': `${kernelPath}/${bootFiles['boot-initrd'].filename_on_disk}`,
+          squashfs: `${kernelPath}/${bootFiles['root-image-xz'].filename_on_disk}`,
+        };
+      }
+      // Fallback: try to find any kernel, initrd, and root image
+      else {
+        logger.warn('Non-standard boot file structure detected. Available files', Object.keys(bootFiles));
+
+        const rootArchiveKey = Object.keys(bootFiles).find(
+          (k) => k.includes('root') && (k.includes('tgz') || k.includes('tar.gz')),
+        );
+        const explicitKernel = Object.keys(bootFiles).find((k) => k.includes('kernel'));
+        const explicitInitrd = Object.keys(bootFiles).find((k) => k.includes('initrd'));
+
+        if (rootArchiveKey && (!explicitKernel || !explicitInitrd)) {
+          logger.info(`Root archive found (${rootArchiveKey}) and missing kernel/initrd. Attempting to extract.`);
+          const rootArchivePath = `${kernelPath}/${bootFiles[rootArchiveKey].filename_on_disk}`;
+          const tempExtractDir = `/tmp/maas-extract-${resource.id}`;
+          shellExec(`mkdir -p ${tempExtractDir}`);
+
+          // List files in archive to find kernel and initrd
+          const tarList = shellExec(`tar -tf ${rootArchivePath}`, { silent: true }).stdout.split('\n');
+
+          // Look for boot/vmlinuz* and boot/initrd* (handling potential leading ./)
+          // Skip rescue, kdump, and other special images
+          const vmlinuzPaths = tarList.filter(
+            (f) => f.match(/(\.\/)?boot\/vmlinuz-[0-9]/) && !f.includes('rescue') && !f.includes('kdump'),
+          );
+          const initrdPaths = tarList.filter(
+            (f) =>
+              f.match(/(\.\/)?boot\/(initrd|initramfs)-[0-9]/) &&
+              !f.includes('rescue') &&
+              !f.includes('kdump') &&
+              f.includes('.img'),
+          );
+
+          logger.info(`Found kernel candidates:`, { vmlinuzPaths, initrdPaths });
+
+          // Try to match kernel and initrd by version number
+          let vmlinuzPath = null;
+          let initrdPath = null;
+
+          if (vmlinuzPaths.length > 0 && initrdPaths.length > 0) {
+            // Extract version from kernel filename (e.g., "5.14.0-611.11.1.el9_7.aarch64")
+            for (const kernelPath of vmlinuzPaths.sort().reverse()) {
+              const kernelVersion = kernelPath.match(/vmlinuz-(.+)$/)?.[1];
+              if (kernelVersion) {
+                // Look for matching initrd
+                const matchingInitrd = initrdPaths.find((p) => p.includes(kernelVersion));
+                if (matchingInitrd) {
+                  vmlinuzPath = kernelPath;
+                  initrdPath = matchingInitrd;
+                  logger.info(`Matched kernel and initrd by version: ${kernelVersion}`);
+                  break;
+                }
+              }
+            }
+          }
+
+          // Fallback: use newest versions if no match found
+          if (!vmlinuzPath && vmlinuzPaths.length > 0) {
+            vmlinuzPath = vmlinuzPaths.sort().pop();
+          }
+          if (!initrdPath && initrdPaths.length > 0) {
+            initrdPath = initrdPaths.sort().pop();
+          }
+
+          logger.info(`Selected kernel: ${vmlinuzPath}, initrd: ${initrdPath}`);
+
+          if (vmlinuzPath && initrdPath) {
+            // Extract specific files
+            // Extract all files in boot/ to ensure symlinks resolve
+            shellExec(`tar -xf ${rootArchivePath} -C ${tempExtractDir} --wildcards '*boot/*'`);
+
+            kernelFilesPaths = {
+              'vmlinuz-efi': `${tempExtractDir}/${vmlinuzPath}`,
+              'initrd.img': `${tempExtractDir}/${initrdPath}`,
+              squashfs: rootArchivePath,
+            };
+            logger.info('Extracted kernel and initrd from root archive.');
+          } else {
+            logger.error(
+              `Failed to find kernel/initrd in archive. Contents of boot/ directory:`,
+              tarList.filter((f) => f.includes('boot/')),
+            );
+            throw new Error(`Could not find kernel or initrd in ${rootArchiveKey}`);
+          }
+        } else {
+          const kernelFile = Object.keys(bootFiles).find((k) => k.includes('kernel')) || Object.keys(bootFiles)[0];
+          const initrdFile = Object.keys(bootFiles).find((k) => k.includes('initrd')) || Object.keys(bootFiles)[1];
+          const rootFile =
+            Object.keys(bootFiles).find(
+              (k) => k.includes('root') || k.includes('squashfs') || k.includes('tgz') || k.includes('xz'),
+            ) || Object.keys(bootFiles)[2];
+
+          if (kernelFile && initrdFile && rootFile) {
+            kernelFilesPaths = {
+              'vmlinuz-efi': `${kernelPath}/${bootFiles[kernelFile].filename_on_disk}`,
+              'initrd.img': `${kernelPath}/${bootFiles[initrdFile].filename_on_disk}`,
+              squashfs: `${kernelPath}/${bootFiles[rootFile].filename_on_disk}`,
+            };
+            logger.info('Using detected files', { kernel: kernelFile, initrd: initrdFile, root: rootFile });
+          } else {
+            throw new Error(`Cannot identify boot files. Available: ${Object.keys(bootFiles).join(', ')}`);
+          }
+        }
+      }
+      return {
+        resource,
+        bootFiles,
+        arch,
+        resourcesPath,
+        kernelPath,
+        resourceData,
+        kernelFilesPaths,
+      };
+    },
+
+    /**
      * @method diskCommissionCallback
      * @description Handles the commissioning process for a baremetal machine using disk-based provisioning.
      * This method uses traditional MAAS PXE boot to provision the machine to the largest available disk.
@@ -884,18 +910,7 @@ menuentry '${menuentryStr}' {
       const workflowConfig = workflowsConfig[workflowId];
       const { maas, networkInterfaceName, chronyc, keyboard, systemProvisioning } = workflowConfig;
       const { timezone, chronyConfPath } = chronyc;
-      // Use deployment config if available (e.g., Rocky for final OS), otherwise fall back to image config
-      const deploymentConfig = maas.deployment || {};
-      const architecture = deploymentConfig.architecture || maas.commissioning?.architecture;
-
-      logger.info('Starting disk-based commissioning (traditional MAAS PXE boot)');
-      logger.info('Machine will be provisioned to the largest available disk');
-      logger.info(`System provisioning: ${systemProvisioning}, Architecture: ${architecture}`);
-      if (maas.deployment) {
-        logger.info(`Deployment OS: ${maas.deployment.os} ${maas.deployment.release}`);
-        logger.info(`Commissioning with: Ubuntu ephemeral (${maas.commissioning.name})`);
-        logger.info(`Will deploy: ${maas.deployment.os}/${maas.deployment.release} after commissioning`);
-      }
+      const architecture = maas.commissioning.architecture;
 
       // Generate cloud-init user-data for post-deployment configuration
       // This will be used by MAAS during the deployment phase (after commissioning)
@@ -968,7 +983,7 @@ menuentry '${menuentryStr}' {
       const { debootstrap, networkInterfaceName, chronyc, maas, systemProvisioning } = workflowsConfig[workflowId];
       const { timezone, chronyConfPath } = chronyc;
 
-      // If debian base Build cloud-init tools.
+      // If debian based Build cloud-init tools.
       if (systemProvisioning === 'ubuntu')
         UnderpostCloudInit.API.buildTools({
           workflowId,
@@ -978,22 +993,34 @@ menuentry '${menuentryStr}' {
           dev: options.dev,
         });
 
+      // Get MAAS credentials for cloud-init
+      const authCredentials = UnderpostCloudInit.API.authCredentialsFactory();
+
+      const { cloudConfigPath, cloudConfigSrc } = UnderpostCloudInit.API.configFactory(
+        {
+          controlServerIp: callbackMetaData.runnerHost.ip,
+          hostname,
+          commissioningDeviceIp: ipAddress,
+          gatewayip: callbackMetaData.runnerHost.ip,
+          mac: macAddress, // Updated MAC address.
+          timezone,
+          chronyConfPath,
+          networkInterfaceName,
+        },
+        authCredentials,
+      );
+      logger.info('Generated cloud-init configuration for commissioning');
+      console.log(cloudConfigSrc.yellow);
+
       // Run cloud-init reset and configure cloud-init.
       UnderpostBaremetal.API.crossArchRunner({
         nfsHostPath,
         debootstrapArch: debootstrap.image.architecture,
         callbackMetaData,
         steps: [
-          UnderpostCloudInit.API.configFactory({
-            controlServerIp: callbackMetaData.runnerHost.ip,
-            hostname,
-            commissioningDeviceIp: ipAddress,
-            gatewayip: callbackMetaData.runnerHost.ip,
-            mac: macAddress, // Initial MAC, will be updated.
-            timezone,
-            chronyConfPath,
-            networkInterfaceName,
-          }),
+          `cat <<EOF_MAAS_CFG > ${cloudConfigPath}
+${cloudConfigSrc}
+EOF_MAAS_CFG`,
         ],
       });
 
@@ -1001,31 +1028,6 @@ menuentry '${menuentryStr}' {
 
       // Apply NAT iptables rules.
       shellExec(`${underpostRoot}/scripts/nat-iptables.sh`, { silent: true });
-
-      // Wait for MAC address assignment.
-      logger.info('Waiting for MAC assignment...');
-      fs.removeSync(`${nfsHostPath}/underpost/mac`); // Clear previous MAC.
-      await UnderpostBaremetal.API.macMonitor({ nfsHostPath }); // Monitor for MAC file.
-      macAddress = fs.readFileSync(`${nfsHostPath}/underpost/mac`, 'utf8').trim(); // Read assigned MAC.
-
-      // Re-run cloud-init config factory with the newly assigned MAC address.
-      UnderpostBaremetal.API.crossArchRunner({
-        nfsHostPath,
-        debootstrapArch: debootstrap.image.architecture,
-        callbackMetaData,
-        steps: [
-          UnderpostCloudInit.API.configFactory({
-            controlServerIp: callbackMetaData.runnerHost.ip,
-            hostname,
-            commissioningDeviceIp: ipAddress,
-            gatewayip: callbackMetaData.runnerHost.ip,
-            mac: macAddress, // Updated MAC address.
-            timezone,
-            chronyConfPath,
-            networkInterfaceName,
-          }),
-        ],
-      });
 
       // Monitor commissioning process.
       UnderpostBaremetal.API.commissionMonitor({
@@ -1036,6 +1038,8 @@ menuentry '${menuentryStr}' {
         maas,
         networkInterfaceName,
       });
+      openTerminal(`node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs nfs-cloud`);
+      openTerminal(`node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs nfs-machine`);
     },
 
     /**
@@ -1211,9 +1215,7 @@ menuentry '${menuentryStr}' {
         // Iterate through discoveries to find a matching MAC address.
         for (const discovery of discoveries) {
           const machine = {
-            architecture: (maas.commissioning?.architecture || maas.deployment?.architecture || 'arm64/generic').match(
-              'amd',
-            )
+            architecture: (maas.commissioning?.architecture || 'arm64/generic').match('amd')
               ? 'amd64/generic'
               : 'arm64/generic',
             mac_address: discovery.mac_address,
@@ -1360,9 +1362,7 @@ menuentry '${menuentryStr}' {
         // Iterate through discoveries to find a matching MAC address.
         for (const discovery of discoveries) {
           const machine = {
-            architecture: (maas.commissioning?.architecture || maas.deployment?.architecture || 'arm64/generic').match(
-              'amd',
-            )
+            architecture: (maas.commissioning?.architecture || 'arm64/generic').match('amd')
               ? 'amd64/generic'
               : 'arm64/generic',
             mac_address: discovery.mac_address,
@@ -1423,41 +1423,14 @@ menuentry '${menuentryStr}' {
               shellExec(
                 `maas ${process.env.MAAS_ADMIN_USERNAME} machine mark-fixed ${newMachine.machine.boot_interface.system_id}`,
               );
-
-              // commissioning_scripts=90-verify-user.sh
-              // shellExec(
-              //   `maas ${process.env.MAAS_ADMIN_USERNAME} machine commission --debug --insecure ${newMachine.machine.boot_interface.system_id} enable_ssh=1 skip_bmc_config=1 skip_networking=1 skip_storage=1`,
-              //   {
-              //     silent: true,
-              //   },
-              // );
-
-              // Save system-id for enlistment.
-              logger.info('system-id', newMachine.machine.boot_interface.system_id);
-              fs.writeFileSync(
-                `${nfsHostPath}/underpost/system-id`,
-                newMachine.machine.boot_interface.system_id,
-                'utf8',
-              );
-
-              // Get and save MAAS authentication credentials.
-              const { consumer_key, token_key, token_secret } = UnderpostCloudInit.API.authCredentialsFactory();
-
-              fs.writeFileSync(`${nfsHostPath}/underpost/consumer-key`, consumer_key, 'utf8');
-              fs.writeFileSync(`${nfsHostPath}/underpost/token-key`, token_key, 'utf8');
-              fs.writeFileSync(`${nfsHostPath}/underpost/token-secret`, token_secret, 'utf8');
-
-              // Open new terminals for live cloud-init logs.
-              openTerminal(`node ${underpostRoot}/bin baremetal --logs nfs-cloud`);
-              openTerminal(`node ${underpostRoot}/bin baremetal --logs nfs-machine`);
             } catch (error) {
               logger.error(error, error.stack);
             } finally {
-              process.exit(0);
+              return;
             }
         }
         await timer(1000);
-        UnderpostBaremetal.API.commissionMonitor({
+        await UnderpostBaremetal.API.commissionMonitor({
           macAddress,
           nfsHostPath,
           underpostRoot,

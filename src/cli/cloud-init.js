@@ -288,7 +288,6 @@ curl -X POST \\
      * @param {string} params.hostname - The hostname of the target baremetal machine.
      * @param {string} params.commissioningDeviceIp - The IP address to assign to the commissioning device.
      * @param {string} params.gatewayip - The gateway IP address for the network.
-     * @param {boolean} params.auth - Flag indicating whether to include MAAS authentication credentials.
      * @param {string} params.mac - The MAC address of the network interface.
      * @param {string} params.timezone - The timezone to set for the machine.
      * @param {string} params.chronyConfPath - The path to the Chrony configuration file.
@@ -304,7 +303,6 @@ curl -X POST \\
         hostname,
         commissioningDeviceIp,
         gatewayip,
-        auth,
         mac,
         timezone,
         chronyConfPath,
@@ -315,7 +313,7 @@ curl -X POST \\
     ) {
       const { consumer_key, consumer_secret, token_key, token_secret } = authCredentials;
       // Configure cloud-init for MAAS using a heredoc string.
-      return `cat <<EOF_MAAS_CFG > ${path}
+      const cloudConfigSrc = `
 #cloud-config
 
 hostname: ${hostname}
@@ -335,13 +333,12 @@ datasource:
   MAAS:
     metadata_url: http://${controlServerIp}:5240/MAAS/metadata/
     ${
-      // Conditionally include authentication details if 'auth' flag is true.
-      !auth
-        ? ''
-        : `consumer_key: ${consumer_key}
+      authCredentials?.consumer_key
+        ? `consumer_key: ${consumer_key}
     consumer_secret: ${consumer_secret}
     token_key: ${token_key}
     token_secret: ${token_secret}`
+        : ''
     }
 
 
@@ -385,7 +382,6 @@ package_upgrade: true
 packages:
   - git
   - htop
-  - snapd
   - chrony
   - lldpd
   - lshw
@@ -501,7 +497,8 @@ cloud_final_modules:
 #  - phone-home
   - final-message
   - power-state-change
-EOF_MAAS_CFG`;
+`;
+      return { cloudConfigPath: path, cloudConfigSrc };
     },
 
     /**
@@ -637,7 +634,7 @@ EOF_MAAS_CFG`;
 package_upgrade: true
 package_reboot_if_required: true`
         : `package_update: true
-package_upgrade: true`;
+package_upgrade: false`;
 
       return `#cloud-config
 # MAAS Disk-Based Deployment User-Data
