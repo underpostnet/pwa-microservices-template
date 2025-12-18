@@ -68,6 +68,7 @@ class UnderpostBaremetal {
      * @param {boolean} [options.clearDiscovered=false] - Flag to clear discovered machines from MAAS before commissioning.
      * @param {boolean} [options.cloudInitUpdate=false] - Flag to update cloud-init configuration on the baremetal machine.
      * @param {boolean} [options.commission=false] - Flag to commission the baremetal machine.
+     * @param {boolean} [options.useLiveIso=false] - Flag to use Ubuntu live ISO for commissioning instead of disk-based image.
      * @param {boolean} [options.nfsBuild=false] - Flag to build the NFS root filesystem.
      * @param {boolean} [options.nfsMount=false] - Flag to mount the NFS root filesystem.
      * @param {boolean} [options.nfsUnmount=false] - Flag to unmount the NFS root filesystem.
@@ -97,6 +98,7 @@ class UnderpostBaremetal {
         clearDiscovered: false,
         cloudInitUpdate: false,
         commission: false,
+        useLiveIso: false,
         nfsBuild: false,
         nfsMount: false,
         nfsUnmount: false,
@@ -610,7 +612,11 @@ rm -rf ${artifacts.join(' ')}`);
         // Configure GRUB for PXE boot.
         {
           // Fetch kernel and initrd paths from MAAS boot resource.
-          const { kernelFilesPaths, resourcesPath } = UnderpostBaremetal.API.kernelFactory({ resource });
+          // Both NFS and disk-based commissioning use MAAS boot resources.
+          const { kernelFilesPaths, resourcesPath } = UnderpostBaremetal.API.kernelFactory({
+            resource,
+            useLiveIso: options.useLiveIso ? true : false,
+          });
 
           const { cmd } = UnderpostBaremetal.API.kernelCmdBootParamsFactory({
             ipClient: ipAddress,
@@ -701,6 +707,16 @@ menuentry '${menuentryStr}' {
         // Set ownership and permissions for TFTP root.
         shellExec(`sudo chown -R root:root ${process.env.TFTP_ROOT}`);
         shellExec(`sudo sudo chmod 755 ${process.env.TFTP_ROOT}`);
+
+        // Start HTTP server to serve squashfs (TFTP is unreliable for large files like 400MB squashfs)
+        // Kill any existing HTTP server on port 8888
+        shellExec(`sudo pkill -f 'python3 -m http.server 8888' || true`, { silent: true });
+        // Start Python HTTP server in background to serve TFTP root
+        shellExec(
+          `cd ${process.env.TFTP_ROOT} && nohup python3 -m http.server 8888 --bind 0.0.0.0 > /tmp/http-boot-server.log 2>&1 &`,
+          { silent: true, async: true },
+        );
+        logger.info(`Started HTTP server on port 8888 serving ${process.env.TFTP_ROOT} for squashfs fetching`);
       }
 
       // Final commissioning steps.
@@ -731,14 +747,217 @@ menuentry '${menuentryStr}' {
     },
 
     /**
+     * @method downloadUbuntuLiveISO
+     * @description Downloads Ubuntu live ISO and extracts casper boot files for live boot.
+     * @param {object} params - Parameters for the method.
+     * @param {object} params.resource - The MAAS boot resource object.
+     * @param {string} params.architecture - The architecture (arm64 or amd64).
+     * @returns {object} An object containing paths to the extracted kernel, initrd, and squashfs.
+     * @memberof UnderpostBaremetal
+     */
+    downloadUbuntuLiveISO({ resource, architecture }) {
+      const arch = architecture || resource.architecture.split('/')[0];
+      const osName = resource.name.split('/')[1]; // e.g., "focal", "jammy", "noble"
+
+      // Map Ubuntu codenames to versions - different versions available for different architectures
+      // ARM64 ISOs are hosted on cdimage.ubuntu.com, AMD64 on releases.ubuntu.com
+      const versionMap = {
+        arm64: {
+          focal: '20.04.5', // ARM64 focal only up to 20.04.5 on cdimage
+          jammy: '22.04.5',
+          noble: '24.04.3', // ubuntu-24.04.3-live-server-arm64+largemem.iso
+          bionic: '18.04.6',
+        },
+        amd64: {
+          focal: '20.04.6',
+          jammy: '22.04.5',
+          noble: '24.04.1',
+          bionic: '18.04.6',
+        },
+      };
+
+      const version = (versionMap[arch] && versionMap[arch][osName]) || '20.04.5';
+      const majorVersion = version.split('.').slice(0, 2).join('.');
+
+      // Determine ISO filename and URL based on architecture
+      // ARM64 ISOs are on cdimage.ubuntu.com, AMD64 on releases.ubuntu.com
+      let isoFilename;
+      let isoUrl;
+      if (arch === 'arm64') {
+        isoFilename = `ubuntu-${version}-live-server-arm64+largemem.iso`;
+      } else {
+        isoFilename = `ubuntu-${version}-live-server-amd64.iso`;
+      }
+      isoUrl = `https://cdimage.ubuntu.com/releases/${majorVersion}/release/${isoFilename}`;
+
+      const downloadDir = `/var/tmp/ubuntu-live-iso`;
+      const isoPath = `${downloadDir}/${isoFilename}`;
+      const extractDir = `${downloadDir}/${osName}-${arch}-extracted`;
+
+      shellExec(`mkdir -p ${downloadDir}`);
+      shellExec(`mkdir -p ${extractDir}`);
+
+      // Check if cached ISO exists and is valid (size > 100MB to ensure it's not empty/corrupt)
+      let needsDownload = true;
+      if (fs.existsSync(isoPath)) {
+        const stats = fs.statSync(isoPath);
+        const minValidSize = 100 * 1024 * 1024; // 100MB minimum
+        if (stats.size > minValidSize) {
+          logger.info(`Using cached ISO: ${isoPath} (${(stats.size / 1024 / 1024 / 1024).toFixed(2)} GB)`);
+          needsDownload = false;
+        } else {
+          logger.warn(`Cached ISO appears corrupt or incomplete (${stats.size} bytes), re-downloading...`);
+          shellExec(`rm -f ${isoPath}`);
+        }
+      }
+
+      if (needsDownload) {
+        logger.info(`Downloading Ubuntu ${version} live ISO for ${arch}...`);
+        logger.info(`URL: ${isoUrl}`);
+        logger.info(`This may take a while (typically 1-2 GB)...`);
+        shellExec(`wget --progress=bar:force -O ${isoPath} "${isoUrl}"`, { silent: false });
+        // Verify download by checking file existence and size (not exit code, which can be unreliable)
+        if (!fs.existsSync(isoPath)) {
+          throw new Error(`Failed to download ISO from ${isoUrl} - file not created`);
+        }
+        const stats = fs.statSync(isoPath);
+        if (stats.size < 100 * 1024 * 1024) {
+          shellExec(`rm -f ${isoPath}`);
+          throw new Error(`Downloaded ISO is too small (${stats.size} bytes), download may have failed`);
+        }
+        logger.info(`Downloaded ISO to ${isoPath} (${(stats.size / 1024 / 1024 / 1024).toFixed(2)} GB)`);
+      }
+
+      // Mount ISO and extract casper files
+      const mountPoint = `${downloadDir}/mnt-${osName}-${arch}`;
+      shellExec(`mkdir -p ${mountPoint}`);
+
+      // Ensure mount point is not already mounted
+      shellExec(`sudo umount ${mountPoint} 2>/dev/null || true`, { silent: true });
+
+      try {
+        // Mount the ISO
+        shellExec(`sudo mount -o loop,ro ${isoPath} ${mountPoint}`, { silent: false });
+        // Verify mount succeeded by checking if casper directory exists
+        if (!fs.existsSync(`${mountPoint}/casper`)) {
+          throw new Error(`Failed to mount ISO or casper directory not found: ${isoPath}`);
+        }
+        logger.info(`Mounted ISO at ${mountPoint}`);
+
+        // List casper directory to see what's available
+        logger.info(`Checking casper directory contents...`);
+        shellExec(`ls -la ${mountPoint}/casper/ 2>/dev/null || echo "casper directory not found"`, { silent: false });
+
+        // Extract casper files
+        const casperFiles = ['vmlinuz', 'initrd'];
+        for (const file of casperFiles) {
+          const sourcePath = `${mountPoint}/casper/${file}`;
+          if (fs.existsSync(sourcePath)) {
+            shellExec(`sudo cp ${sourcePath} ${extractDir}/${file}`);
+            shellExec(`sudo chown $(whoami):$(whoami) ${extractDir}/${file}`);
+            logger.info(`Extracted ${file} from ISO`);
+          } else {
+            logger.warn(`File not found in ISO: ${sourcePath}`);
+            // Try alternative names
+            const altNames =
+              file === 'vmlinuz' ? ['vmlinuz.efi', 'vmlinuz-*'] : ['initrd.lz', 'initrd.gz', 'initrd.img'];
+            for (const altName of altNames) {
+              const altResult = shellExec(`ls ${mountPoint}/casper/${altName} 2>/dev/null | head -1`, {
+                silent: true,
+                stdout: true,
+              });
+              if (altResult.stdout && altResult.stdout.trim()) {
+                const altPath = altResult.stdout.trim();
+                shellExec(`sudo cp ${altPath} ${extractDir}/${file}`);
+                shellExec(`sudo chown $(whoami):$(whoami) ${extractDir}/${file}`);
+                logger.info(`Extracted ${file} from ISO (using ${altPath})`);
+                break;
+              }
+            }
+          }
+        }
+
+        // Extract rootfs squashfs
+        // Ubuntu 24.04+ live-server ISOs may not ship `casper/filesystem.squashfs` and instead use
+        // `ubuntu-server-minimal*.squashfs` (and sometimes other variants). Be resilient here.
+        let squashfsSource = `${mountPoint}/casper/filesystem.squashfs`;
+        if (!fs.existsSync(squashfsSource)) {
+          logger.warn(
+            `filesystem.squashfs not found at ${squashfsSource}; searching for alternative squashfs in casper...`,
+          );
+          // Prefer the minimal rootfs if present, otherwise pick the first squashfs file we find.
+          const candidates = shellExec(
+            `ls ${mountPoint}/casper/ubuntu-server-minimal*.squashfs ${mountPoint}/casper/*.squashfs 2>/dev/null | head -1`,
+            { silent: true, stdout: true },
+          );
+
+          // `shellExec()` may return either a string or an object with `.stdout`.
+          const candidatePath =
+            typeof candidates === 'string'
+              ? candidates.trim()
+              : candidates && typeof candidates.stdout === 'string'
+                ? candidates.stdout.trim()
+                : '';
+
+          if (candidatePath) {
+            squashfsSource = candidatePath;
+            logger.info(`Using squashfs rootfs from ISO: ${squashfsSource}`);
+          }
+        }
+
+        if (fs.existsSync(squashfsSource)) {
+          shellExec(`sudo cp ${squashfsSource} ${extractDir}/filesystem.squashfs`);
+          shellExec(`sudo chown $(whoami):$(whoami) ${extractDir}/filesystem.squashfs`);
+          logger.info(`Extracted squashfs rootfs from ISO to ${extractDir}/filesystem.squashfs`);
+        } else {
+          logger.error(`No usable squashfs rootfs found in ISO (last checked: ${squashfsSource})`);
+          // List what's in casper to help debug
+          shellExec(`ls -la ${mountPoint}/casper/`, { silent: false });
+          throw new Error(`filesystem.squashfs not found in ISO`);
+        }
+      } finally {
+        // Unmount ISO
+        shellExec(`sudo umount ${mountPoint}`, { silent: true });
+        logger.info(`Unmounted ISO`);
+      }
+
+      // Verify extracted files exist
+      const requiredFiles = ['vmlinuz', 'initrd', 'filesystem.squashfs'];
+      for (const file of requiredFiles) {
+        const filePath = `${extractDir}/${file}`;
+        if (!fs.existsSync(filePath)) {
+          throw new Error(`Required file not extracted: ${filePath}`);
+        }
+        const stats = fs.statSync(filePath);
+        logger.info(`Verified ${file}: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
+      }
+
+      return {
+        'vmlinuz-efi': `${extractDir}/vmlinuz`,
+        'initrd.img': `${extractDir}/initrd`,
+        'filesystem.squashfs': `${extractDir}/filesystem.squashfs`,
+      };
+    },
+
+    /**
      * @method kernelFactory
      * @description Retrieves kernel, initrd, and root filesystem paths from a MAAS boot resource.
      * @param {object} params - Parameters for the method.
      * @param {object} params.resource - The MAAS boot resource object.
+     * @param {boolean} params.useLiveIso - Whether to use Ubuntu live ISO instead of MAAS boot resources.
      * @returns {object} An object containing paths to the kernel, initrd, and root filesystem.
      * @memberof UnderpostBaremetal
      */
-    kernelFactory({ resource }) {
+    kernelFactory({ resource, useLiveIso = false }) {
+      // For disk-based commissioning (casper), use Ubuntu live ISO files
+      if (useLiveIso) {
+        logger.info('Using Ubuntu live ISO for casper boot (disk-based commissioning)');
+        const arch = resource.architecture.split('/')[0];
+        const kernelFilesPaths = UnderpostBaremetal.API.downloadUbuntuLiveISO({ resource, architecture: arch });
+        const resourcesPath = `/var/snap/maas/common/maas/image-storage/bootloaders/uefi/${arch}`;
+        return { kernelFilesPaths, resourcesPath };
+      }
+
       const resourceData = JSON.parse(
         shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resource read ${resource.id}`, {
           stdout: true,
@@ -1168,19 +1387,30 @@ EOF_MAAS_CFG`,
           `systemd.mask=systemd-udev-trigger.service`,
         ];
       } else {
-        // Ubuntu ephemeral (MAAS commissioning) parameters
+        // MAAS commissioning parameters
         cmd = [
-          `console=ttyAMA0,115200`, // Standard PL011 UART for RPi4
+          `console=serial0,115200`,
           `console=tty1`,
-          `ip=dhcp`,
+          `net.ifnames=0`,
+          `biosdevname=0`,
+          `ip=${ipClient}:${ipHost}:${ipHost}:${netmask}:${hostname}:${'eth0'}:static`,
+          'nomodeset',
+          `rw`,
+          `root=/dev/ram0`,
+          `ipv6.disable=1`,
           `boot=casper`,
-          `url=tftp://${ipHost}/${hostname}/pxe/squashfs`,
-          `nomodeset`, // Prevents conflict with UEFI framebuffer
-          `plymouth.enable=0`, // DISABLES graphical splash to prevent 0x200 panic during boot
-          `disable_splash`,
-          `cma=512M`, // Increased CMA for Ubuntu 24.04 kernel requirements on RPi4
           `ignore_uuid`,
-          `systemd.unit=multi-user.target`, // Force text mode
+          `netboot=url`,
+          `url=http://${ipHost}:8888/${hostname}/pxe/filesystem.squashfs`,
+          // `url=http://${ipHost}:8888/${hostname}/pxe/squashfs`,
+          // `ramdisk_size=2097152`,
+          // `cma=256M`,
+          `rootwait`,
+          // `root=/dev/sda1`, // rpi4 usb port unit
+          // `fixrtc`,
+          // `overlayroot=tmpfs`,
+          // `overlayroot_cfgdisk=disabled`,
+          // `ds=nocloud-net;s=http://${ipHost}:8888/${hostname}/pxe/`,
         ];
       }
 
