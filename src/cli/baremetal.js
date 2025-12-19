@@ -1436,10 +1436,10 @@ EOF_MAAS_CFG`,
           // `console=serial0,115200`,
           // `console=tty1`,
           // pxe parameters
-          `ip=${ipClient}:${ipFileServer}:${ipDhcpServer}:${netmask}:${hostname}:${networkInterfaceName}:${ipConfig}`,
+          `ip=${ipClient}:${ipFileServer}:${ipDhcpServer}:${netmask}:${hostname}:${'eth0'}:${ipConfig}:8.8.8.8`,
           `boot=casper`,
           `netboot=url`,
-          `url=${fileSystemUrl}`,
+          `url=${fileSystemUrl.replace('https', 'http')}`,
           // `url=http://${ipHost}:8888/${hostname}/pxe/filesystem.squashfs`,
           // `root=/dev/ram0`,
           // kernel parameters
@@ -1447,8 +1447,8 @@ EOF_MAAS_CFG`,
           'nomodeset',
           `rootwait`,
           `ignore_uuid`,
-          // `net.ifnames=0`,
-          // `biosdevname=0`,
+          `net.ifnames=0`, // only networkInterfaceName = eth0
+          `biosdevname=0`, // only networkInterfaceName = eth0
           `ipv6.disable=1`,
           `ramdisk_size=3550000`,
           `cma=120M`,
@@ -1569,19 +1569,6 @@ EOF_MAAS_CFG`,
               );
 
               logger.info('Interface data:', interfaceData);
-
-              // Mark machine as broken, update interface name, then mark as fixed.
-              shellExec(
-                `maas ${process.env.MAAS_ADMIN_USERNAME} machine mark-broken ${newMachine.machine.boot_interface.system_id}`,
-              );
-
-              shellExec(
-                `maas ${process.env.MAAS_ADMIN_USERNAME} interface update ${newMachine.machine.boot_interface.system_id} ${interfaceData.id} name=${networkInterfaceName}`,
-              );
-
-              shellExec(
-                `maas ${process.env.MAAS_ADMIN_USERNAME} machine mark-fixed ${newMachine.machine.boot_interface.system_id}`,
-              );
 
               return;
             } catch (error) {
@@ -1708,19 +1695,6 @@ EOF_MAAS_CFG`,
               );
 
               logger.info('Interface', interfaceData);
-
-              // Mark machine as broken, update interface name, then mark as fixed.
-              shellExec(
-                `maas ${process.env.MAAS_ADMIN_USERNAME} machine mark-broken ${newMachine.machine.boot_interface.system_id}`,
-              );
-
-              shellExec(
-                `maas ${process.env.MAAS_ADMIN_USERNAME} interface update ${newMachine.machine.boot_interface.system_id} ${interfaceData.id} name=${networkInterfaceName}`,
-              );
-
-              shellExec(
-                `maas ${process.env.MAAS_ADMIN_USERNAME} machine mark-fixed ${newMachine.machine.boot_interface.system_id}`,
-              );
             } catch (error) {
               logger.error(error, error.stack);
             } finally {
