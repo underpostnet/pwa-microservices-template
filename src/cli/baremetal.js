@@ -54,6 +54,7 @@ class UnderpostBaremetal {
      * @param {string} [ipFileServer=getLocalIPv4Address()] - The IP address of the file server (NFS/TFTP).
      * @param {string} [ipConfig=''] - IP configuration string for the baremetal machine.
      * @param {string} [netmask=''] - Netmask of network
+     * @param {string} [dnsServer=''] - DNS server IP address.
      * @param {object} [options] - An object containing boolean flags for various operations.
      * @param {boolean} [options.dev=false] - Development mode flag.
      * @param {boolean} [options.controlServerInstall=false] - Flag to install the control server (e.g., MAAS).
@@ -87,6 +88,7 @@ class UnderpostBaremetal {
       ipFileServer,
       ipConfig,
       netmask,
+      dnsServer,
       options = {
         dev: false,
         controlServerInstall: false,
@@ -125,6 +127,7 @@ class UnderpostBaremetal {
       ipAddress = ipAddress ? ipAddress : '192.168.1.191';
       ipFileServer = ipFileServer ? ipFileServer : getLocalIPv4Address();
       netmask = netmask ? netmask : '255.255.255.0';
+      dnsServer = dnsServer ? dnsServer : '8.8.8.8';
 
       // IpConfig options:
       // dhcp - DHCP configuration
@@ -151,7 +154,7 @@ class UnderpostBaremetal {
 
       // Capture metadata for the callback execution, useful for logging and auditing.
       const callbackMetaData = {
-        args: { hostname, ipAddress, workflowId },
+        args: { workflowId, ipAddress, hostname, ipFileServer, ipConfig, netmask, dnsServer },
         options,
         runnerHost: { architecture: UnderpostBaremetal.API.getHostArch().alias, ip: getLocalIPv4Address() },
         nfsHostPath,
@@ -396,7 +399,6 @@ rm -rf ${artifacts.join(' ')}`);
         shellExec(`chmod +x ${underpostRoot}/scripts/maas-setup.sh`);
         shellExec(`chmod +x ${underpostRoot}/scripts/nat-iptables.sh`);
         shellExec(`${underpostRoot}/scripts/maas-setup.sh`);
-        shellExec(`${underpostRoot}/scripts/nat-iptables.sh`, { silent: true });
         return;
       }
 
@@ -449,7 +451,7 @@ rm -rf ${artifacts.join(' ')}`);
       // Handle NFS mount operation.
       if (options.nfsMount === true) {
         // Mount binfmt_misc filesystem.
-        UnderpostBaremetal.API.mountBinfmtMisc({ nfsHostPath });
+        UnderpostBaremetal.API.mountBinfmtMisc();
         UnderpostBaremetal.API.nfsMountCallback({ hostname, workflowId, mount: true });
       }
 
@@ -466,9 +468,6 @@ rm -rf ${artifacts.join(' ')}`);
         // Clean and create the NFS host path.
         shellExec(`sudo rm -rf ${nfsHostPath}/*`);
         shellExec(`mkdir -p ${nfsHostPath}`);
-
-        // Mount binfmt_misc filesystem.
-        UnderpostBaremetal.API.mountBinfmtMisc({ nfsHostPath });
 
         // Perform the first stage of debootstrap.
         {
@@ -588,6 +587,12 @@ rm -rf ${artifacts.join(' ')}`);
         );
         logger.info('Commissioning resource', resource);
 
+        if (!nfs) {
+          // Prepare NFS casper path if using NFS boot.
+          shellExec(`sudo rm -rf ${nfsHostPath}`);
+          shellExec(`mkdir -p ${nfsHostPath}/casper`);
+        }
+
         // Clean and create TFTP root path.
         shellExec(`sudo rm -rf ${tftpRootPath}`);
         shellExec(`mkdir -p ${tftpRootPath}/pxe`);
@@ -619,12 +624,6 @@ rm -rf ${artifacts.join(' ')}`);
           }
         }
 
-        // Rebuild NFS server configuration.
-        if (nfs)
-          UnderpostBaremetal.API.rebuildNfsServer({
-            nfsHostPath,
-          });
-
         // Configure GRUB for PXE boot.
         {
           // Fetch kernel and initrd paths from MAAS boot resource.
@@ -632,6 +631,7 @@ rm -rf ${artifacts.join(' ')}`);
           const { kernelFilesPaths, resourcesPath } = UnderpostBaremetal.API.kernelFactory({
             resource,
             useLiveIso: options.useLiveIso ? true : false,
+            nfsHostPath,
           });
 
           const { cmd } = UnderpostBaremetal.API.kernelCmdBootParamsFactory({
@@ -641,6 +641,7 @@ rm -rf ${artifacts.join(' ')}`);
             ipFileServer,
             netmask,
             hostname,
+            dnsServer,
             networkInterfaceName,
             fileSystemUrl: kernelFilesPaths.isoUrl,
             nfsBoot: nfs ? true : false,
@@ -652,11 +653,12 @@ rm -rf ${artifacts.join(' ')}`);
             ? ['bootaa64.efi', 'grubaa64.efi']
             : ['bootx64.efi', 'grubx64.efi'];
           for (const file of efiFiles) {
-            shellExec(`sudo cp -L ${resourcesPath}/${file} ${tftpRootPath}/pxe/${file}`);
+            shellExec(`sudo cp -a ${resourcesPath}/${file} ${tftpRootPath}/pxe/${file}`);
           }
           // Copy kernel and initrd images to TFTP path.
           for (const file of Object.keys(kernelFilesPaths)) {
-            shellExec(`sudo cp -L ${kernelFilesPaths[file]} ${tftpRootPath}/pxe/${file}`);
+            if (file == 'isoUrl') continue; // Skip URL entries
+            shellExec(`sudo cp -a ${kernelFilesPaths[file]} ${tftpRootPath}/pxe/${file}`);
             // If the file is a kernel (vmlinuz-efi) and is gzipped, unzip it for GRUB compatibility on ARM64.
             // GRUB on ARM64 often crashes with synchronous exception (0x200) if handling large compressed kernels directly.
             if (file === 'vmlinuz-efi') {
@@ -745,6 +747,12 @@ menuentry '${menuentryStr}' {
         logger.info(`Started HTTP server on port 8888 serving ${process.env.TFTP_ROOT} for squashfs fetching`);
       }
 
+      shellExec(`${underpostRoot}/scripts/nat-iptables.sh`, { silent: true });
+      // Rebuild NFS server configuration.
+      UnderpostBaremetal.API.rebuildNfsServer({
+        nfsHostPath,
+      });
+
       // Final commissioning steps.
       if (options.commission === true || options.cloudInitUpdate === true) {
         const { nfs } = workflowsConfig[workflowId];
@@ -778,10 +786,11 @@ menuentry '${menuentryStr}' {
      * @param {object} params - Parameters for the method.
      * @param {object} params.resource - The MAAS boot resource object.
      * @param {string} params.architecture - The architecture (arm64 or amd64).
+     * @param {string} params.nfsHostPath - The NFS host path to store the ISO and extracted files.
      * @returns {object} An object containing paths to the extracted kernel, initrd, and squashfs.
      * @memberof UnderpostBaremetal
      */
-    downloadUbuntuLiveISO({ resource, architecture }) {
+    downloadUbuntuLiveISO({ resource, architecture, nfsHostPath }) {
       const arch = architecture || resource.architecture.split('/')[0];
       const osName = resource.name.split('/')[1]; // e.g., "focal", "jammy", "noble"
 
@@ -802,6 +811,8 @@ menuentry '${menuentryStr}' {
         },
       };
 
+      shellExec(`mkdir -p ${nfsHostPath}/casper`);
+
       const version = (versionMap[arch] && versionMap[arch][osName]) || '20.04.5';
       const majorVersion = version.split('.').slice(0, 2).join('.');
 
@@ -810,18 +821,18 @@ menuentry '${menuentryStr}' {
       let isoFilename;
       let isoUrl;
       if (arch === 'arm64') {
-        isoFilename = `ubuntu-${version}-live-server-arm64+largemem.iso`;
+        isoFilename = `ubuntu-${version}-live-server-arm64${osName === 'noble' ? '+largemem' : ''}.iso`;
       } else {
         isoFilename = `ubuntu-${version}-live-server-amd64.iso`;
       }
       isoUrl = `https://cdimage.ubuntu.com/releases/${majorVersion}/release/${isoFilename}`;
 
-      const downloadDir = `/var/tmp/ubuntu-live-iso`;
-      const isoPath = `${downloadDir}/${isoFilename}`;
-      const extractDir = `${downloadDir}/${osName}-${arch}-extracted`;
+      const isoPath = `${nfsHostPath}/${isoFilename}`;
+      const extractDir = `${nfsHostPath}/casper`;
 
-      shellExec(`mkdir -p ${downloadDir}`);
-      shellExec(`mkdir -p ${extractDir}`);
+      if (fs.existsSync(`/var/tmp/ubuntu-live-iso/${isoFilename}`)) {
+        shellExec(`cp -a /var/tmp/ubuntu-live-iso/${isoFilename} ${isoPath}`);
+      }
 
       // Check if cached ISO exists and is valid (size > 100MB to ensure it's not empty/corrupt)
       let needsDownload = true;
@@ -855,7 +866,7 @@ menuentry '${menuentryStr}' {
       }
 
       // Mount ISO and extract casper files
-      const mountPoint = `${downloadDir}/mnt-${osName}-${arch}`;
+      const mountPoint = `${nfsHostPath}/mnt-${osName}-${arch}`;
       shellExec(`mkdir -p ${mountPoint}`);
 
       // Ensure mount point is not already mounted
@@ -932,8 +943,21 @@ menuentry '${menuentryStr}' {
         }
 
         if (fs.existsSync(squashfsSource)) {
-          shellExec(`sudo cp ${squashfsSource} ${extractDir}/filesystem.squashfs`);
-          shellExec(`sudo chown $(whoami):$(whoami) ${extractDir}/filesystem.squashfs`);
+          // shellExec(`sudo cp ${squashfsSource} ${extractDir}/filesystem.squashfs`);
+          // shellExec(`sudo chown $(whoami):$(whoami) ${extractDir}/filesystem.squashfs`);
+          logger.info(`Copying all squashfs layers from ISO...`);
+          shellExec(`sudo cp ${mountPoint}/casper/*.squashfs ${extractDir}/`);
+          shellExec(`sudo chown $(whoami):$(whoami) ${extractDir}/*.squashfs`);
+
+          // Create filesystem.squashfs symlink if it doesn't exist (for newer ISOs with different naming)
+          const filesystemSquashfs = `${extractDir}/filesystem.squashfs`;
+          if (!fs.existsSync(filesystemSquashfs)) {
+            // Extract the basename from the squashfsSource path we found earlier
+            const squashfsBasename = squashfsSource.split('/').pop();
+            logger.info(`Creating filesystem.squashfs symlink to ${squashfsBasename}`);
+            shellExec(`ln -s ${squashfsBasename} ${filesystemSquashfs}`);
+          }
+
           logger.info(`Extracted squashfs rootfs from ISO to ${extractDir}/filesystem.squashfs`);
         } else {
           logger.error(`No usable squashfs rootfs found in ISO (last checked: ${squashfsSource})`);
@@ -945,6 +969,8 @@ menuentry '${menuentryStr}' {
         // Unmount ISO
         shellExec(`sudo umount ${mountPoint}`, { silent: true });
         logger.info(`Unmounted ISO`);
+        // Clean up temporary mount point
+        shellExec(`rmdir ${mountPoint}`, { silent: true });
       }
 
       // Verify extracted files exist
@@ -972,15 +998,20 @@ menuentry '${menuentryStr}' {
      * @param {object} params - Parameters for the method.
      * @param {object} params.resource - The MAAS boot resource object.
      * @param {boolean} params.useLiveIso - Whether to use Ubuntu live ISO instead of MAAS boot resources.
+     * @param {string} params.nfsHostPath - The NFS host path for storing extracted files.
      * @returns {object} An object containing paths to the kernel, initrd, and root filesystem.
      * @memberof UnderpostBaremetal
      */
-    kernelFactory({ resource, useLiveIso = false }) {
+    kernelFactory({ resource, useLiveIso = false, nfsHostPath }) {
       // For disk-based commissioning (casper), use Ubuntu live ISO files
       if (useLiveIso) {
         logger.info('Using Ubuntu live ISO for casper boot (disk-based commissioning)');
         const arch = resource.architecture.split('/')[0];
-        const kernelFilesPaths = UnderpostBaremetal.API.downloadUbuntuLiveISO({ resource, architecture: arch });
+        const kernelFilesPaths = UnderpostBaremetal.API.downloadUbuntuLiveISO({
+          resource,
+          architecture: arch,
+          nfsHostPath,
+        });
         const resourcesPath = `/var/snap/maas/common/maas/image-storage/bootloaders/uefi/${arch}`;
         return { kernelFilesPaths, resourcesPath };
       }
@@ -1342,6 +1373,7 @@ EOF_MAAS_CFG`,
      * @param {string} options.ipConfig - The IP configuration method (e.g., 'dhcp').
      * @param {string} options.netmask - The network mask.
      * @param {string} options.hostname - The hostname of the client.
+     * @param {string} options.dnsServer - The DNS server address.
      * @param {string} options.networkInterfaceName - The name of the network interface.
      * @param {string} options.fileSystemUrl - The URL of the root filesystem.
      * @param {boolean} options.nfsBoot - Flag indicating if NFS boot is enabled.
@@ -1356,6 +1388,7 @@ EOF_MAAS_CFG`,
         ipConfig: '',
         netmask: '',
         hostname: '',
+        dnsServer: '',
         networkInterfaceName: '',
         fileSystemUrl: '',
         nfsBoot: false,
@@ -1370,94 +1403,89 @@ EOF_MAAS_CFG`,
         ipConfig,
         netmask,
         hostname,
+        dnsServer,
         networkInterfaceName,
         fileSystemUrl,
         nfsBoot,
         systemProvisioning,
       } = options;
+
+      const ipParam =
+        `ip=${ipClient}:${ipFileServer}:${ipDhcpServer}:${netmask}:${hostname}` +
+        `:${networkInterfaceName ? networkInterfaceName : 'eth0'}:${ipConfig}:${dnsServer}`;
+      const nfsOptions = `${
+        [
+          // 'tcp',
+          // 'nfsvers=3',
+          // 'nolock',
+          // 'rw',
+          // 'vers=3',
+          // 'protocol=tcp',
+          // 'hard=true',
+          // 'port=2049',
+          // 'sec=none',
+          // 'hard',
+          // 'intr',
+          // 'rsize=32768',
+          // 'wsize=32768',
+          // 'acregmin=0',
+          // 'acregmax=0',
+          // 'acdirmin=0',
+          // 'acdirmax=0',
+          // 'noac',
+          // 'nodev',
+          // 'nosuid',
+        ]
+      }`;
+      const nfsRootParam = `nfsroot=${ipFileServer}:${process.env.NFS_EXPORT_PATH}/${hostname}${nfsOptions ? `,${nfsOptions}` : ''}`;
+
+      // https://manpages.ubuntu.com/manpages/noble/man7/casper.7.html
+      const netBootParams = [`netboot=url`, `url=${fileSystemUrl.replace('https', 'http')}`];
+
+      // const fetchParams = [
+      //   `boot=casper`,
+      //   `netboot=http`,
+      //   `initrd=initrd`,
+      //   `fetch=http://${ipFileServer}:8888/${hostname}/pxe/filesystem.squashfs`,
+      //   'root=/dev/ram0',
+      // ];
+
+      const nfsParams = [`boot=casper`, `netboot=nfs`];
+
+      const kernelParams = [
+        // `ro`,
+        `ignore_uuid`,
+        // `ipv6.disable=1`,
+        // `ramdisk_size=3550000`,
+        // `console=serial0,115200`,
+        // `console=tty1`,
+        // `boot=casper`,
+        // `casper-getty`,
+        // `layerfs-path=filesystem.squashfs`,
+        // `root=/dev/ram0`,
+        // `toram`,
+        // 'nomodeset',
+        // `rootwait`,
+        // `net.ifnames=0`, // only networkInterfaceName = eth0
+        // `biosdevname=0`, // only networkInterfaceName = eth0
+        // `editable_rootfs=tmpfs`,
+        // `cma=120M`,
+        // `root=/dev/sda1`, // rpi4 usb port unit
+        // `fixrtc`,
+        // `overlayroot=tmpfs`,
+        // `overlayroot_cfgdisk=disabled`,
+        // `ds=nocloud-net;s=http://${ipHost}:8888/${hostname}/pxe/`,
+      ];
+
+      const qemuNfsRootParams = [`rootfstype=nfs`, `root=/dev/nfs`, 'initrd=initrd.img', `init=/sbin/init`];
+
       let cmd = [];
       if (nfsBoot === true) {
-        cmd = [
-          // `console=serial0,115200`,
-          // `console=ttyAMA0,115200`,
-          // `console=tty1`,
-          // `initrd=-1`,
-          // `net.ifnames=0`,
-          // `dwc_otg.lpm_enable=0`,
-          // `elevator=deadline`,
-          `root=/dev/nfs`,
-          `nfsroot=${ipHost}:${process.env.NFS_EXPORT_PATH}/rpi4mb,${[
-            'tcp',
-            'vers=3',
-            'nfsvers=3',
-            'nolock',
-            // 'protocol=tcp',
-            // 'hard=true',
-            'port=2049',
-            // 'sec=none',
-            'rw',
-            'hard',
-            'intr',
-            'rsize=32768',
-            'wsize=32768',
-            'acregmin=0',
-            'acregmax=0',
-            'acdirmin=0',
-            'acdirmax=0',
-            'noac',
-            // 'nodev',
-            // 'nosuid',
-          ]}`,
-          `ip=${ipClient}:${ipFileServer}:${ipDhcpServer}:${netmask}:${hostname}:${networkInterfaceName}:${ipConfig}`,
-          `rootfstype=nfs`,
-          `rw`,
-          `rootwait`,
-          `fixrtc`,
-          'initrd=initrd.img',
-          // 'boot=casper',
-          // 'ro',
-          'netboot=nfs',
-          `init=/sbin/init`,
-          // `cloud-config-url=/dev/null`,
-          // 'ip=dhcp',
-          // 'ip=dfcp',
-          // 'autoinstall',
-          // 'rd.break',
-
-          // Disable services that not apply over nfs
-          // `systemd.mask=systemd-network-generator.service`,
-          // `systemd.mask=systemd-networkd.service`,
-          // `systemd.mask=systemd-fsck-root.service`,
-          // `systemd.mask=systemd-udev-trigger.service`,
-        ];
+        // QEMU NFS boot parameters
+        cmd = [ipParam, nfsRootParam, ...qemuNfsRootParams, ...kernelParams];
       } else {
         // MAAS commissioning parameters
-        cmd = [
-          // `console=serial0,115200`,
-          // `console=tty1`,
-          // pxe parameters
-          `ip=${ipClient}:${ipFileServer}:${ipDhcpServer}:${netmask}:${hostname}:${'eth0'}:${ipConfig}:8.8.8.8`,
-          `boot=casper`,
-          `netboot=url`,
-          `url=${fileSystemUrl.replace('https', 'http')}`,
-          // `url=http://${ipHost}:8888/${hostname}/pxe/filesystem.squashfs`,
-          // `root=/dev/ram0`,
-          // kernel parameters
-          `rw`,
-          'nomodeset',
-          `rootwait`,
-          `ignore_uuid`,
-          `net.ifnames=0`, // only networkInterfaceName = eth0
-          `biosdevname=0`, // only networkInterfaceName = eth0
-          `ipv6.disable=1`,
-          `ramdisk_size=3550000`,
-          `cma=120M`,
-          // `root=/dev/sda1`, // rpi4 usb port unit
-          // `fixrtc`,
-          `overlayroot=tmpfs`,
-          `overlayroot_cfgdisk=disabled`,
-          // `ds=nocloud-net;s=http://${ipHost}:8888/${hostname}/pxe/`,
-        ];
+        cmd = [ipParam, nfsRootParam, ...nfsParams, ...kernelParams];
       }
 
       const cmdStr = cmd.join(' ');
@@ -1555,25 +1583,27 @@ EOF_MAAS_CFG`,
               newMachine = { discovery, machine: JSON.parse(newMachine) };
               logger.info('Machine created successfully:', newMachine.machine.system_id);
 
-              const discoverInterfaceName = 'eth0'; // Default interface name for discovery.
-
-              // Read interface data.
-              const interfaceData = JSON.parse(
-                shellExec(
+              for (const discoverInterfaceName of ['eth0' /* networkInterfaceName */]) {
+                const jsonInterfaceData = shellExec(
                   `maas ${process.env.MAAS_ADMIN_USERNAME} interface read ${newMachine.machine.boot_interface.system_id} ${discoverInterfaceName}`,
                   {
                     silent: true,
                     stdout: true,
                   },
-                ),
-              );
-
-              logger.info('Interface data:', interfaceData);
-
-              return;
+                );
+                try {
+                  const interfaceData = JSON.parse(jsonInterfaceData);
+                  logger.info('Interface data:', { discoverInterfaceName, interfaceData });
+                } catch (error) {
+                  console.log(error);
+                  logger.error(error, { discoverInterfaceName, jsonInterfaceData });
+                }
+              }
             } catch (error) {
               logger.error('Error during machine commissioning:', error);
               logger.error(error.stack);
+            } finally {
+              return;
             }
         }
 
@@ -1718,11 +1748,10 @@ EOF_MAAS_CFG`,
      * @description Mounts the binfmt_misc filesystem to enable QEMU user-static binfmt support.
      * This is necessary for cross-architecture execution within a chroot environment.
      * @param {object} params - The parameters for the function.
-     * @param {string} params.nfsHostPath - The path to the NFS root filesystem on the host.
      * @memberof UnderpostBaremetal
      * @returns {void}
      */
-    mountBinfmtMisc({ nfsHostPath }) {
+    mountBinfmtMisc() {
       // Install necessary packages for debootstrap and QEMU.
       shellExec(`sudo dnf install -y iptables-legacy`);
       shellExec(`sudo dnf install -y debootstrap`);
@@ -1732,9 +1761,6 @@ EOF_MAAS_CFG`,
       // Mount binfmt_misc filesystem.
       shellExec(`sudo modprobe binfmt_misc`);
       shellExec(`sudo mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc`);
-      // Set ownership and permissions for the NFS host path.
-      shellExec(`sudo chown -R root:root ${nfsHostPath}`);
-      shellExec(`sudo chmod 755 ${nfsHostPath}`);
     },
 
     /**
@@ -1906,31 +1932,32 @@ EOF`);
         throw new Error(`Workflow configuration not found for ID: ${workflowId}`);
       }
       // Iterate through defined NFS mounts in the workflow configuration.
-      for (const mountCmd of Object.keys(workflowsConfig[workflowId].nfs.mounts)) {
-        for (const mountPath of workflowsConfig[workflowId].nfs.mounts[mountCmd]) {
-          const hostMountPath = `${process.env.NFS_EXPORT_PATH}/${hostname}${mountPath}`;
-          // Check if the path is already mounted using `mountpoint` command.
-          const isPathMounted = !shellExec(`mountpoint ${hostMountPath}`, { silent: true, stdout: true }).match(
-            'not a mountpoint',
-          );
+      if (workflowsConfig[workflowId].nfs)
+        for (const mountCmd of Object.keys(workflowsConfig[workflowId].nfs.mounts)) {
+          for (const mountPath of workflowsConfig[workflowId].nfs.mounts[mountCmd]) {
+            const hostMountPath = `${process.env.NFS_EXPORT_PATH}/${hostname}${mountPath}`;
+            // Check if the path is already mounted using `mountpoint` command.
+            const isPathMounted = !shellExec(`mountpoint ${hostMountPath}`, { silent: true, stdout: true }).match(
+              'not a mountpoint',
+            );
 
-          if (isPathMounted) {
-            if (!isMounted) isMounted = true; // Set overall mounted status.
-            logger.warn('Nfs path already mounted', mountPath);
-            if (unmount === true) {
-              // Unmount if requested.
-              shellExec(`sudo umount ${hostMountPath}`);
-            }
-          } else {
-            if (mount === true) {
-              // Mount if requested and not already mounted.
-              shellExec(`sudo mount --${mountCmd} ${mountPath} ${hostMountPath}`);
+            if (isPathMounted) {
+              if (!isMounted) isMounted = true; // Set overall mounted status.
+              logger.warn('Nfs path already mounted', mountPath);
+              if (unmount === true) {
+                // Unmount if requested.
+                shellExec(`sudo umount ${hostMountPath}`);
+              }
             } else {
-              logger.warn('Nfs path not mounted', mountPath);
+              if (mount === true) {
+                // Mount if requested and not already mounted.
+                shellExec(`sudo mount --${mountCmd} ${mountPath} ${hostMountPath}`);
+              } else {
+                logger.warn('Nfs path not mounted', mountPath);
+              }
             }
           }
         }
-      }
       return { isMounted };
     },
 
@@ -2169,6 +2196,19 @@ udp-port = 32766
       );
       logger.info('NFS configuration written.');
 
+      // Set ownership and permissions for the NFS host path.
+      shellExec(`sudo chown -R root:root ${nfsHostPath}`);
+      shellExec(`sudo chmod -R 755 ${nfsHostPath}`);
+
+      //       shellExec(`sudo find ${nfsHostPath} -type d -exec chmod 755 {} +`);
+      //       shellExec(`sudo find ${nfsHostPath} -type f -exec chmod 644 {} +`);
+
+      //       shellExec(`sudo iptables -I INPUT 1 -p tcp --dport 2049 -j ACCEPT
+      // sudo iptables -I INPUT 1 -p udp --dport 2049 -j ACCEPT
+      // sudo iptables -I INPUT 1 -p tcp --dport 111 -j ACCEPT
+      // sudo iptables -I INPUT 1 -p udp --dport 111 -j ACCEPT
+      // sudo iptables -I INPUT 1 -m state --state NEW -p tcp -m multiport --dports 2049,111,32765,32767 -j ACCEPT`);
+
       logger.info('Reloading NFS exports...');
       shellExec(`sudo exportfs -rav`);
 
@@ -2278,6 +2318,12 @@ udp-port = 32766
       switch (workflowId) {
         case 'rpi4mb2Disk':
         case 'rpi4mb':
+          // Instructions: Flash sd with Raspberry Pi OS lite and update:
+          // EEPROM (Electrically Erasable Programmable Read-Only Memory) like microcontrollers
+          // sudo rpi-eeprom-config --apply /boot/firmware/boot.conf
+          // sudo reboot
+          // vcgencmd bootloader_config
+          // shutdown -h now
           return `[all]
 BOOT_UART=0
 WAKE_ON_GPIO=1
@@ -2330,7 +2376,6 @@ GATEWAY=${gateway}`;
 
     /**
      * @method loadWorkflowsConfig
-     * @namespace UnderpostBaremetal.API
      * @description Loads the commission workflows configuration from commission-workflows.json.
      * Each workflow defines specific parameters like system provisioning type,
      * kernel version, Chrony settings, debootstrap image details, and NFS mounts.     *
