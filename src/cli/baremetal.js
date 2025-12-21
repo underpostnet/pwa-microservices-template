@@ -73,6 +73,8 @@ class UnderpostBaremetal {
      * @param {boolean} [options.clearDiscovered=false] - Flag to clear discovered machines from MAAS before commissioning.
      * @param {boolean} [options.cloudInitUpdate=false] - Flag to update cloud-init configuration on the baremetal machine.
      * @param {boolean} [options.commission=false] - Flag to commission the baremetal machine.
+     * @param {number} [options.bootstrapHttpServerPort=8888] - Port for the bootstrap HTTP server.
+     * @param {string} [options.bootstrapHttpServerPath='./public/localhost'] - Path for the bootstrap HTTP server files.
      * @param {string} [options.isoUrl=''] - Uses a custom ISO URL for baremetal machine commissioning.
      * @param {boolean} [options.ubuntuToolsBuild=false] - Builds ubuntu tools for chroot environment.
      * @param {boolean} [options.ubuntuToolsTest=false] - Tests ubuntu tools in chroot environment.
@@ -113,6 +115,8 @@ class UnderpostBaremetal {
         cloudInitUpdate: false,
         cloudInit: false,
         commission: false,
+        bootstrapHttpServerPort: 8888,
+        bootstrapHttpServerPath: './public/localhost',
         isoUrl: '',
         ubuntuToolsBuild: false,
         ubuntuToolsTest: false,
@@ -176,8 +180,10 @@ class UnderpostBaremetal {
       // Define the TFTP root prefix path based
       const tftpRootPath = `${process.env.TFTP_ROOT}/${tftpPrefix}`;
 
-      // Define the cloud-init directory path.
-      const cloudInitDir = `${tftpRootPath}/cloud-init`;
+      // Define the bootstrap HTTP server path.
+      const bootstrapHttpServerPath = options.bootstrapHttpServerPath
+        ? options.bootstrapHttpServerPath
+        : `/tmp/bootstrap-http-server/${workflowId}`;
 
       // Capture metadata for the callback execution, useful for logging and auditing.
       const callbackMetaData = {
@@ -186,6 +192,7 @@ class UnderpostBaremetal {
         runnerHost: { architecture: UnderpostBaremetal.API.getHostArch().alias, ip: getLocalIPv4Address() },
         nfsHostPath,
         tftpRootPath,
+        bootstrapHttpServerPath,
       };
 
       // Log the initiation of the baremetal callback with relevant metadata.
@@ -401,9 +408,9 @@ rm -rf ${artifacts.join(' ')}`);
       }
 
       if (options.logs === 'cloud-init-config') {
-        shellExec(`cat ${cloudInitDir}/user-data`);
-        shellExec(`cat ${cloudInitDir}/meta-data`);
-        shellExec(`cat ${cloudInitDir}/vendor-data`);
+        shellExec(`cat ${bootstrapHttpServerPath}/${hostname}/cloud-init/user-data`);
+        shellExec(`cat ${bootstrapHttpServerPath}/${hostname}/cloud-init/meta-data`);
+        shellExec(`cat ${bootstrapHttpServerPath}/${hostname}/cloud-init/vendor-data`);
         return;
       }
 
@@ -676,6 +683,8 @@ rm -rf ${artifacts.join(' ')}`);
             dnsServer,
             networkInterfaceName,
             fileSystemUrl: kernelFilesPaths.isoUrl,
+            bootstrapHttpServerPort:
+              options.bootstrapHttpServerPort || workflowsConfig[workflowId].bootstrapHttpServerPort || 8888,
             type,
             cloudInit: options.cloudInit,
           });
@@ -708,7 +717,12 @@ rm -rf ${artifacts.join(' ')}`);
         shellExec(`sudo chown -R $(whoami):$(whoami) ${process.env.TFTP_ROOT}`);
         shellExec(`sudo sudo chmod 755 ${process.env.TFTP_ROOT}`);
 
-        UnderpostBaremetal.API.httpBootServerRunnerFactory();
+        UnderpostBaremetal.API.httpBootstrapServerRunnerFactory({
+          hostname,
+          bootstrapHttpServerPath,
+          bootstrapHttpServerPort:
+            options.bootstrapHttpServerPort || workflowsConfig[workflowId].bootstrapHttpServerPort,
+        });
       }
 
       if (options.cloudInit || options.cloudInitUpdate) {
@@ -732,12 +746,20 @@ rm -rf ${artifacts.join(' ')}`);
           authCredentials,
         );
 
-        shellExec(`mkdir -p ${cloudInitDir}`);
-        fs.writeFileSync(`${cloudInitDir}/user-data`, `#cloud-config\n${cloudConfigSrc}`, 'utf8');
-        fs.writeFileSync(`${cloudInitDir}/meta-data`, `instance-id: ${hostname}\nlocal-hostname: ${hostname}`, 'utf8');
-        fs.writeFileSync(`${cloudInitDir}/vendor-data`, ``, 'utf8');
+        shellExec(`mkdir -p ${bootstrapHttpServerPath}`);
+        fs.writeFileSync(
+          `${bootstrapHttpServerPath}/${hostname}/cloud-init/user-data`,
+          `#cloud-config\n${cloudConfigSrc}`,
+          'utf8',
+        );
+        fs.writeFileSync(
+          `${bootstrapHttpServerPath}/${hostname}/cloud-init/meta-data`,
+          `instance-id: ${hostname}\nlocal-hostname: ${hostname}`,
+          'utf8',
+        );
+        fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/vendor-data`, ``, 'utf8');
 
-        logger.info(`Cloud-init files written to ${cloudInitDir}`);
+        logger.info(`Cloud-init files written to ${bootstrapHttpServerPath}`);
         if (options.cloudInitUpdate) return;
       }
 
@@ -1223,27 +1245,42 @@ menuentry '${menuentryStr}' {
     },
 
     /**
-     * @method httpBootServerRunnerFactory
-     * @description Starts a Python HTTP server to serve boot files (like squashfs) which are too large for TFTP.
-     * It also configures iptables to allow access.
+     * @method httpBootstrapServerRunnerFactory
+     * @description Starts a simple HTTP server to serve boot files for network booting.
+     * @param {object} options - Options for the HTTP server.
+     * @param {string} hostname - The hostname of the client machine.
+     * @param {string} options.bootstrapHttpServerPath - The path to serve files from (default: './public/localhost').
+     * @param {number} options.bootstrapHttpServerPort - The port on which to start the HTTP server (default: 8888).
      * @memberof UnderpostBaremetal
      * @returns {void}
      */
-    httpBootServerRunnerFactory() {
-      // Start HTTP server to serve squashfs (TFTP is unreliable for large files like 400MB squashfs)
-      // Kill any existing HTTP server on port 8888
-      shellExec(`sudo pkill -f 'python3 -m http.server 8888' || true`, { silent: true });
-      // Start Python HTTP server in background to serve TFTP root
+    httpBootstrapServerRunnerFactory(
+      options = { hostname: 'localhost', bootstrapHttpServerPath: './public/localhost', bootstrapHttpServerPort: 8888 },
+    ) {
+      const port = options.bootstrapHttpServerPort || 8888;
+      const bootstrapHttpServerPath = options.bootstrapHttpServerPath || './public/localhost';
+      const hostname = options.hostname || 'localhost';
+
+      shellExec(`mkdir -p ${bootstrapHttpServerPath}/${hostname}/cloud-init`);
+
+      // Kill any existing HTTP server
+      shellExec(`sudo pkill -f 'python3 -m http.server ${port}' || true`, { silent: true });
+
       shellExec(
-        `cd ${process.env.TFTP_ROOT} && nohup python3 -m http.server 8888 --bind 0.0.0.0 > /tmp/http-boot-server.log 2>&1 &`,
+        `cd ${bootstrapHttpServerPath} && nohup python3 -m http.server ${port} --bind 0.0.0.0 > /tmp/http-boot-server.log 2>&1 &`,
         { silent: true, async: true },
       );
-      // Configure iptables to allow incoming LAN connections on port 8888
-      shellExec(`sudo iptables -I INPUT 1 -p tcp -s 192.168.1.0/24 --dport 8888 -m conntrack --ctstate NEW -j ACCEPT`);
-      // Option for any host:
-      // sudo iptables -I INPUT 1 -p tcp --dport 8888 -m conntrack --ctstate NEW -j ACCEPT
 
-      logger.info(`Started HTTP server on port 8888 serving ${process.env.TFTP_ROOT} for squashfs fetching`);
+      // Configure iptables to allow incoming LAN connections
+      shellExec(
+        `sudo iptables -I INPUT 1 -p tcp -s 192.168.1.0/24 --dport ${port} -m conntrack --ctstate NEW -j ACCEPT`,
+      );
+      // Option for any host:
+      // sudo iptables -I INPUT 1 -p tcp --dport ${port} -m conntrack --ctstate NEW -j ACCEPT
+      shellExec(`sudo chown -R $(whoami):$(whoami) ${bootstrapHttpServerPath}`);
+      shellExec(`sudo sudo chmod 755 ${bootstrapHttpServerPath}`);
+
+      logger.info(`Started Bootstrap Http Server on port ${port}`);
     },
 
     /**
@@ -1297,6 +1334,7 @@ menuentry '${menuentryStr}' {
      * @param {string} options.dnsServer - The DNS server address.
      * @param {string} options.networkInterfaceName - The name of the network interface.
      * @param {string} options.fileSystemUrl - The URL of the root filesystem.
+     * @param {number} options.bootstrapHttpServerPort - The port of the bootstrap HTTP server.
      * @param {string} options.type - The type of boot ('iso-ram', 'chroot', 'iso-nfs', etc.).
      * @param {boolean} options.cloudInit - Whether to include cloud-init parameters.
      * @returns {object} An object containing the constructed command line string.
@@ -1313,6 +1351,7 @@ menuentry '${menuentryStr}' {
         dnsServer: '',
         networkInterfaceName: '',
         fileSystemUrl: '',
+        bootstrapHttpServerPort: 8888,
         type: '',
         cloudInit: false,
       },
@@ -1328,6 +1367,7 @@ menuentry '${menuentryStr}' {
         dnsServer,
         networkInterfaceName,
         fileSystemUrl,
+        bootstrapHttpServerPort,
         type,
         cloudInit,
       } = options;
@@ -1397,7 +1437,7 @@ menuentry '${menuentryStr}' {
       const baseNfsParams = [`netboot=nfs`];
 
       if (cloudInit) {
-        kernelParams.push(`ds=nocloud-net;s=http://${ipFileServer}:8888/${hostname}/cloud-init/`);
+        kernelParams.push(`ds=nocloud-net;s=http://${ipFileServer}:${bootstrapHttpServerPort}/${hostname}/cloud-init/`);
       }
 
       let cmd = [];
