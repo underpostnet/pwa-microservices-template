@@ -379,6 +379,17 @@ rm -rf ${artifacts.join(' ')}`);
         return;
       }
 
+      if (options.logs === 'dhcp-lease') {
+        shellExec(`cat /var/snap/maas/common/maas/dhcp/dhcpd.leases`);
+        shellExec(`cat /var/snap/maas/common/maas/dhcp/dhcpd.pid`);
+        return;
+      }
+
+      if (options.logs === 'dhcp-lan') {
+        shellExec(`sudo tcpdump -l -n -i any -s0 -vv 'udp and (port 67 or 68)'`);
+        return;
+      }
+
       if (options.logs === 'cloud-init') {
         shellExec(`tail -f -n 900 ${nfsHostPath}/var/log/cloud-init.log`);
         return;
@@ -480,7 +491,6 @@ rm -rf ${artifacts.join(' ')}`);
           workflowId,
           mount: true,
         });
-        logger.info('Is mount', isMounted);
         return;
       }
 
@@ -492,7 +502,6 @@ rm -rf ${artifacts.join(' ')}`);
           workflowId,
           unmount: true,
         });
-        logger.info('Is mount', isMounted);
         return;
       }
 
@@ -502,9 +511,10 @@ rm -rf ${artifacts.join(' ')}`);
           hostname,
           nfsHostPath,
           workflowId,
-          mount: true,
+          unmount: true,
         });
-        logger.info('Is mount', isMounted);
+
+        if (isMounted) throw new Error(`NFS path ${nfsHostPath} is currently mounted. Please unmount before building.`);
 
         // Clean and create the NFS host path.
         shellExec(`sudo rm -rf ${nfsHostPath}/*`);
@@ -664,11 +674,13 @@ rm -rf ${artifacts.join(' ')}`);
 
           const grubCfg = UnderpostBaremetal.API.grubFactory({
             menuentryStr,
-            kernelPath: `${hostname}/pxe/vmlinuz-efi`,
-            initrdPath: `${hostname}/pxe/initrd.img`,
+            kernelPath: `/${tftpPrefix}/pxe/vmlinuz-efi`,
+            initrdPath: `/${tftpPrefix}/pxe/initrd.img`,
             cmd,
             tftpIp: callbackMetaData.runnerHost.ip,
           });
+          shellExec(`mkdir -p ${process.env.TFTP_ROOT}/grub`);
+          fs.writeFileSync(`${process.env.TFTP_ROOT}/grub/grub.cfg`, grubCfg, 'utf8');
           shellExec(`mkdir -p ${tftpRootPath}/pxe/grub`);
           fs.writeFileSync(`${tftpRootPath}/pxe/grub/grub.cfg`, grubCfg, 'utf8');
 
@@ -685,7 +697,7 @@ rm -rf ${artifacts.join(' ')}`);
         UnderpostBaremetal.API.efiGrubModulesFactory({ image: { architecture: grubArch } });
 
         // Set ownership and permissions for TFTP root.
-        shellExec(`sudo chown -R root:root ${process.env.TFTP_ROOT}`);
+        shellExec(`sudo chown -R $(whoami):$(whoami) ${process.env.TFTP_ROOT}`);
         shellExec(`sudo sudo chmod 755 ${process.env.TFTP_ROOT}`);
 
         UnderpostBaremetal.API.httpBootServerRunnerFactory();
@@ -798,7 +810,6 @@ rm -rf ${artifacts.join(' ')}`);
             workflowId,
             mount: true,
           });
-          logger.info('Is mount', isMounted);
           if (!isMounted) throw new Error('NFS root filesystem is not mounted');
         }
 
@@ -1313,13 +1324,14 @@ menuentry '${menuentryStr}' {
         cloudInit,
       } = options;
 
-      const ipParam =
-        `ip=${ipClient}:${ipFileServer}:${ipDhcpServer}:${netmask}:${hostname}` +
-        `:${networkInterfaceName ? networkInterfaceName : 'eth0'}:${ipConfig}:${dnsServer}`;
+      const ipParam = true
+        ? `ip=${ipClient}:${ipFileServer}:${ipDhcpServer}:${netmask}:${hostname}` +
+          `:${networkInterfaceName ? networkInterfaceName : 'eth0'}:${ipConfig}:${dnsServer}`
+        : 'ip=dhcp';
+
       const nfsOptions = `${
         type === 'chroot'
           ? [
-              'rw',
               'tcp',
               'nfsvers=3',
               'nolock',
@@ -1345,16 +1357,13 @@ menuentry '${menuentryStr}' {
       const nfsRootParam = `nfsroot=${ipFileServer}:${process.env.NFS_EXPORT_PATH}/${hostname}${nfsOptions ? `,${nfsOptions}` : ''}`;
 
       // https://manpages.ubuntu.com/manpages/noble/man7/casper.7.html
-      const netBootParams = [`netboot=url`];
+      const netBootParams = [`boot=casper`, `netboot=url`];
       if (fileSystemUrl) netBootParams.push(`url=${fileSystemUrl.replace('https', 'http')}`);
-      const nfsParams = [`boot=casper`];
+      const nfsParams = [`boot=casper`, `netboot=nfs`];
       const baseQemuNfsRootParams = [`root=/dev/nfs`];
       const qemuNfsRootParams = [
         `rootfstype=nfs`,
-        `rootwait`,
-        `fixrtc`,
         `initrd=initrd.img`,
-        `netboot=nfs`,
         `init=/sbin/init`,
         // `systemd.mask=systemd-network-generator.service`,
         // `systemd.mask=systemd-networkd.service`,
@@ -1363,10 +1372,10 @@ menuentry '${menuentryStr}' {
       ];
 
       const kernelParams = [
-        `rw`,
-        // `ro`,
         `ignore_uuid`,
+        `rootwait`,
         `ipv6.disable=1`,
+        `fixrtc`,
         // `console=serial0,115200`,
         // `console=tty1`,
         // `casper-getty`,
@@ -1380,10 +1389,14 @@ menuentry '${menuentryStr}' {
         // `ramdisk_size=3550000`,
         // `cma=120M`,
         // `root=/dev/sda1`, // rpi4 usb port unit
-        // `fixrtc`,
         // `overlayroot=tmpfs`,
         // `overlayroot_cfgdisk=disabled`,
         // `ds=nocloud-net;s=http://${ipHost}:8888/${hostname}/pxe/`,
+      ];
+
+      const permissionsParams = [
+        `rw`,
+        // `ro`
       ];
 
       if (cloudInit) {
@@ -1392,13 +1405,21 @@ menuentry '${menuentryStr}' {
 
       let cmd = [];
       if (type === 'iso-ram') {
-        cmd = [ipParam, ...netBootParams, ...kernelParams];
+        cmd = [ipParam, ...netBootParams, ...permissionsParams, ...kernelParams];
       } else if (type === 'chroot') {
-        cmd = [...baseQemuNfsRootParams, nfsRootParam, ipParam, ...qemuNfsRootParams, ...kernelParams];
+        cmd = [
+          ipParam,
+          ...nfsParams,
+          ...baseQemuNfsRootParams,
+          nfsRootParam,
+          ...permissionsParams,
+          ...qemuNfsRootParams,
+          ...kernelParams,
+        ];
       } else if (type === 'iso-nfs') {
-        cmd = [ipParam, nfsRootParam, ...nfsParams, ...kernelParams];
+        cmd = [ipParam, ...nfsParams, nfsRootParam, ...permissionsParams, ...kernelParams];
       } else {
-        cmd = [ipParam, nfsRootParam, ...nfsParams, ...kernelParams];
+        cmd = [ipParam, ...nfsParams, nfsRootParam, ...permissionsParams, ...kernelParams];
       }
 
       const cmdStr = cmd.join(' ');
@@ -1431,9 +1452,6 @@ menuentry '${menuentryStr}' {
           }),
         );
 
-        // Log discovered IPs for visibility.
-        console.log(discoveries.map((d) => d.ip).join(' | '));
-
         // Iterate through discoveries to find a matching MAC address.
         for (const discovery of discoveries) {
           const machine = {
@@ -1459,13 +1477,13 @@ menuentry '${menuentryStr}' {
             'mac discovered:'.green + machine.mac_addresses,
             'ip target:'.green + ipAddress,
             'ip discovered:'.green + discovery.ip,
-            'hostname:'.green + machine.hostname,
+            'hostname:'.blue + machine.hostname,
           );
 
-          if (machine.mac_addresses === macAddress && (!ipAddress || discovery.ip === ipAddress))
+          if (discovery.ip === ipAddress)
             try {
               machine.hostname = `${hostname}`;
-              machine.mac_address = macAddress;
+              // machine.mac_address = macAddress;
 
               logger.info('Machine discovered! Creating in MAAS...', machine);
 
@@ -1705,6 +1723,7 @@ EOF`);
       if (mount) UnderpostBaremetal.API.mountBinfmtMisc();
       let isMounted = false;
       const mountCmds = [];
+      const currentMounts = [];
       const workflowsConfig = UnderpostBaremetal.API.loadWorkflowsConfig();
       if (!workflowsConfig[workflowId]) {
         throw new Error(`Workflow configuration not found for ID: ${workflowId}`);
@@ -1724,6 +1743,7 @@ EOF`);
             );
 
             if (isPathMounted) {
+              currentMounts.push(mountPath);
               if (!isMounted) isMounted = true; // Set overall mounted status.
               logger.warn('Nfs path already mounted', mountPath);
               if (unmount === true) {
@@ -1748,8 +1768,9 @@ EOF`);
         }
         for (const mountCmd of mountCmds) shellExec(mountCmd);
         if (mount) isMounted = true;
+        logger.info('Current mounts', currentMounts);
       }
-      return { isMounted };
+      return { isMounted, currentMounts };
     },
 
     /**
@@ -2129,7 +2150,7 @@ TFTP_PREFIX_STR=${tftpPrefixStr}/
 # Manually override Ethernet MAC address
 # ─────────────────────────────────────────────────────────────
 
-MAC_ADDRESS=${macAddress}
+#MAC_ADDRESS=${macAddress}
 
 # OTP MAC address override
 #MAC_ADDRESS_OTP=0,1
@@ -2137,7 +2158,7 @@ MAC_ADDRESS=${macAddress}
 # ─────────────────────────────────────────────────────────────
 # Static IP configuration (bypasses DHCP completely)
 # ─────────────────────────────────────────────────────────────
-CLIENT_IP=${clientIp}
+#CLIENT_IP=${clientIp}
 SUBNET=${subnet}
 GATEWAY=${gateway}`;
       } else logger.warn(`No boot configuration factory defined for workflow ID: ${workflowId}`);
