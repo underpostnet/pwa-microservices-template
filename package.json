@@ -22,7 +22,8 @@
         "install-underpost": "cp -a $(npm root -g)/underpost/node_modules ./node_modules && npm install --only=dev --ignore-scripts",
         "install": "npm run install-global && npm run install-test",
         "prettier": "prettier --write .",
-        "fix": "npm audit fix --force && npm audit"
+        "fix": "npm audit fix --force && npm audit",
+        "baremetal": "node bin baremetal --dev --commission --clear-discovered --remove-machines all --ls"
     },
     "bin": {
         "underpost": "bin/index.js"

@@ -59,6 +59,7 @@ class UnderpostBaremetal {
      * @param {boolean} [options.dev=false] - Development mode flag.
      * @param {boolean} [options.controlServerInstall=false] - Flag to install the control server (e.g., MAAS).
      * @param {boolean} [options.controlServerUninstall=false] - Flag to uninstall the control server.
+     * @param {boolean} [options.controlServerRestart=false] - Flag to restart the control server.
      * @param {boolean} [options.controlServerDbInstall=false] - Flag to install the control server's database.
      * @param {boolean} [options.controlServerDbUninstall=false] - Flag to uninstall the control server's database.
      * @param {string} [options.mac=''] - MAC address of the baremetal machine.
@@ -72,7 +73,11 @@ class UnderpostBaremetal {
      * @param {boolean} [options.clearDiscovered=false] - Flag to clear discovered machines from MAAS before commissioning.
      * @param {boolean} [options.cloudInitUpdate=false] - Flag to update cloud-init configuration on the baremetal machine.
      * @param {boolean} [options.commission=false] - Flag to commission the baremetal machine.
-     * @param {boolean} [options.useLiveIso=false] - Flag to use Ubuntu live ISO for commissioning instead of disk-based image.
+     * @param {string} [options.isoUrl=''] - Uses a custom ISO URL for baremetal machine commissioning.
+     * @param {boolean} [options.ubuntuToolsBuild=false] - Builds ubuntu tools for chroot environment.
+     * @param {boolean} [options.ubuntuToolsTest=false] - Tests ubuntu tools in chroot environment.
+     * @param {string} [options.bootcmd=''] - Comma-separated list of boot commands to execute.
+     * @param {string} [options.runcmd=''] - Comma-separated list of run commands to execute.
      * @param {boolean} [options.nfsBuild=false] - Flag to build the NFS root filesystem.
      * @param {boolean} [options.nfsMount=false] - Flag to mount the NFS root filesystem.
      * @param {boolean} [options.nfsUnmount=false] - Flag to unmount the NFS root filesystem.
@@ -93,6 +98,7 @@ class UnderpostBaremetal {
         dev: false,
         controlServerInstall: false,
         controlServerUninstall: false,
+        controlServerRestart: false,
         controlServerDbInstall: false,
         controlServerDbUninstall: false,
         mac: '',
@@ -105,8 +111,13 @@ class UnderpostBaremetal {
         removeMachines: '',
         clearDiscovered: false,
         cloudInitUpdate: false,
+        cloudInit: false,
         commission: false,
-        useLiveIso: false,
+        isoUrl: '',
+        ubuntuToolsBuild: false,
+        ubuntuToolsTest: false,
+        bootcmd: '',
+        runcmd: '',
         nfsBuild: false,
         nfsMount: false,
         nfsUnmount: false,
@@ -122,7 +133,7 @@ class UnderpostBaremetal {
       const underpostRoot = options?.dev === true ? '.' : `${npmRoot}/underpost`;
 
       // Set default values if not provided.
-      workflowId = workflowId ? workflowId : 'rpi4mb';
+      workflowId = workflowId ? workflowId : 'rpi4mbarm64-iso-ram';
       hostname = hostname ? hostname : workflowId;
       ipAddress = ipAddress ? ipAddress : '192.168.1.191';
       ipFileServer = ipFileServer ? ipFileServer : getLocalIPv4Address();
@@ -140,8 +151,21 @@ class UnderpostBaremetal {
       // Set default MAC address
       let macAddress = options.mac ? options.mac : '00:00:00:00:00:00';
 
+      const workflowsConfig = UnderpostBaremetal.API.loadWorkflowsConfig();
+
+      if (!workflowsConfig[workflowId]) {
+        throw new Error(`Workflow configuration not found for ID: ${workflowId}`);
+      }
+
+      const tftpPrefix = workflowsConfig[workflowId].tftpPrefix || 'rpi4mb';
       // Define the debootstrap architecture.
       let debootstrapArch;
+
+      // Set debootstrap architecture.
+      if (workflowsConfig[workflowId].type === 'chroot') {
+        const { architecture } = workflowsConfig[workflowId].debootstrap.image;
+        debootstrapArch = architecture;
+      }
 
       // Define the database provider ID.
       const dbProviderId = 'postgresql-17';
@@ -149,8 +173,11 @@ class UnderpostBaremetal {
       // Define the NFS host path based on the environment variable and hostname.
       const nfsHostPath = `${process.env.NFS_EXPORT_PATH}/${hostname}`;
 
-      // Define the TFTP root path based on the environment variable and hostname.
-      const tftpRootPath = `${process.env.TFTP_ROOT}/${hostname}`;
+      // Define the TFTP root prefix path based
+      const tftpRootPath = `${process.env.TFTP_ROOT}/${tftpPrefix}`;
+
+      // Define the cloud-init directory path.
+      const cloudInitDir = `${tftpRootPath}/cloud-init`;
 
       // Capture metadata for the callback execution, useful for logging and auditing.
       const callbackMetaData = {
@@ -352,18 +379,20 @@ rm -rf ${artifacts.join(' ')}`);
         return;
       }
 
-      if (options.logs === 'nfs-cloud') {
+      if (options.logs === 'cloud-init') {
         shellExec(`tail -f -n 900 ${nfsHostPath}/var/log/cloud-init.log`);
         return;
       }
 
-      if (options.logs === 'nfs-machine') {
+      if (options.logs === 'cloud-init-machine') {
         shellExec(`tail -f -n 900 ${nfsHostPath}/var/log/cloud-init-output.log`);
         return;
       }
 
-      if (options.logs === 'nfs-cloud-config') {
-        shellExec(`cat ${nfsHostPath}/etc/cloud/cloud.cfg.d/90_maas.cfg`);
+      if (options.logs === 'cloud-init-config') {
+        shellExec(`cat ${cloudInitDir}/user-data`);
+        shellExec(`cat ${cloudInitDir}/meta-data`);
+        shellExec(`cat ${cloudInitDir}/vendor-data`);
         return;
       }
 
@@ -420,6 +449,12 @@ rm -rf ${artifacts.join(' ')}`);
         return;
       }
 
+      // Handle control server restart.
+      if (options.controlServerRestart === true) {
+        shellExec(`sudo snap restart maas`);
+        return;
+      }
+
       // Handle control server database installation.
       if (options.controlServerDbInstall === true) {
         // Deploy the database provider and manage MAAS database.
@@ -437,33 +472,39 @@ rm -rf ${artifacts.join(' ')}`);
         return;
       }
 
-      const workflowsConfig = UnderpostBaremetal.API.loadWorkflowsConfig();
-      if (!workflowsConfig[workflowId]) {
-        throw new Error(`Workflow configuration not found for ID: ${workflowId}`);
-      }
-
-      // Set debootstrap architecture.
-      if (workflowsConfig[workflowId].nfs) {
-        const { architecture } = workflowsConfig[workflowId].debootstrap.image;
-        debootstrapArch = architecture;
-      }
-
       // Handle NFS mount operation.
       if (options.nfsMount === true) {
-        // Mount binfmt_misc filesystem.
-        UnderpostBaremetal.API.mountBinfmtMisc();
-        UnderpostBaremetal.API.nfsMountCallback({ hostname, workflowId, mount: true });
+        const { isMounted } = UnderpostBaremetal.API.nfsMountCallback({
+          hostname,
+          nfsHostPath,
+          workflowId,
+          mount: true,
+        });
+        logger.info('Is mount', isMounted);
+        return;
       }
 
       // Handle NFS unmount operation.
       if (options.nfsUnmount === true) {
-        UnderpostBaremetal.API.nfsMountCallback({ hostname, workflowId, unmount: true });
+        const { isMounted } = UnderpostBaremetal.API.nfsMountCallback({
+          hostname,
+          nfsHostPath,
+          workflowId,
+          unmount: true,
+        });
+        logger.info('Is mount', isMounted);
+        return;
       }
 
       // Handle NFS root filesystem build operation.
       if (options.nfsBuild === true) {
-        // Check if NFS is already mounted to avoid redundant builds.
-        const { isMounted } = UnderpostBaremetal.API.nfsMountCallback({ hostname, workflowId });
+        const { isMounted } = UnderpostBaremetal.API.nfsMountCallback({
+          hostname,
+          nfsHostPath,
+          workflowId,
+          mount: true,
+        });
+        logger.info('Is mount', isMounted);
 
         // Clean and create the NFS host path.
         shellExec(`sudo rm -rf ${nfsHostPath}/*`);
@@ -508,34 +549,7 @@ rm -rf ${artifacts.join(' ')}`);
           callbackMetaData,
           steps: [`/debootstrap/debootstrap --second-stage`],
         });
-
-        // Mount NFS if it's not already mounted after the build.
-        if (!isMounted) {
-          UnderpostBaremetal.API.nfsMountCallback({ hostname, workflowId, mount: true });
-        }
-
-        // Apply system provisioning steps (base, user, timezone, keyboard).
-        {
-          const { systemProvisioning, kernelLibVersion, chronyc, keyboard } = workflowsConfig[workflowId];
-          const { timezone, chronyConfPath } = chronyc;
-
-          UnderpostBaremetal.API.crossArchRunner({
-            nfsHostPath,
-            debootstrapArch,
-            callbackMetaData,
-            steps: [
-              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].base({
-                kernelLibVersion,
-              }),
-              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].user(),
-              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].timezone({
-                timezone,
-                chronyConfPath,
-              }),
-              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].keyboard(keyboard.layout),
-            ],
-          });
-        }
+        return;
       }
 
       // Fetch boot resources and machines if commissioning or listing.
@@ -578,8 +592,7 @@ rm -rf ${artifacts.join(' ')}`);
 
       // Handle commissioning tasks (placeholder for future implementation).
       if (options.commission === true) {
-        const { firmwares, networkInterfaceName, maas, menuentryStr, nfs, systemProvisioning } =
-          workflowsConfig[workflowId];
+        let { firmwares, networkInterfaceName, maas, menuentryStr, type } = workflowsConfig[workflowId];
         // Use commissioning config (Ubuntu ephemeral) for PXE boot resources
         const commissioningImage = maas.commissioning;
         const resource = resources.find(
@@ -587,7 +600,7 @@ rm -rf ${artifacts.join(' ')}`);
         );
         logger.info('Commissioning resource', resource);
 
-        if (!nfs) {
+        if (type === 'iso-nfs') {
           // Prepare NFS casper path if using NFS boot.
           shellExec(`sudo rm -rf ${nfsHostPath}`);
           shellExec(`mkdir -p ${nfsHostPath}/casper`);
@@ -630,8 +643,9 @@ rm -rf ${artifacts.join(' ')}`);
           // Both NFS and disk-based commissioning use MAAS boot resources.
           const { kernelFilesPaths, resourcesPath } = UnderpostBaremetal.API.kernelFactory({
             resource,
-            useLiveIso: options.useLiveIso ? true : false,
+            type,
             nfsHostPath,
+            isoUrl: options.isoUrl || workflowsConfig[workflowId].isoUrl,
           });
 
           const { cmd } = UnderpostBaremetal.API.kernelCmdBootParamsFactory({
@@ -644,81 +658,26 @@ rm -rf ${artifacts.join(' ')}`);
             dnsServer,
             networkInterfaceName,
             fileSystemUrl: kernelFilesPaths.isoUrl,
-            nfsBoot: nfs ? true : false,
-            systemProvisioning,
+            type,
+            cloudInit: options.cloudInit,
           });
 
-          // Copy EFI bootloaders to TFTP path.
-          const efiFiles = commissioningImage.architecture.match('arm64')
-            ? ['bootaa64.efi', 'grubaa64.efi']
-            : ['bootx64.efi', 'grubx64.efi'];
-          for (const file of efiFiles) {
-            shellExec(`sudo cp -a ${resourcesPath}/${file} ${tftpRootPath}/pxe/${file}`);
-          }
-          // Copy kernel and initrd images to TFTP path.
-          for (const file of Object.keys(kernelFilesPaths)) {
-            if (file == 'isoUrl') continue; // Skip URL entries
-            shellExec(`sudo cp -a ${kernelFilesPaths[file]} ${tftpRootPath}/pxe/${file}`);
-            // If the file is a kernel (vmlinuz-efi) and is gzipped, unzip it for GRUB compatibility on ARM64.
-            // GRUB on ARM64 often crashes with synchronous exception (0x200) if handling large compressed kernels directly.
-            if (file === 'vmlinuz-efi') {
-              const kernelDest = `${tftpRootPath}/pxe/${file}`;
-              const fileType = shellExec(`file ${kernelDest}`, { silent: true }).stdout;
-              if (fileType.includes('gzip compressed data')) {
-                logger.info(`Decompressing kernel ${file} for ARM64 UEFI compatibility...`);
-                shellExec(`sudo mv ${kernelDest} ${kernelDest}.gz`);
-                shellExec(`sudo gunzip ${kernelDest}.gz`);
-              }
-            }
-          }
+          const grubCfg = UnderpostBaremetal.API.grubFactory({
+            menuentryStr,
+            kernelPath: `${hostname}/pxe/vmlinuz-efi`,
+            initrdPath: `${hostname}/pxe/initrd.img`,
+            cmd,
+            tftpIp: callbackMetaData.runnerHost.ip,
+          });
+          shellExec(`mkdir -p ${tftpRootPath}/pxe/grub`);
+          fs.writeFileSync(`${tftpRootPath}/pxe/grub/grub.cfg`, grubCfg, 'utf8');
 
-          // Write GRUB configuration file.
-          if (nfs)
-            fs.writeFileSync(
-              `${process.env.TFTP_ROOT}/grub/grub.cfg`,
-              `
-insmod gzio
-insmod http
-insmod nfs
-set timeout=5
-set default=0
-
-menuentry '${menuentryStr}' {
-  set root=(tftp,${callbackMetaData.runnerHost.ip})
-  echo "Loading kernel..."
-  linux /${hostname}/pxe/vmlinuz-efi ${cmd}
-  echo "Loading initrd..."
-  initrd /${hostname}/pxe/initrd.img
-  echo "Booting..."
-  boot
-}
-
-    `,
-              'utf8',
-            );
-          else
-            fs.writeFileSync(
-              `${process.env.TFTP_ROOT}/grub/grub.cfg`,
-              `
-insmod gzio
-insmod http
-insmod tftp
-set timeout=5
-set default=0
-
-menuentry '${menuentryStr}' {
-  set root=(tftp,${callbackMetaData.runnerHost.ip})
-  echo "Loading kernel..."
-  linux /${hostname}/pxe/vmlinuz-efi ${cmd}
-  echo "Loading initrd..."
-  initrd /${hostname}/pxe/initrd.img
-  echo "Booting..."
-  boot
-}
-
-      `,
-              'utf8',
-            );
+          UnderpostBaremetal.API.updateKernelFiles({
+            commissioningImage,
+            resourcesPath,
+            tftpRootPath,
+            kernelFilesPaths,
+          });
         }
 
         // Pass architecture from commissioning or deployment config
@@ -729,54 +688,143 @@ menuentry '${menuentryStr}' {
         shellExec(`sudo chown -R root:root ${process.env.TFTP_ROOT}`);
         shellExec(`sudo sudo chmod 755 ${process.env.TFTP_ROOT}`);
 
-        // Start HTTP server to serve squashfs (TFTP is unreliable for large files like 400MB squashfs)
-        // Kill any existing HTTP server on port 8888
-        shellExec(`sudo pkill -f 'python3 -m http.server 8888' || true`, { silent: true });
-        // Start Python HTTP server in background to serve TFTP root
-        shellExec(
-          `cd ${process.env.TFTP_ROOT} && nohup python3 -m http.server 8888 --bind 0.0.0.0 > /tmp/http-boot-server.log 2>&1 &`,
-          { silent: true, async: true },
-        );
-        // Configure iptables to allow incoming LAN connections on port 8888
-        shellExec(
-          `sudo iptables -I INPUT 1 -p tcp -s 192.168.1.0/24 --dport 8888 -m conntrack --ctstate NEW -j ACCEPT`,
-        );
-        // Option for any host:
-        // sudo iptables -I INPUT 1 -p tcp --dport 8888 -m conntrack --ctstate NEW -j ACCEPT
+        UnderpostBaremetal.API.httpBootServerRunnerFactory();
+      }
 
-        logger.info(`Started HTTP server on port 8888 serving ${process.env.TFTP_ROOT} for squashfs fetching`);
+      if (options.cloudInit || options.cloudInitUpdate) {
+        const { chronyc, networkInterfaceName } = workflowsConfig[workflowId];
+        const { timezone, chronyConfPath } = chronyc;
+        const authCredentials = UnderpostCloudInit.API.authCredentialsFactory();
+        const { cloudConfigSrc } = UnderpostCloudInit.API.configFactory(
+          {
+            controlServerIp: callbackMetaData.runnerHost.ip,
+            hostname,
+            commissioningDeviceIp: ipAddress,
+            gatewayip: callbackMetaData.runnerHost.ip,
+            mac: macAddress,
+            timezone,
+            chronyConfPath,
+            networkInterfaceName,
+            ubuntuToolsBuild: options.ubuntuToolsBuild,
+            bootcmd: options.bootcmd,
+            runcmd: options.runcmd,
+          },
+          authCredentials,
+        );
+
+        shellExec(`mkdir -p ${cloudInitDir}`);
+        fs.writeFileSync(`${cloudInitDir}/user-data`, `#cloud-config\n${cloudConfigSrc}`, 'utf8');
+        fs.writeFileSync(`${cloudInitDir}/meta-data`, `instance-id: ${hostname}\nlocal-hostname: ${hostname}`, 'utf8');
+        fs.writeFileSync(`${cloudInitDir}/vendor-data`, ``, 'utf8');
+
+        logger.info(`Cloud-init files written to ${cloudInitDir}`);
+        if (options.cloudInitUpdate) return;
+      }
+
+      if (workflowsConfig[workflowId].type === 'chroot') {
+        if (options.ubuntuToolsBuild) {
+          UnderpostCloudInit.API.buildTools({
+            workflowId,
+            nfsHostPath,
+            hostname,
+            callbackMetaData,
+            dev: options.dev,
+          });
+
+          const { chronyc, keyboard } = workflowsConfig[workflowId];
+          const { timezone, chronyConfPath } = chronyc;
+          const systemProvisioning = 'ubuntu';
+
+          UnderpostBaremetal.API.crossArchRunner({
+            nfsHostPath,
+            debootstrapArch,
+            callbackMetaData,
+            steps: [
+              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].base(),
+              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].user(),
+              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].timezone({
+                timezone,
+                chronyConfPath,
+              }),
+              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].keyboard(keyboard.layout),
+            ],
+          });
+        }
+
+        if (options.ubuntuToolsTest)
+          UnderpostBaremetal.API.crossArchRunner({
+            nfsHostPath,
+            debootstrapArch,
+            callbackMetaData,
+            steps: [
+              `chmod +x /underpost/date.sh`,
+              `chmod +x /underpost/keyboard.sh`,
+              `chmod +x /underpost/dns.sh`,
+              `chmod +x /underpost/help.sh`,
+              `chmod +x /underpost/host.sh`,
+              `chmod +x /underpost/test.sh`,
+              `chmod +x /underpost/start.sh`,
+              `chmod +x /underpost/reset.sh`,
+              `chmod +x /underpost/shutdown.sh`,
+              `chmod +x /underpost/device_scan.sh`,
+              `chmod +x /underpost/mac.sh`,
+              `chmod +x /underpost/enlistment.sh`,
+              `sudo chmod 700 ~/.ssh/`, // Set secure permissions for .ssh directory.
+              `sudo chmod 600 ~/.ssh/authorized_keys`, // Set secure permissions for authorized_keys.
+              `sudo chmod 644 ~/.ssh/known_hosts`, // Set permissions for known_hosts.
+              `sudo chmod 600 ~/.ssh/id_rsa`, // Set secure permissions for private key.
+              `sudo chmod 600 /etc/ssh/ssh_host_ed25519_key`, // Set secure permissions for host key.
+              `chown -R root:root ~/.ssh`, // Ensure root owns the .ssh directory.
+              `/underpost/test.sh`,
+            ],
+          });
       }
 
       shellExec(`${underpostRoot}/scripts/nat-iptables.sh`, { silent: true });
       // Rebuild NFS server configuration.
-      UnderpostBaremetal.API.rebuildNfsServer({
-        nfsHostPath,
-      });
+      if (workflowsConfig[workflowId].type === 'iso-nfs' || workflowsConfig[workflowId].type === 'chroot')
+        UnderpostBaremetal.API.rebuildNfsServer({
+          nfsHostPath,
+        });
 
       // Final commissioning steps.
-      if (options.commission === true || options.cloudInitUpdate === true) {
-        const { nfs } = workflowsConfig[workflowId];
-        if (nfs)
-          await UnderpostBaremetal.API.nfsCommissionCallback(
-            workflowId,
-            workflowsConfig,
+      if (options.commission === true) {
+        const { type } = workflowsConfig[workflowId];
+
+        if (type === 'chroot') {
+          const { isMounted } = UnderpostBaremetal.API.nfsMountCallback({
             hostname,
-            macAddress,
-            underpostRoot,
-            ipAddress,
             nfsHostPath,
-            options,
-            callbackMetaData,
-          );
-        else
-          await UnderpostBaremetal.API.diskCommissionCallback(
             workflowId,
-            workflowsConfig,
-            hostname,
-            macAddress,
-            underpostRoot,
-            ipAddress,
+            mount: true,
+          });
+          logger.info('Is mount', isMounted);
+          if (!isMounted) throw new Error('NFS root filesystem is not mounted');
+        }
+
+        const commissionMonitorPayload = {
+          workflowId,
+          macAddress,
+          underpostRoot,
+          maas: workflowsConfig[workflowId].maas,
+          networkInterfaceName: workflowsConfig[workflowId].networkInterfaceName,
+          ipAddress,
+          hostname,
+        };
+
+        logger.info('Waiting for commissioning...', commissionMonitorPayload);
+
+        await UnderpostBaremetal.API.commissionMonitor(commissionMonitorPayload);
+
+        if (type === 'chroot' && options.cloudInit === true) {
+          openTerminal(`node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs cloud-init`);
+          openTerminal(
+            `node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs cloud-init-machine`,
           );
+          shellExec(
+            `node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs cloud-init-config`,
+          );
+        }
       }
     },
 
@@ -790,7 +838,7 @@ menuentry '${menuentryStr}' {
      * @returns {object} An object containing paths to the extracted kernel, initrd, and squashfs.
      * @memberof UnderpostBaremetal
      */
-    downloadUbuntuLiveISO({ resource, architecture, nfsHostPath }) {
+    downloadUbuntuLiveISO({ resource, architecture, nfsHostPath, isoUrl }) {
       const arch = architecture || resource.architecture.split('/')[0];
       const osName = resource.name.split('/')[1]; // e.g., "focal", "jammy", "noble"
 
@@ -819,36 +867,18 @@ menuentry '${menuentryStr}' {
       // Determine ISO filename and URL based on architecture
       // ARM64 ISOs are on cdimage.ubuntu.com, AMD64 on releases.ubuntu.com
       let isoFilename;
-      let isoUrl;
       if (arch === 'arm64') {
         isoFilename = `ubuntu-${version}-live-server-arm64${osName === 'noble' ? '+largemem' : ''}.iso`;
       } else {
         isoFilename = `ubuntu-${version}-live-server-amd64.iso`;
       }
-      isoUrl = `https://cdimage.ubuntu.com/releases/${majorVersion}/release/${isoFilename}`;
+      if (!isoUrl) isoUrl = `https://cdimage.ubuntu.com/releases/${majorVersion}/release/${isoFilename}`;
+      else isoFilename = isoUrl.split('/').pop();
 
-      const isoPath = `${nfsHostPath}/${isoFilename}`;
+      const isoPath = `/var/tmp/ubuntu-live-iso/${isoFilename}`;
       const extractDir = `${nfsHostPath}/casper`;
 
-      if (fs.existsSync(`/var/tmp/ubuntu-live-iso/${isoFilename}`)) {
-        shellExec(`cp -a /var/tmp/ubuntu-live-iso/${isoFilename} ${isoPath}`);
-      }
-
-      // Check if cached ISO exists and is valid (size > 100MB to ensure it's not empty/corrupt)
-      let needsDownload = true;
-      if (fs.existsSync(isoPath)) {
-        const stats = fs.statSync(isoPath);
-        const minValidSize = 100 * 1024 * 1024; // 100MB minimum
-        if (stats.size > minValidSize) {
-          logger.info(`Using cached ISO: ${isoPath} (${(stats.size / 1024 / 1024 / 1024).toFixed(2)} GB)`);
-          needsDownload = false;
-        } else {
-          logger.warn(`Cached ISO appears corrupt or incomplete (${stats.size} bytes), re-downloading...`);
-          shellExec(`rm -f ${isoPath}`);
-        }
-      }
-
-      if (needsDownload) {
+      if (!fs.existsSync(isoPath)) {
         logger.info(`Downloading Ubuntu ${version} live ISO for ${arch}...`);
         logger.info(`URL: ${isoUrl}`);
         logger.info(`This may take a while (typically 1-2 GB)...`);
@@ -886,84 +916,21 @@ menuentry '${menuentryStr}' {
         shellExec(`ls -la ${mountPoint}/casper/ 2>/dev/null || echo "casper directory not found"`, { silent: false });
 
         // Extract casper files
-        const casperFiles = ['vmlinuz', 'initrd'];
-        for (const file of casperFiles) {
-          const sourcePath = `${mountPoint}/casper/${file}`;
-          if (fs.existsSync(sourcePath)) {
-            shellExec(`sudo cp ${sourcePath} ${extractDir}/${file}`);
-            shellExec(`sudo chown $(whoami):$(whoami) ${extractDir}/${file}`);
-            logger.info(`Extracted ${file} from ISO`);
-          } else {
-            logger.warn(`File not found in ISO: ${sourcePath}`);
-            // Try alternative names
-            const altNames =
-              file === 'vmlinuz' ? ['vmlinuz.efi', 'vmlinuz-*'] : ['initrd.lz', 'initrd.gz', 'initrd.img'];
-            for (const altName of altNames) {
-              const altResult = shellExec(`ls ${mountPoint}/casper/${altName} 2>/dev/null | head -1`, {
-                silent: true,
-                stdout: true,
-              });
-              if (altResult.stdout && altResult.stdout.trim()) {
-                const altPath = altResult.stdout.trim();
-                shellExec(`sudo cp ${altPath} ${extractDir}/${file}`);
-                shellExec(`sudo chown $(whoami):$(whoami) ${extractDir}/${file}`);
-                logger.info(`Extracted ${file} from ISO (using ${altPath})`);
-                break;
-              }
-            }
-          }
+        shellExec(`sudo cp -a ${mountPoint}/casper/* ${extractDir}/`);
+        shellExec(`sudo chown -R $(whoami):$(whoami) ${extractDir}`);
+        logger.info(`Extracted casper files from ISO`);
+
+        // Rename kernel and initrd to standard names if needed
+        if (!fs.existsSync(`${extractDir}/vmlinuz`)) {
+          const vmlinuz = shellExec(`ls ${extractDir}/vmlinuz* | head -1`, {
+            silent: true,
+            stdout: true,
+          }).stdout.trim();
+          if (vmlinuz) shellExec(`mv ${vmlinuz} ${extractDir}/vmlinuz`);
         }
-
-        // Extract rootfs squashfs
-        // Ubuntu 24.04+ live-server ISOs may not ship `casper/filesystem.squashfs` and instead use
-        // `ubuntu-server-minimal*.squashfs` (and sometimes other variants). Be resilient here.
-        let squashfsSource = `${mountPoint}/casper/filesystem.squashfs`;
-        if (!fs.existsSync(squashfsSource)) {
-          logger.warn(
-            `filesystem.squashfs not found at ${squashfsSource}; searching for alternative squashfs in casper...`,
-          );
-          // Prefer the minimal rootfs if present, otherwise pick the first squashfs file we find.
-          const candidates = shellExec(
-            `ls ${mountPoint}/casper/ubuntu-server-minimal*.squashfs ${mountPoint}/casper/*.squashfs 2>/dev/null | head -1`,
-            { silent: true, stdout: true },
-          );
-
-          // `shellExec()` may return either a string or an object with `.stdout`.
-          const candidatePath =
-            typeof candidates === 'string'
-              ? candidates.trim()
-              : candidates && typeof candidates.stdout === 'string'
-                ? candidates.stdout.trim()
-                : '';
-
-          if (candidatePath) {
-            squashfsSource = candidatePath;
-            logger.info(`Using squashfs rootfs from ISO: ${squashfsSource}`);
-          }
-        }
-
-        if (fs.existsSync(squashfsSource)) {
-          // shellExec(`sudo cp ${squashfsSource} ${extractDir}/filesystem.squashfs`);
-          // shellExec(`sudo chown $(whoami):$(whoami) ${extractDir}/filesystem.squashfs`);
-          logger.info(`Copying all squashfs layers from ISO...`);
-          shellExec(`sudo cp ${mountPoint}/casper/*.squashfs ${extractDir}/`);
-          shellExec(`sudo chown $(whoami):$(whoami) ${extractDir}/*.squashfs`);
-
-          // Create filesystem.squashfs symlink if it doesn't exist (for newer ISOs with different naming)
-          const filesystemSquashfs = `${extractDir}/filesystem.squashfs`;
-          if (!fs.existsSync(filesystemSquashfs)) {
-            // Extract the basename from the squashfsSource path we found earlier
-            const squashfsBasename = squashfsSource.split('/').pop();
-            logger.info(`Creating filesystem.squashfs symlink to ${squashfsBasename}`);
-            shellExec(`ln -s ${squashfsBasename} ${filesystemSquashfs}`);
-          }
-
-          logger.info(`Extracted squashfs rootfs from ISO to ${extractDir}/filesystem.squashfs`);
-        } else {
-          logger.error(`No usable squashfs rootfs found in ISO (last checked: ${squashfsSource})`);
-          // List what's in casper to help debug
-          shellExec(`ls -la ${mountPoint}/casper/`, { silent: false });
-          throw new Error(`filesystem.squashfs not found in ISO`);
+        if (!fs.existsSync(`${extractDir}/initrd`)) {
+          const initrd = shellExec(`ls ${extractDir}/initrd* | head -1`, { silent: true, stdout: true }).stdout.trim();
+          if (initrd) shellExec(`mv ${initrd} ${extractDir}/initrd`);
         }
       } finally {
         // Unmount ISO
@@ -973,21 +940,9 @@ menuentry '${menuentryStr}' {
         shellExec(`rmdir ${mountPoint}`, { silent: true });
       }
 
-      // Verify extracted files exist
-      const requiredFiles = ['vmlinuz', 'initrd', 'filesystem.squashfs'];
-      for (const file of requiredFiles) {
-        const filePath = `${extractDir}/${file}`;
-        if (!fs.existsSync(filePath)) {
-          throw new Error(`Required file not extracted: ${filePath}`);
-        }
-        const stats = fs.statSync(filePath);
-        logger.info(`Verified ${file}: ${(stats.size / 1024 / 1024).toFixed(2)} MB`);
-      }
-
       return {
         'vmlinuz-efi': `${extractDir}/vmlinuz`,
         'initrd.img': `${extractDir}/initrd`,
-        'filesystem.squashfs': `${extractDir}/filesystem.squashfs`,
         isoUrl,
       };
     },
@@ -1002,15 +957,16 @@ menuentry '${menuentryStr}' {
      * @returns {object} An object containing paths to the kernel, initrd, and root filesystem.
      * @memberof UnderpostBaremetal
      */
-    kernelFactory({ resource, useLiveIso = false, nfsHostPath }) {
+    kernelFactory({ resource, type, nfsHostPath, isoUrl }) {
       // For disk-based commissioning (casper), use Ubuntu live ISO files
-      if (useLiveIso) {
+      if (type === 'iso-ram' || type === 'iso-nfs') {
         logger.info('Using Ubuntu live ISO for casper boot (disk-based commissioning)');
         const arch = resource.architecture.split('/')[0];
         const kernelFilesPaths = UnderpostBaremetal.API.downloadUbuntuLiveISO({
           resource,
           architecture: arch,
           nfsHostPath,
+          isoUrl,
         });
         const resourcesPath = `/var/snap/maas/common/maas/image-storage/bootloaders/uefi/${arch}`;
         return { kernelFilesPaths, resourcesPath };
@@ -1181,155 +1137,6 @@ menuentry '${menuentryStr}' {
     },
 
     /**
-     * @method diskCommissionCallback
-     * @description Handles the commissioning process for a baremetal machine using disk-based provisioning.
-     * This method uses traditional MAAS PXE boot to provision the machine to the largest available disk.
-     * For ARM64 RPi4, it relies on pftf/RPi4 UEFI firmware to enable PXE boot with GRUB.
-     * @param {string} workflowId - The identifier for the workflow configuration to use.
-     * @param {object} workflowsConfig - The complete set of workflow configurations.
-     * @param {string} hostname - The hostname for the machine.
-     * @param {string} macAddress - The MAC address of the machine.
-     * @param {string} underpostRoot - The root directory of the Underpost project.
-     * @memberof UnderpostBaremetal
-     * @returns {Promise<void>}
-     */
-    async diskCommissionCallback(workflowId, workflowsConfig, hostname, macAddress, underpostRoot, ipAddress) {
-      const workflowConfig = workflowsConfig[workflowId];
-      const { maas, networkInterfaceName, chronyc, keyboard, systemProvisioning } = workflowConfig;
-      const { timezone, chronyConfPath } = chronyc;
-      const architecture = maas.commissioning.architecture;
-
-      // Generate cloud-init user-data for post-deployment configuration
-      // This will be used by MAAS during the deployment phase (after commissioning)
-      const sshPublicKey = fs.readFileSync(`/home/dd/engine/engine-private/deploy/id_rsa.pub`, 'utf8').trim();
-      const userDataContent = UnderpostCloudInit.API.diskDeploymentUserDataFactory({
-        hostname,
-        timezone,
-        chronyConfPath,
-        ntpServer: process.env.MAAS_NTP_SERVER || '0.pool.ntp.org',
-        keyboardLayout: keyboard?.layout || 'us',
-        sshPublicKey,
-        adminUsername: process.env.MAAS_ADMIN_USERNAME,
-        systemProvisioning,
-        architecture,
-      });
-
-      // Save user-data for later use during deployment
-      const userDataPath = `/tmp/maas-userdata-${hostname}.yaml`;
-      fs.writeFileSync(userDataPath, userDataContent, 'utf8');
-      logger.info(`Cloud-init user-data saved to: ${userDataPath}`);
-      logger.info('This will be applied by MAAS during deployment phase');
-
-      // For disk-based commissioning, we rely on MAAS's built-in PXE boot mechanism.
-      // The machine should already be configured to PXE boot via the GRUB configuration
-      // created in the commission section above.
-
-      // Monitor for the machine to appear in MAAS discoveries and initiate commissioning.
-      await UnderpostBaremetal.API.diskCommissionMonitor({
-        macAddress,
-        hostname,
-        maas,
-        networkInterfaceName,
-        underpostRoot,
-        userDataPath,
-        ipAddress,
-      });
-    },
-
-    /**
-     * @method nfsCommissionCallback
-     * @description Handles the commissioning process for a baremetal machine using NFS.
-     * This method configures cloud-init, applies necessary network settings,
-     * and monitors the commissioning status of the machine.
-     * @param {string} workflowId - The identifier for the workflow configuration to use.
-     * @param {object} workflowsConfig - The complete set of workflow configurations.
-     * @param {string} hostname - The hostname for the machine.
-     * @param {string} macAddress - The MAC address of the machine.
-     * @param {string} underpostRoot - The root directory of the Underpost project.
-     * @param {string} ipAddress - The IP address assigned to the machine.
-     * @param {string} nfsHostPath - The NFS host path where the root filesystem is located.
-     * @param {object} [options] - Additional options for the commissioning process.
-     * @param {boolean} [options.cloudInitUpdate=false] - Flag indicating whether to update cloud-init configuration only.
-     * @param {object} callbackMetaData - Metadata about the callback environment.
-     * @memberof UnderpostBaremetal
-     * @returns {Promise<void>}
-     */
-    async nfsCommissionCallback(
-      workflowId,
-      workflowsConfig,
-      hostname,
-      macAddress,
-      underpostRoot,
-      ipAddress,
-      nfsHostPath,
-      options = {
-        cloudInitUpdate,
-      },
-      callbackMetaData,
-    ) {
-      const { debootstrap, networkInterfaceName, chronyc, maas, systemProvisioning } = workflowsConfig[workflowId];
-      const { timezone, chronyConfPath } = chronyc;
-
-      // If debian based Build cloud-init tools.
-      if (systemProvisioning === 'ubuntu')
-        UnderpostCloudInit.API.buildTools({
-          workflowId,
-          nfsHostPath,
-          hostname,
-          callbackMetaData,
-          dev: options.dev,
-        });
-
-      // Get MAAS credentials for cloud-init
-      const authCredentials = UnderpostCloudInit.API.authCredentialsFactory();
-
-      const { cloudConfigPath, cloudConfigSrc } = UnderpostCloudInit.API.configFactory(
-        {
-          controlServerIp: callbackMetaData.runnerHost.ip,
-          hostname,
-          commissioningDeviceIp: ipAddress,
-          gatewayip: callbackMetaData.runnerHost.ip,
-          mac: macAddress, // Updated MAC address.
-          timezone,
-          chronyConfPath,
-          networkInterfaceName,
-        },
-        authCredentials,
-      );
-      logger.info('Generated cloud-init configuration for commissioning');
-      console.log(cloudConfigSrc.yellow);
-
-      // Run cloud-init reset and configure cloud-init.
-      UnderpostBaremetal.API.crossArchRunner({
-        nfsHostPath,
-        debootstrapArch: debootstrap.image.architecture,
-        callbackMetaData,
-        steps: [
-          `cat <<EOF_MAAS_CFG > ${cloudConfigPath}
-${cloudConfigSrc}
-EOF_MAAS_CFG`,
-        ],
-      });
-
-      if (options.cloudInitUpdate === true) return;
-
-      // Apply NAT iptables rules.
-      shellExec(`${underpostRoot}/scripts/nat-iptables.sh`, { silent: true });
-
-      // Monitor commissioning process.
-      UnderpostBaremetal.API.commissionMonitor({
-        macAddress,
-        nfsHostPath,
-        underpostRoot,
-        hostname,
-        maas,
-        networkInterfaceName,
-      });
-      openTerminal(`node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs nfs-cloud`);
-      openTerminal(`node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs nfs-machine`);
-    },
-
-    /**
      * @method removeDiscoveredMachines
      * @description Removes all machines in the 'discovered' status from MAAS.
      * @memberof UnderpostBaremetal
@@ -1364,6 +1171,101 @@ EOF_MAAS_CFG`,
     },
 
     /**
+     * @method grubFactory
+     * @description Generates the GRUB configuration file content.
+     * @param {object} params - The parameters for generating the configuration.
+     * @param {string} params.menuentryStr - The title of the menu entry.
+     * @param {string} params.kernelPath - The path to the kernel file (relative to TFTP root).
+     * @param {string} params.initrdPath - The path to the initrd file (relative to TFTP root).
+     * @param {string} params.cmd - The kernel command line parameters.
+     * @param {string} params.tftpIp - The IP address of the TFTP server.
+     * @returns {string} The generated GRUB configuration content.
+     * @memberof UnderpostBaremetal
+     */
+    grubFactory({ menuentryStr, kernelPath, initrdPath, cmd, tftpIp }) {
+      return `
+set default="0"
+set timeout=10
+insmod nfs
+insmod gzio
+insmod http
+insmod tftp
+set root=(tftp,${tftpIp})
+
+menuentry '${menuentryStr}' {
+    echo "Loading kernel..."
+    linux /${kernelPath} ${cmd}
+    echo "Loading initrd..."
+    initrd /${initrdPath}
+    echo "Booting..."
+    boot
+}
+`;
+    },
+
+    /**
+     * @method httpBootServerRunnerFactory
+     * @description Starts a Python HTTP server to serve boot files (like squashfs) which are too large for TFTP.
+     * It also configures iptables to allow access.
+     * @memberof UnderpostBaremetal
+     * @returns {void}
+     */
+    httpBootServerRunnerFactory() {
+      // Start HTTP server to serve squashfs (TFTP is unreliable for large files like 400MB squashfs)
+      // Kill any existing HTTP server on port 8888
+      shellExec(`sudo pkill -f 'python3 -m http.server 8888' || true`, { silent: true });
+      // Start Python HTTP server in background to serve TFTP root
+      shellExec(
+        `cd ${process.env.TFTP_ROOT} && nohup python3 -m http.server 8888 --bind 0.0.0.0 > /tmp/http-boot-server.log 2>&1 &`,
+        { silent: true, async: true },
+      );
+      // Configure iptables to allow incoming LAN connections on port 8888
+      shellExec(`sudo iptables -I INPUT 1 -p tcp -s 192.168.1.0/24 --dport 8888 -m conntrack --ctstate NEW -j ACCEPT`);
+      // Option for any host:
+      // sudo iptables -I INPUT 1 -p tcp --dport 8888 -m conntrack --ctstate NEW -j ACCEPT
+
+      logger.info(`Started HTTP server on port 8888 serving ${process.env.TFTP_ROOT} for squashfs fetching`);
+    },
+
+    /**
+     * @method updateKernelFiles
+     * @description Copies EFI bootloaders, kernel, and initrd images to the TFTP root path.
+     * It also handles decompression of the kernel if necessary for ARM64 compatibility.
+     * @param {object} params - The parameters for the function.
+     * @param {object} params.commissioningImage - The commissioning image configuration.
+     * @param {string} params.resourcesPath - The path where resources are located.
+     * @param {string} params.tftpRootPath - The TFTP root path.
+     * @param {object} params.kernelFilesPaths - Paths to kernel files.
+     * @memberof UnderpostBaremetal
+     * @returns {void}
+     */
+    updateKernelFiles({ commissioningImage, resourcesPath, tftpRootPath, kernelFilesPaths }) {
+      // Copy EFI bootloaders to TFTP path.
+      const efiFiles = commissioningImage.architecture.match('arm64')
+        ? ['bootaa64.efi', 'grubaa64.efi']
+        : ['bootx64.efi', 'grubx64.efi'];
+      for (const file of efiFiles) {
+        shellExec(`sudo cp -a ${resourcesPath}/${file} ${tftpRootPath}/pxe/${file}`);
+      }
+      // Copy kernel and initrd images to TFTP path.
+      for (const file of Object.keys(kernelFilesPaths)) {
+        if (file == 'isoUrl') continue; // Skip URL entries
+        shellExec(`sudo cp -a ${kernelFilesPaths[file]} ${tftpRootPath}/pxe/${file}`);
+        // If the file is a kernel (vmlinuz-efi) and is gzipped, unzip it for GRUB compatibility on ARM64.
+        // GRUB on ARM64 often crashes with synchronous exception (0x200) if handling large compressed kernels directly.
+        if (file === 'vmlinuz-efi') {
+          const kernelDest = `${tftpRootPath}/pxe/${file}`;
+          const fileType = shellExec(`file ${kernelDest}`, { silent: true }).stdout;
+          if (fileType.includes('gzip compressed data')) {
+            logger.info(`Decompressing kernel ${file} for ARM64 UEFI compatibility...`);
+            shellExec(`sudo mv ${kernelDest} ${kernelDest}.gz`);
+            shellExec(`sudo gunzip ${kernelDest}.gz`);
+          }
+        }
+      }
+    },
+
+    /**
      * @method kernelCmdBootParamsFactory
      * @description Constructs kernel command line parameters for NFS booting.
      * @param {object} options - Options for constructing the command line.
@@ -1376,7 +1278,8 @@ EOF_MAAS_CFG`,
      * @param {string} options.dnsServer - The DNS server address.
      * @param {string} options.networkInterfaceName - The name of the network interface.
      * @param {string} options.fileSystemUrl - The URL of the root filesystem.
-     * @param {boolean} options.nfsBoot - Flag indicating if NFS boot is enabled.
+     * @param {string} options.type - The type of boot ('iso-ram', 'chroot', 'iso-nfs', etc.).
+     * @param {boolean} options.cloudInit - Whether to include cloud-init parameters.
      * @returns {object} An object containing the constructed command line string.
      * @memberof UnderpostBaremetal
      */
@@ -1391,8 +1294,8 @@ EOF_MAAS_CFG`,
         dnsServer: '',
         networkInterfaceName: '',
         fileSystemUrl: '',
-        nfsBoot: false,
-        systemProvisioning: '',
+        type: '',
+        cloudInit: false,
       },
     ) {
       // Construct kernel command line arguments for NFS boot.
@@ -1406,69 +1309,75 @@ EOF_MAAS_CFG`,
         dnsServer,
         networkInterfaceName,
         fileSystemUrl,
-        nfsBoot,
-        systemProvisioning,
+        type,
+        cloudInit,
       } = options;
 
       const ipParam =
         `ip=${ipClient}:${ipFileServer}:${ipDhcpServer}:${netmask}:${hostname}` +
         `:${networkInterfaceName ? networkInterfaceName : 'eth0'}:${ipConfig}:${dnsServer}`;
       const nfsOptions = `${
-        [
-          // 'tcp',
-          // 'nfsvers=3',
-          // 'nolock',
-          // 'rw',
-          // 'vers=3',
-          // 'protocol=tcp',
-          // 'hard=true',
-          // 'port=2049',
-          // 'sec=none',
-          // 'hard',
-          // 'intr',
-          // 'rsize=32768',
-          // 'wsize=32768',
-          // 'acregmin=0',
-          // 'acregmax=0',
-          // 'acdirmin=0',
-          // 'acdirmax=0',
-          // 'noac',
-          // 'nodev',
-          // 'nosuid',
-        ]
+        type === 'chroot'
+          ? [
+              'rw',
+              'tcp',
+              'nfsvers=3',
+              'nolock',
+              'vers=3',
+              // 'protocol=tcp',
+              // 'hard=true',
+              'port=2049',
+              // 'sec=none',
+              'hard',
+              'intr',
+              'rsize=32768',
+              'wsize=32768',
+              'acregmin=0',
+              'acregmax=0',
+              'acdirmin=0',
+              'acdirmax=0',
+              'noac',
+              // 'nodev',
+              // 'nosuid',
+            ]
+          : []
       }`;
       const nfsRootParam = `nfsroot=${ipFileServer}:${process.env.NFS_EXPORT_PATH}/${hostname}${nfsOptions ? `,${nfsOptions}` : ''}`;
 
       // https://manpages.ubuntu.com/manpages/noble/man7/casper.7.html
-      const netBootParams = [`netboot=url`, `url=${fileSystemUrl.replace('https', 'http')}`];
-
-      // const fetchParams = [
-      //   `boot=casper`,
-      //   `netboot=http`,
-      //   `initrd=initrd`,
-      //   `fetch=http://${ipFileServer}:8888/${hostname}/pxe/filesystem.squashfs`,
-      //   'root=/dev/ram0',
-      // ];
-
-      const nfsParams = [`boot=casper`, `netboot=nfs`];
+      const netBootParams = [`netboot=url`];
+      if (fileSystemUrl) netBootParams.push(`url=${fileSystemUrl.replace('https', 'http')}`);
+      const nfsParams = [`boot=casper`];
+      const baseQemuNfsRootParams = [`root=/dev/nfs`];
+      const qemuNfsRootParams = [
+        `rootfstype=nfs`,
+        `rootwait`,
+        `fixrtc`,
+        `initrd=initrd.img`,
+        `netboot=nfs`,
+        `init=/sbin/init`,
+        // `systemd.mask=systemd-network-generator.service`,
+        // `systemd.mask=systemd-networkd.service`,
+        // `systemd.mask=systemd-fsck-root.service`,
+        // `systemd.mask=systemd-udev-trigger.service`,
+      ];
 
       const kernelParams = [
+        `rw`,
         // `ro`,
         `ignore_uuid`,
-        // `ipv6.disable=1`,
-        // `ramdisk_size=3550000`,
+        `ipv6.disable=1`,
         // `console=serial0,115200`,
         // `console=tty1`,
-        // `boot=casper`,
         // `casper-getty`,
         // `layerfs-path=filesystem.squashfs`,
         // `root=/dev/ram0`,
         // `toram`,
         // 'nomodeset',
-        // `rootwait`,
         // `net.ifnames=0`, // only networkInterfaceName = eth0
         // `biosdevname=0`, // only networkInterfaceName = eth0
         // `editable_rootfs=tmpfs`,
+        // `ramdisk_size=3550000`,
         // `cma=120M`,
         // `root=/dev/sda1`, // rpi4 usb port unit
         // `fixrtc`,
@@ -1477,56 +1386,43 @@ EOF_MAAS_CFG`,
         // `ds=nocloud-net;s=http://${ipHost}:8888/${hostname}/pxe/`,
       ];
 
-      const qemuNfsRootParams = [`rootfstype=nfs`, `root=/dev/nfs`, 'initrd=initrd.img', `init=/sbin/init`];
+      if (cloudInit) {
+        kernelParams.push(`ds=nocloud-net;s=http://${ipFileServer}:8888/${hostname}/cloud-init/`);
+      }
 
       let cmd = [];
-      if (nfsBoot === true) {
-        // QEMU NFS boot parameters
-        cmd = [ipParam, nfsRootParam, ...qemuNfsRootParams, ...kernelParams];
+      if (type === 'iso-ram') {
+        cmd = [ipParam, ...netBootParams, ...kernelParams];
+      } else if (type === 'chroot') {
+        cmd = [...baseQemuNfsRootParams, nfsRootParam, ipParam, ...qemuNfsRootParams, ...kernelParams];
+      } else if (type === 'iso-nfs') {
+        cmd = [ipParam, nfsRootParam, ...nfsParams, ...kernelParams];
       } else {
-        // MAAS commissioning parameters
         cmd = [ipParam, nfsRootParam, ...nfsParams, ...kernelParams];
       }
 
       const cmdStr = cmd.join(' ');
-      logger.info('Constructed kernel command line:');
+      logger.info('Constructed kernel command line');
       console.log(newInstance(cmdStr).bgRed.bold.black);
       return { cmd: cmdStr };
     },
 
     /**
-     * @method diskCommissionMonitor
+     * @method commissionMonitor
      * @description Monitors the MAAS discoveries and initiates machine creation and commissioning
-     * for disk-based provisioning (non-NFS). This is the traditional MAAS way where the machine
-     * PXE boots, gets added to MAAS, and is commissioned with an enlistment script.
+     * once a matching MAC address is found. It also opens terminal windows for live logs.
      * @param {object} params - The parameters for the function.
      * @param {string} params.macAddress - The MAC address to monitor for.
-     * @param {string} params.underpostRoot - The root directory of the Underpost project.
-     * @param {string} params.hostname - The desired hostname for the new machine.
      * @param {object} params.maas - MAAS configuration details.
      * @param {string} params.networkInterfaceName - The name of the network interface.
-     * @param {string} params.userDataPath - The path to the cloud-init user-data file.
+     * @param {string} params.hostname - The desired hostname for the machine.
      * @param {string} params.ipAddress - The IP address of the machine (used if MAC is all zeros).
+     * @param {string} params.workflowId - The workflow identifier for hostname prefixing.
      * @returns {Promise<void>} A promise that resolves when commissioning is initiated or after a delay.
      * @memberof UnderpostBaremetal
      */
-    async diskCommissionMonitor({
-      macAddress,
-      underpostRoot,
-      hostname,
-      maas,
-      networkInterfaceName,
-      userDataPath,
-      ipAddress,
-    }) {
+    async commissionMonitor({ macAddress, maas, networkInterfaceName, hostname, ipAddress, workflowId }) {
       {
-        logger.info('Monitoring for machine discovery (disk-based commissioning)...', {
-          macAddress,
-          hostname,
-          maas,
-          networkInterfaceName,
-        });
-
         // Query observed discoveries from MAAS.
         const discoveries = JSON.parse(
           shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} discoveries read`, {
@@ -1536,7 +1432,7 @@ EOF_MAAS_CFG`,
         );
 
         // Log discovered IPs for visibility.
-        // console.log('Discovered IPs:', discoveries.map((d) => d.ip).join(' | '));
+        console.log(discoveries.map((d) => d.ip).join(' | '));
 
         // Iterate through discoveries to find a matching MAC address.
         for (const discovery of discoveries) {
@@ -1557,15 +1453,18 @@ EOF_MAAS_CFG`,
             ip: discovery.ip,
           };
           machine.hostname = machine.hostname.replaceAll(' ', '').replaceAll('.', ''); // Sanitize hostname.
+
           console.log(
             'mac target:'.green + macAddress,
             'mac discovered:'.green + machine.mac_addresses,
             'ip target:'.green + ipAddress,
             'ip discovered:'.green + discovery.ip,
+            'hostname:'.green + machine.hostname,
           );
-          if (macAddress === machine.mac_addresses && discovery.ip === ipAddress)
+
+          if (machine.mac_addresses === macAddress && (!ipAddress || discovery.ip === ipAddress))
             try {
-              machine.hostname = hostname;
+              machine.hostname = `${hostname}`;
               machine.mac_address = macAddress;
 
               logger.info('Machine discovered! Creating in MAAS...', machine);
@@ -1606,139 +1505,14 @@ EOF_MAAS_CFG`,
               return;
             }
         }
-
-        await timer(1000);
-        return UnderpostBaremetal.API.diskCommissionMonitor({
-          macAddress,
-          underpostRoot,
-          hostname,
-          maas,
-          networkInterfaceName,
-          userDataPath,
-          ipAddress,
-        });
-      }
-    },
-
-    /**
-     * @method commissionMonitor
-     * @description Monitors the MAAS discoveries and initiates machine creation and commissioning
-     * once a matching MAC address is found (NFS-based). It also opens terminal windows for live logs.
-     * @param {object} params - The parameters for the function.
-     * @param {string} params.macAddress - The MAC address to monitor for.
-     * @param {string} params.nfsHostPath - The NFS host path for storing system-id and auth tokens.
-     * @param {string} params.underpostRoot - The root directory of the Underpost project.
-     * @param {string} params.hostname - The desired hostname for the new machine.
-     * @param {object} params.maas - MAAS configuration details.
-     * @param {string} params.networkInterfaceName - The name of the network interface.
-     * @returns {Promise<void>} A promise that resolves when commissioning is initiated or after a delay.
-     * @memberof UnderpostBaremetal
-     */
-    async commissionMonitor({ macAddress, nfsHostPath, underpostRoot, hostname, maas, networkInterfaceName }) {
-      {
-        logger.info('Waiting for commissioning...', {
-          macAddress,
-          nfsHostPath,
-          underpostRoot,
-          hostname,
-          maas,
-          networkInterfaceName,
-        });
-
-        // Query observed discoveries from MAAS.
-        const discoveries = JSON.parse(
-          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} discoveries read`, {
-            silent: true,
-            stdout: true,
-          }),
-        );
-
-        //   {
-        //     "discovery_id": "",
-        //     "ip": "192.168.1.189",
-        //     "mac_address": "00:00:00:00:00:00",
-        //     "last_seen": "2025-05-05T14:17:37.354",
-        //     "hostname": null,
-        //     "fabric_name": "",
-        //     "vid": null,
-        //     "mac_organization": "",
-        //     "observer": {
-        //         "system_id": "",
-        //         "hostname": "",
-        //         "interface_id": 1,
-        //         "interface_name": ""
-        //     },
-        //     "resource_uri": "/MAAS/api/2.0/discovery/MTkyLjE2OC4xLjE4OSwwMDowMDowMDowMDowMDowMA==/"
-        // },
-
-        // Log discovered IPs for visibility.
-        console.log(discoveries.map((d) => d.ip).join(' | '));
-
-        // Iterate through discoveries to find a matching MAC address.
-        for (const discovery of discoveries) {
-          const machine = {
-            architecture: (maas.commissioning?.architecture || 'arm64/generic').match('amd')
-              ? 'amd64/generic'
-              : 'arm64/generic',
-            mac_address: discovery.mac_address,
-            hostname: discovery.hostname
-              ? discovery.hostname
-              : discovery.mac_organization
-                ? discovery.mac_organization
-                : discovery.domain
-                  ? discovery.domain
-                  : `generic-host-${s4()}${s4()}`,
-            power_type: 'manual',
-            mac_addresses: discovery.mac_address,
-            ip: discovery.ip,
-          };
-          machine.hostname = machine.hostname.replaceAll(' ', '').replaceAll('.', ''); // Sanitize hostname.
-
-          if (machine.mac_addresses === macAddress)
-            try {
-              machine.hostname = hostname;
-              machine.mac_address = macAddress;
-              // Create a new machine in MAAS.
-              let newMachine = shellExec(
-                `maas ${process.env.MAAS_ADMIN_USERNAME} machines create ${Object.keys(machine)
-                  .map((k) => `${k}="${machine[k]}"`)
-                  .join(' ')}`,
-                {
-                  silent: true,
-                  stdout: true,
-                },
-              );
-              newMachine = { discovery, machine: JSON.parse(newMachine) };
-              console.log(newMachine);
-
-              const discoverInterfaceName = 'eth0'; // Default interface name for discovery.
-
-              // Read interface data.
-              const interfaceData = JSON.parse(
-                shellExec(
-                  `maas ${process.env.MAAS_ADMIN_USERNAME} interface read ${newMachine.machine.boot_interface.system_id} ${discoverInterfaceName}`,
-                  {
-                    silent: true,
-                    stdout: true,
-                  },
-                ),
-              );
-
-              logger.info('Interface', interfaceData);
-            } catch (error) {
-              logger.error(error, error.stack);
-            } finally {
-              return;
-            }
-        }
         await timer(1000);
         await UnderpostBaremetal.API.commissionMonitor({
-          macAddress,
-          nfsHostPath,
-          underpostRoot,
-          hostname,
-          maas,
           networkInterfaceName,
+          hostname,
+          ipAddress,
+          macAddress,
+          maas,
+          workflowId,
         });
       }
     },
@@ -1919,22 +1693,30 @@ EOF`);
      * It checks the mount status and performs mount/unmount operations as requested.
      * @param {object} params - The parameters for the function.
      * @param {string} params.hostname - The hostname of the target machine.
+     * @param {string} params.nfsHostPath - The NFS host path for the target machine.
      * @param {string} params.workflowId - The identifier for the workflow configuration.
      * @param {boolean} [params.mount] - If true, attempts to mount the NFS paths.
      * @param {boolean} [params.unmount] - If true, attempts to unmount the NFS paths.
      * @memberof UnderpostBaremetal
      * @returns {{isMounted: boolean}} An object indicating whether any NFS path is currently mounted.
      */
-    nfsMountCallback({ hostname, workflowId, mount, unmount }) {
+    nfsMountCallback({ hostname, nfsHostPath, workflowId, mount, unmount }) {
+      // Mount binfmt_misc filesystem.
+      if (mount) UnderpostBaremetal.API.mountBinfmtMisc();
       let isMounted = false;
+      const mountCmds = [];
       const workflowsConfig = UnderpostBaremetal.API.loadWorkflowsConfig();
       if (!workflowsConfig[workflowId]) {
         throw new Error(`Workflow configuration not found for ID: ${workflowId}`);
       }
-      // Iterate through defined NFS mounts in the workflow configuration.
-      if (workflowsConfig[workflowId].nfs)
-        for (const mountCmd of Object.keys(workflowsConfig[workflowId].nfs.mounts)) {
-          for (const mountPath of workflowsConfig[workflowId].nfs.mounts[mountCmd]) {
+      if (workflowsConfig[workflowId].type === 'chroot') {
+        const mounts = {
+          bind: ['/proc', '/sys', '/run'],
+          rbind: ['/dev'],
+        };
+
+        for (const mountCmd of Object.keys(mounts)) {
+          for (const mountPath of mounts[mountCmd]) {
             const hostMountPath = `${process.env.NFS_EXPORT_PATH}/${hostname}${mountPath}`;
             // Check if the path is already mounted using `mountpoint` command.
             const isPathMounted = !shellExec(`mountpoint ${hostMountPath}`, { silent: true, stdout: true }).match(
@@ -1946,18 +1728,27 @@ EOF`);
               logger.warn('Nfs path already mounted', mountPath);
               if (unmount === true) {
                 // Unmount if requested.
-                shellExec(`sudo umount ${hostMountPath}`);
+                mountCmds.push(`sudo umount ${hostMountPath}`);
               }
             } else {
               if (mount === true) {
                 // Mount if requested and not already mounted.
-                shellExec(`sudo mount --${mountCmd} ${mountPath} ${hostMountPath}`);
+                mountCmds.push(`sudo mount --${mountCmd} ${mountPath} ${hostMountPath}`);
               } else {
                 logger.warn('Nfs path not mounted', mountPath);
               }
             }
           }
         }
+
+        if (!isMounted) {
+          // if all path unmounted, set ownership and permissions for the NFS host path.
+          shellExec(`sudo chown -R $(whoami):$(whoami) ${nfsHostPath}`);
+          shellExec(`sudo chmod -R 755 ${nfsHostPath}`);
+        }
+        for (const mountCmd of mountCmds) shellExec(mountCmd);
+        if (mount) isMounted = true;
+      }
       return { isMounted };
     },
 
@@ -1999,11 +1790,10 @@ EOF`);
          * This includes updating package lists, installing essential build tools,
          * kernel modules, cloud-init, SSH server, and other core utilities.
          * @param {object} params - The parameters for the function.
-         * @param {string} params.kernelLibVersion - The specific kernel library version to install.
          * @memberof UnderpostBaremetal.systemProvisioningFactory.ubuntu
          * @returns {string[]} An array of shell commands.
          */
-        base: ({ kernelLibVersion }) => [
+        base: () => [
           // Configure APT sources for Ubuntu ports.
           `cat <<SOURCES | tee /etc/apt/sources.list
 deb http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
@@ -2017,12 +1807,9 @@ SOURCES`,
           // Install essential development and system utilities.
           `apt install -y build-essential xinput x11-xkb-utils usbutils uuid-runtime`,
           'apt install -y linux-image-generic',
-          // Install specific kernel modules.
-          `apt install -y linux-modules-${kernelLibVersion} linux-modules-extra-${kernelLibVersion}`,
 
-          `depmod -a ${kernelLibVersion}`, // Update kernel module dependencies.
           // Install cloud-init, systemd, SSH, sudo, locales, udev, and networking tools.
-          `apt install -y cloud-init systemd-sysv openssh-server sudo locales udev util-linux systemd-sysv iproute2 netplan.io ca-certificates curl wget chrony`,
+          `apt install -y systemd-sysv openssh-server sudo locales udev util-linux systemd-sysv iproute2 netplan.io ca-certificates curl wget chrony`,
           `ln -sf /lib/systemd/systemd /sbin/init`, // Ensure systemd is the init system.
 
           `apt-get update`,
@@ -2196,19 +1983,6 @@ udp-port = 32766
       );
       logger.info('NFS configuration written.');
 
-      // Set ownership and permissions for the NFS host path.
-      shellExec(`sudo chown -R root:root ${nfsHostPath}`);
-      shellExec(`sudo chmod -R 755 ${nfsHostPath}`);
-
-      //       shellExec(`sudo find ${nfsHostPath} -type d -exec chmod 755 {} +`);
-      //       shellExec(`sudo find ${nfsHostPath} -type f -exec chmod 644 {} +`);
-
-      //       shellExec(`sudo iptables -I INPUT 1 -p tcp --dport 2049 -j ACCEPT
-      // sudo iptables -I INPUT 1 -p udp --dport 2049 -j ACCEPT
-      // sudo iptables -I INPUT 1 -p tcp --dport 111 -j ACCEPT
-      // sudo iptables -I INPUT 1 -p udp --dport 111 -j ACCEPT
-      // sudo iptables -I INPUT 1 -m state --state NEW -p tcp -m multiport --dports 2049,111,32765,32767 -j ACCEPT`);
-
       logger.info('Reloading NFS exports...');
       shellExec(`sudo exportfs -rav`);
 
@@ -2315,16 +2089,14 @@ udp-port = 32766
      * @throws {Error} If an invalid workflow ID is provided.
      */
     bootConfFactory({ workflowId, tftpIp, tftpPrefixStr, macAddress, clientIp, subnet, gateway }) {
-      switch (workflowId) {
-        case 'rpi4mb2Disk':
-        case 'rpi4mb':
-          // Instructions: Flash sd with Raspberry Pi OS lite and update:
-          // EEPROM (Electrically Erasable Programmable Read-Only Memory) like microcontrollers
-          // sudo rpi-eeprom-config --apply /boot/firmware/boot.conf
-          // sudo reboot
-          // vcgencmd bootloader_config
-          // shutdown -h now
-          return `[all]
+      if (workflowId.startsWith('rpi4mb')) {
+        // Instructions: Flash sd with Raspberry Pi OS lite and update:
+        // EEPROM (Electrically Erasable Programmable Read-Only Memory) like microcontrollers
+        // sudo rpi-eeprom-config --apply /boot/firmware/boot.conf
+        // sudo reboot
+        // vcgencmd bootloader_config
+        // shutdown -h now
+        return `[all]
 BOOT_UART=0
 WAKE_ON_GPIO=1
 POWER_OFF_ON_HALT=0
@@ -2368,10 +2140,7 @@ MAC_ADDRESS=${macAddress}
 CLIENT_IP=${clientIp}
 SUBNET=${subnet}
 GATEWAY=${gateway}`;
-
-        default:
-          logger.warn(`No boot configuration factory defined for workflow ID: ${workflowId}`);
-      }
+      } else logger.warn(`No boot configuration factory defined for workflow ID: ${workflowId}`);
     },
 
     /**

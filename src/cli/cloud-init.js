@@ -42,7 +42,7 @@ class UnderpostCloudInit {
      */
     buildTools({ workflowId, nfsHostPath, hostname, callbackMetaData, dev }) {
       // Destructure workflow configuration for easier access.
-      const { systemProvisioning, chronyc, networkInterfaceName, debootstrap, keyboard } =
+      const { chronyc, networkInterfaceName, debootstrap, keyboard } =
         UnderpostBaremetal.API.loadWorkflowsConfig()[workflowId];
       const { timezone, chronyConfPath } = chronyc;
       // Define the specific directory for underpost tools within the NFS host path.
@@ -51,7 +51,7 @@ class UnderpostCloudInit {
       // Determine the root path for npm and underpost based on development mode.
       const npmRoot = getNpmRootPath();
       const underpostRoot = dev === true ? '.' : `${npmRoot}/underpost`;
-
+      const systemProvisioning = 'ubuntu';
       // Use a switch statement to handle different system provisioning types.
       switch (systemProvisioning) {
         case 'ubuntu': {
@@ -190,10 +190,6 @@ cat /etc/default/keyboard`,
           logger.info('Build', `${nfsHostToolsPath}/device_scan.sh`);
           fs.copySync(`${underpostRoot}/scripts/device-scan.sh`, `${nfsHostToolsPath}/device_scan.sh`);
 
-          // Build and write the config path script.
-          logger.info('Build', `${nfsHostToolsPath}/config-path.sh`);
-          fs.writeFileSync(`${nfsHostToolsPath}/config-path.sh`, `echo "/etc/cloud/cloud.cfg.d/90_maas.cfg"`, 'utf8');
-
           // Build and write the MAAS enlistment script.
           logger.info('Build', `${nfsHostToolsPath}/enlistment.sh`);
           fs.writeFileSync(
@@ -240,36 +236,6 @@ curl -X POST \\
           logger.info('Copy', `/root/.ssh -> ${nfsHostPath}/root/.ssh`);
           fs.copySync(`/root/.ssh`, `${nfsHostPath}/root/.ssh`);
 
-          // Enable execution permissions for all generated scripts and run a test.
-          logger.info('Enable tools execution and test');
-          UnderpostBaremetal.API.crossArchRunner({
-            nfsHostPath,
-            debootstrapArch: debootstrap.image.architecture,
-            callbackMetaData,
-            steps: [
-              `chmod +x /underpost/date.sh`,
-              `chmod +x /underpost/keyboard.sh`,
-              `chmod +x /underpost/dns.sh`,
-              `chmod +x /underpost/help.sh`,
-              `chmod +x /underpost/config-path.sh`,
-              `chmod +x /underpost/host.sh`,
-              `chmod +x /underpost/test.sh`,
-              `chmod +x /underpost/start.sh`,
-              `chmod +x /underpost/reset.sh`,
-              `chmod +x /underpost/shutdown.sh`,
-              `chmod +x /underpost/device_scan.sh`,
-              `chmod +x /underpost/mac.sh`,
-              `chmod +x /underpost/enlistment.sh`,
-              `sudo chmod 700 ~/.ssh/`, // Set secure permissions for .ssh directory.
-              `sudo chmod 600 ~/.ssh/authorized_keys`, // Set secure permissions for authorized_keys.
-              `sudo chmod 644 ~/.ssh/known_hosts`, // Set permissions for known_hosts.
-              `sudo chmod 600 ~/.ssh/id_rsa`, // Set secure permissions for private key.
-              `sudo chmod 600 /etc/ssh/ssh_host_ed25519_key`, // Set secure permissions for host key.
-              `chown -R root:root ~/.ssh`, // Ensure root owns the .ssh directory.
-              `/underpost/test.sh`, // Run the test script to verify setup.
-            ],
-          });
-
           break;
         }
         default:
@@ -280,7 +246,7 @@ curl -X POST \\
 
     /**
      * @method configFactory
-     * @description Generates the cloud-init configuration file (`90_maas.cfg`)
+     * @description Generates the cloud-init configuration file
      * for MAAS integration. This configuration includes hostname, network settings,
      * user accounts, SSH keys, timezone, NTP, and various cloud-init modules.
      * @param {object} params - The parameters for generating the configuration.
@@ -292,9 +258,11 @@ curl -X POST \\
      * @param {string} params.timezone - The timezone to set for the machine.
      * @param {string} params.chronyConfPath - The path to the Chrony configuration file.
      * @param {string} params.networkInterfaceName - The name of the primary network interface.
+     * @param {boolean} params.ubuntuToolsBuild - Flag to determine if Ubuntu tools should be built.
+     * @param {string} [params.bootcmd] - Optional custom commands to run during boot.
+     * @param {string} [params.runcmd] - Optional custom commands to run during first boot.
      * @param {object} [authCredentials={}] - Optional MAAS authentication credentials.
-     * @param {string} [path='/etc/cloud/cloud.cfg.d/90_maas.cfg'] - The target path for the cloud-init configuration file.
-     * @returns {string} The generated cloud-init configuration content.
+     * @returns {object} The generated cloud-init configuration content.
      * @memberof UnderpostCloudInit
      */
     configFactory(
@@ -307,198 +275,155 @@ curl -X POST \\
         timezone,
         chronyConfPath,
         networkInterfaceName,
+        ubuntuToolsBuild,
+        bootcmd: bootcmdParam,
+        runcmd: runcmdParam,
       },
       authCredentials = { consumer_key: '', consumer_secret: '', token_key: '', token_secret: '' },
-      path = '/etc/cloud/cloud.cfg.d/90_maas.cfg',
     ) {
       const { consumer_key, consumer_secret, token_key, token_secret } = authCredentials;
-      // Configure cloud-init for MAAS using a heredoc string.
-      const cloudConfigSrc = `
-#cloud-config
 
-hostname: ${hostname}
-fqdn: ${hostname}.maas
-# prefer_fqdn_over_hostname: true
-# metadata_url: http://${controlServerIp}:5240/MAAS/metadata
-# metadata_url: http://${controlServerIp}:5248/MAAS/metadata
+      let bootcmd = [
+        'echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"',
+        'echo "Init bootcmd"',
+        'echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"',
+      ];
 
-# Check:
-# /MAAS/metadata/latest/enlist-preseed/?op=get_enlist_preseed
+      if (ubuntuToolsBuild) {
+        bootcmd = [
+          ...UnderpostBaremetal.API.stepsRender(
+            [`/underpost/dns.sh`, `/underpost/host.sh`, `/underpost/mac.sh`, `cat /underpost/mac`],
+            false,
+          ).split('\n'),
+          ...bootcmd,
+        ];
+      }
 
-# Debug:
-# https://maas.io/docs/how-to-use-logging
+      if (bootcmdParam) {
+        bootcmd = [...bootcmd, ...bootcmdParam.split(',')];
+      }
 
-datasource_list: [ MAAS ]
-datasource:
-  MAAS:
-    metadata_url: http://${controlServerIp}:5240/MAAS/metadata/
-    ${
-      authCredentials?.consumer_key
-        ? `consumer_key: ${consumer_key}
-    consumer_secret: ${consumer_secret}
-    token_key: ${token_key}
-    token_secret: ${token_secret}`
-        : ''
-    }
+      let runcmd = [
+        'echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"',
+        'echo "Init runcmd"',
+        'echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"',
+      ];
 
+      if (runcmdParam) {
+        runcmd = [...runcmd, ...runcmdParam.split(',')];
+      }
 
-users:
-- name: ${process.env.MAAS_ADMIN_USERNAME}
-  sudo: ["ALL=(ALL) NOPASSWD:ALL"]
-  shell: /bin/bash
-  lock_passwd: false
-  groups: sudo,users,admin,wheel,lxd
-  plain_text_passwd: '${process.env.MAAS_ADMIN_USERNAME}'
-  ssh_authorized_keys:
-    - ${fs.readFileSync(`/home/dd/engine/engine-private/deploy/id_rsa.pub`, 'utf8')}
+      const cloudConfigSrc = UnderpostCloudInit.API.generateCloudConfig({
+        hostname,
+        fqdn: `${hostname}.maas`,
+        datasource_list: ['MAAS'],
+        datasource: {
+          MAAS: {
+            metadata_url: `http://${controlServerIp}:5240/MAAS/metadata/`,
+            ...(authCredentials?.consumer_key
+              ? {
+                  consumer_key,
+                  consumer_secret,
+                  token_key,
+                  token_secret,
+                }
+              : {}),
+          },
+        },
+        users: [
+          {
+            name: process.env.MAAS_ADMIN_USERNAME,
+            sudo: ['ALL=(ALL) NOPASSWD:ALL'],
+            shell: '/bin/bash',
+            lock_passwd: false,
+            groups: 'sudo,users,admin,wheel,lxd',
+            plain_text_passwd: process.env.MAAS_ADMIN_USERNAME,
+            ssh_authorized_keys: [fs.readFileSync(`/home/dd/engine/engine-private/deploy/id_rsa.pub`, 'utf8')],
+          },
+        ],
+        timezone,
+        ntp: {
+          enabled: true,
+          servers: [process.env.MAAS_NTP_SERVER],
+          ntp_client: 'chrony',
+          config: { confpath: chronyConfPath },
+        },
+        package_update: true,
+        package_upgrade: true,
+        packages: ['git', 'htop', 'chrony', 'lldpd', 'lshw'],
+        resize_rootfs: false,
+        growpart: { mode: 'off' },
+        network: {
+          version: 2,
+          ethernets: {
+            [networkInterfaceName]: {
+              match: { macaddress: mac },
+              mtu: 1500,
+              'set-name': networkInterfaceName,
+              dhcp4: false,
+              addresses: [`${commissioningDeviceIp}/24`],
+              routes: [{ to: 'default', via: gatewayip }],
+              nameservers: { addresses: [process.env.MAAS_DNS] },
+            },
+          },
+        },
+        final_message: '====== Cloud init finished ======',
+        bootcmd,
+        runcmd,
+        disable_root: true,
+        preserve_hostname: false,
+        cloud_init_modules: [
+          'migrator',
+          'seed_random',
+          'bootcmd',
+          'write-files',
+          'growpart',
+          'resizefs',
+          'set_hostname',
+          'update_hostname',
+          'update_etc_hosts',
+          'ca-certs',
+          'rsyslog',
+          'users-groups',
+          'ssh',
+        ],
+        cloud_config_modules: [
+          'emit_upstart',
+          'disk_setup',
+          'mounts',
+          'ssh-import-id',
+          'locale',
+          'set-passwords',
+          'grub-dpkg',
+          'apt-pipelining',
+          'apt-configure',
+          'package-update-upgrade-install',
+          'landscape',
+          'timezone',
+          'puppet',
+          'chef',
+          'salt-minion',
+          'mcollective',
+          'disable-ec2-metadata',
+          'runcmd',
+          'byobu',
+          'ssh-import-id',
+          'ntp',
+        ],
+        cloud_final_modules: [
+          'rightscale_userdata',
+          'scripts-vendor',
+          'scripts-per-once',
+          'scripts-per-boot',
+          'scripts-user',
+          'ssh-authkey-fingerprints',
+          'keys-to-console',
+          'final-message',
+          'power-state-change',
+        ],
+      });
 
-# manage_resolv_conf: true
-# resolv_conf:
-#   nameservers: [8.8.8.8]
-
-# keyboard:
-#   layout: es
-
-# check timedatectl on hostname
-# timezone: America/Santiago
-timezone: ${timezone}
-
-ntp:
-  enabled: true
-  servers:
-    - ${process.env.MAAS_NTP_SERVER}
-  ntp_client: chrony
-  config:
-    confpath: ${chronyConfPath}
-
-# ssh:
-#   allow-pw: false
-#   install-server: true
-
-# ssh_pwauth: false
-
-package_update: true
-package_upgrade: true
-packages:
-  - git
-  - htop
-  - chrony
-  - lldpd
-  - lshw
-
-resize_rootfs: false
-growpart:
-  mode: "off"
-network:
-  version: 2
-  ethernets:
-    ${networkInterfaceName}:
-      match:
-        macaddress: "${mac}"
-      mtu: 1500
-      set-name: ${networkInterfaceName}
-      dhcp4: false
-      addresses:
-        - ${commissioningDeviceIp}/24
-      routes:
-        - to: default
-          via: ${gatewayip}
-#      gateway4: ${gatewayip}
-      nameservers:
-        addresses:
-          - ${process.env.MAAS_DNS}
-
-final_message: "====== Cloud init finished ======"
-
-# power_state:
-#   mode: reboot
-#   message: Rebooting after initial setup
-#   timeout: 30
-#   condition: True
-
-bootcmd:
-  - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
-  - echo "Init bootcmd"
-  - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
-${UnderpostBaremetal.API.stepsRender(
-  [`/underpost/dns.sh`, `/underpost/host.sh`, `/underpost/mac.sh`, `cat /underpost/mac`],
-  true,
-)}
-runcmd:
-  - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
-  - echo "Init runcmd"
-  - echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"
-
-# If this is set, 'root' will not be able to ssh in and they
-# will get a message to login instead as the default $user
-disable_root: true
-
-# This will cause the set+update hostname module to not operate (if true)
-preserve_hostname: false
-
-# The modules that run in the 'init' stage
-cloud_init_modules:
-  - migrator
-  - seed_random
-  - bootcmd
-  - write-files
-  - growpart
-  - resizefs
-  - set_hostname
-  - update_hostname
-  - update_etc_hosts
-  - ca-certs
-  - rsyslog
-  - users-groups
-  - ssh
-
-# The modules that run in the 'config' stage
-cloud_config_modules:
-# Emit the cloud config ready event
-# this can be used by upstart jobs for 'start on cloud-config'.
-  - emit_upstart
-  - disk_setup
-  - mounts
-  - ssh-import-id
-  - locale
-  - set-passwords
-  - grub-dpkg
-  - apt-pipelining
-  - apt-configure
-  - package-update-upgrade-install
-  - landscape
-  - timezone
-  - puppet
-  - chef
-  - salt-minion
-  - mcollective
-  - disable-ec2-metadata
-  - runcmd
-  - byobu
-  - ssh-import-id
-  - ntp
-
-
-# phone_home:
-#   url: "http://${controlServerIp}:5240/MAAS/metadata/v1/?op=phone_home"
-#   post: all
-#   tries: 3
-
-# The modules that run in the 'final' stage
-cloud_final_modules:
-  - rightscale_userdata
-  - scripts-vendor
-  - scripts-per-once
-  - scripts-per-boot
-#  - scripts-per-instance
-  - scripts-user
-  - ssh-authkey-fingerprints
-  - keys-to-console
-#  - phone-home
-  - final-message
-  - power-state-change
-`;
-      return { cloudConfigPath: path, cloudConfigSrc };
+      return { cloudConfigSrc };
     },
 
     /**
@@ -547,183 +472,195 @@ cloud_final_modules:
     },
 
     /**
-     * @method diskDeploymentUserDataFactory
-     * @description Generates cloud-init user-data configuration for MAAS disk-based deployments.
-     * This is used during the MAAS deployment phase (not commissioning) to configure
-     * the machine after the OS is installed to disk. MAAS injects this via its metadata service.
-     * Supports abstract configuration for any system provisioning type (ubuntu, rocky, etc.)
-     * and architecture (amd64, arm64, etc.).
-     * @param {object} params - The parameters for building the user-data.
-     * @param {string} params.hostname - The hostname for the deployed machine.
-     * @param {string} params.timezone - The timezone to configure.
-     * @param {string} params.chronyConfPath - Path to chrony configuration.
-     * @param {string} params.ntpServer - NTP server address.
-     * @param {string} params.keyboardLayout - Keyboard layout (e.g., 'es', 'us').
-     * @param {string} params.sshPublicKey - SSH public key for admin user.
-     * @param {string} params.adminUsername - Admin username for the system.
-     * @param {string} params.systemProvisioning - System provisioning type ('ubuntu', 'rocky', etc.).
-     * @param {string[]} params.packages - Array of package names to install (system-specific).
-     * @param {string} params.architecture - Architecture identifier (e.g., 'amd64', 'arm64/generic').
-     * @param {boolean} params.enlistment - Whether to perform MAAS enlistment after deployment.
-     * @param {object} params.maasConfig - MAAS configuration for enlistment.
-     * @returns {string} The cloud-init user-data YAML content.
+     * @method generateCloudConfig
+     * @description Generates a generic cloud-init configuration string.
+     * @param {object} config - Configuration object.
+     * @returns {string} Cloud-init YAML content.
      * @memberof UnderpostCloudInit
      */
-    diskDeploymentUserDataFactory({
-      hostname,
-      timezone = 'UTC',
-      chronyConfPath = '/etc/chrony/chrony.conf',
-      ntpServer = '0.pool.ntp.org',
-      keyboardLayout = 'us',
-      sshPublicKey,
-      adminUsername = 'admin',
-      systemProvisioning = 'ubuntu',
-      packages = [],
-      architecture = 'amd64',
-      enlistment = false,
-      maasConfig = {},
-    }) {
-      const { ip, systemId, consumerKey, tokenKey, tokenSecret } = maasConfig;
+    generateCloudConfig(config) {
+      const {
+        hostname,
+        fqdn,
+        prefer_fqdn_over_hostname,
+        datasource_list,
+        datasource,
+        users,
+        timezone,
+        ntp,
+        keyboard,
+        ssh,
+        ssh_pwauth,
+        package_update,
+        package_upgrade,
+        package_reboot_if_required,
+        packages,
+        resize_rootfs,
+        growpart,
+        network,
+        runcmd,
+        final_message,
+        bootcmd,
+        disable_root,
+        preserve_hostname,
+        cloud_init_modules,
+        cloud_config_modules,
+        cloud_final_modules,
+      } = config;
 
-      // Determine package manager and service names based on system provisioning type
-      const isRHELBased = systemProvisioning === 'rocky' || systemProvisioning === 'rhel';
-      const packageManager = isRHELBased ? 'dnf' : 'apt';
-      const chronySvcName = isRHELBased ? 'chronyd' : 'chrony';
-      const sshSvcName = isRHELBased ? 'sshd' : 'ssh';
+      const yaml = [];
+      yaml.push('#cloud-config');
+      if (hostname) yaml.push(`hostname: ${hostname}`);
+      if (fqdn) yaml.push(`fqdn: ${fqdn}`);
+      if (prefer_fqdn_over_hostname) yaml.push(`prefer_fqdn_over_hostname: ${prefer_fqdn_over_hostname}`);
 
-      // Build default package list if none provided
-      let finalPackages = packages && packages.length > 0 ? packages : this._getDefaultPackages(systemProvisioning);
-
-      // Build runcmd based on system type
-      let runCmds = [
-        `systemctl enable ${sshSvcName}`,
-        `systemctl start ${sshSvcName}`,
-        `systemctl enable lldpd`,
-        `systemctl start lldpd`,
-        `systemctl enable ${chronySvcName}`,
-        `systemctl restart ${chronySvcName}`,
-        `timedatectl set-timezone ${timezone}`,
-      ];
-
-      if (enlistment) {
-        runCmds.push(
-          `echo ">>> Starting MAAS machine commissioning for system_id: ${systemId} …"`,
-          `curl -X POST \\
-  --fail --location --verbose --include --raw --trace-ascii /dev/stdout\\
-  --header "Authorization:\\
-  OAuth oauth_version=1.0,\\
-  oauth_signature_method=PLAINTEXT,\\
-  oauth_consumer_key=${consumerKey},\\
-  oauth_token=${tokenKey},\\
-  oauth_signature=&${tokenSecret},\\
-  oauth_nonce=$(uuidgen),\\
-  oauth_timestamp=$(date +%s)"\\
-  -F "commissioning_scripts=20-maas-01-install-lldpd"\\
-  -F "enable_ssh=1"\\
-  -F "skip_bmc_config=1"\\
-  -F "skip_networking=1"\\
-  -F "skip_storage=1"\\
-  -F "testing_scripts=none"\\
-  http://${ip}:5240/MAAS/api/2.0/machines/${systemId}/op-commission`,
-        );
+      if (datasource_list) yaml.push(`datasource_list: ${JSON.stringify(datasource_list)}`);
+      if (datasource) {
+        yaml.push('datasource:');
+        for (const [key, value] of Object.entries(datasource)) {
+          yaml.push(`  ${key}:`);
+          for (const [k, v] of Object.entries(value)) {
+            yaml.push(`    ${k}: ${v}`);
+          }
+        }
       }
 
-      // Determine package update method
-      const packageUpdateBlock = isRHELBased
-        ? `package_update: true
-package_upgrade: true
-package_reboot_if_required: true`
-        : `package_update: true
-package_upgrade: false`;
+      if (users) {
+        yaml.push('users:');
+        users.forEach((user) => {
+          yaml.push(`- name: ${user.name}`);
+          if (user.sudo) yaml.push(`  sudo: ${JSON.stringify(user.sudo)}`);
+          if (user.shell) yaml.push(`  shell: ${user.shell}`);
+          if (user.lock_passwd !== undefined) yaml.push(`  lock_passwd: ${user.lock_passwd}`);
+          if (user.groups) yaml.push(`  groups: ${user.groups}`);
+          if (user.plain_text_passwd) yaml.push(`  plain_text_passwd: '${user.plain_text_passwd}'`);
+          if (user.ssh_authorized_keys) {
+            yaml.push(`  ssh_authorized_keys:`);
+            user.ssh_authorized_keys.forEach((key) => yaml.push(`    - ${key}`));
+          }
+        });
+      }
 
-      return `#cloud-config
-# MAAS Disk-Based Deployment User-Data
-# This configuration is applied by MAAS after deploying the OS to disk
-# Generated for: ${hostname}
-# System: ${systemProvisioning} | Architecture: ${architecture}
+      if (timezone) yaml.push(`timezone: ${timezone}`);
 
-hostname: ${hostname}
-fqdn: ${hostname}.maas
-prefer_fqdn_over_hostname: true
+      if (ntp) {
+        yaml.push('ntp:');
+        if (ntp.enabled !== undefined) yaml.push(`  enabled: ${ntp.enabled}`);
+        if (ntp.servers) {
+          yaml.push('  servers:');
+          ntp.servers.forEach((s) => yaml.push(`    - ${s}`));
+        }
+        if (ntp.ntp_client) yaml.push(`  ntp_client: ${ntp.ntp_client}`);
+        if (ntp.config) {
+          yaml.push('  config:');
+          if (ntp.config.confpath) yaml.push(`    confpath: ${ntp.config.confpath}`);
+        }
+      }
 
-# User configuration
-users:
-  - name: ${adminUsername}
-    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
-    shell: /bin/bash
-    lock_passwd: false
-    groups: ${isRHELBased ? 'wheel,users,adm,systemd-journal' : 'sudo,users,admin,wheel,adm,systemd-journal'}
-    plain_text_passwd: '${adminUsername}'
-    ssh_authorized_keys:
-      - ${sshPublicKey}
+      if (keyboard) {
+        yaml.push('keyboard:');
+        if (keyboard.layout) yaml.push(`  layout: ${keyboard.layout}`);
+      }
 
-# Timezone configuration
-timezone: ${timezone}
+      if (ssh) {
+        yaml.push('ssh:');
+        if (ssh['install-server'] !== undefined) yaml.push(`  install-server: ${ssh['install-server']}`);
+        if (ssh['allow-pw'] !== undefined) yaml.push(`  allow-pw: ${ssh['allow-pw']}`);
+      }
+      if (ssh_pwauth !== undefined) yaml.push(`ssh_pwauth: ${ssh_pwauth}`);
 
-# NTP configuration
-ntp:
-  enabled: true
-  servers:
-    - ${ntpServer}
-    - 1.pool.ntp.org
-    - 2.pool.ntp.org
-  ntp_client: chrony
-  config:
-    confpath: ${chronyConfPath}
+      if (package_update !== undefined) yaml.push(`package_update: ${package_update}`);
+      if (package_upgrade !== undefined) yaml.push(`package_upgrade: ${package_upgrade}`);
+      if (package_reboot_if_required !== undefined)
+        yaml.push(`package_reboot_if_required: ${package_reboot_if_required}`);
 
-# Keyboard layout
-keyboard:
-  layout: ${keyboardLayout}
+      if (packages) {
+        yaml.push('packages:');
+        packages.forEach((p) => yaml.push(`  - ${p}`));
+      }
 
-# SSH configuration
-ssh:
-  install-server: true
-  allow-pw: true
-ssh_pwauth: true
+      if (resize_rootfs !== undefined) yaml.push(`resize_rootfs: ${resize_rootfs}`);
+      if (growpart) {
+        yaml.push('growpart:');
+        if (growpart.mode) yaml.push(`  mode: "${growpart.mode}"`);
+      }
 
-# Package installation
-${packageUpdateBlock}
-packages:
-${finalPackages.map((pkg) => `  - ${pkg}`).join('\n')}
+      if (network) {
+        yaml.push('network:');
+        yaml.push(`  version: ${network.version}`);
+        if (network.ethernets) {
+          yaml.push('  ethernets:');
+          for (const [iface, conf] of Object.entries(network.ethernets)) {
+            yaml.push(`    ${iface}:`);
+            if (conf.match) {
+              yaml.push('      match:');
+              if (conf.match.macaddress) yaml.push(`        macaddress: "${conf.match.macaddress}"`);
+            }
+            if (conf.mtu) yaml.push(`      mtu: ${conf.mtu}`);
+            if (conf['set-name']) yaml.push(`      set-name: ${conf['set-name']}`);
+            if (conf.dhcp4 !== undefined) yaml.push(`      dhcp4: ${conf.dhcp4}`);
+            if (conf.addresses) {
+              yaml.push('      addresses:');
+              conf.addresses.forEach((a) => yaml.push(`        - ${a}`));
+            }
+            if (conf.routes) {
+              yaml.push('      routes:');
+              conf.routes.forEach((r) => {
+                yaml.push(`        - to: ${r.to}`);
+                yaml.push(`          via: ${r.via}`);
+              });
+            }
+            if (conf.nameservers) {
+              yaml.push('      nameservers:');
+              if (conf.nameservers.addresses) {
+                yaml.push('        addresses:');
+                conf.nameservers.addresses.forEach((a) => yaml.push(`          - ${a}`));
+              }
+            }
+          }
+        }
+      }
 
-# Enable services
-runcmd:
-${runCmds.map((cmd) => `  - ${cmd}`).join('\n')}
+      if (runcmd) {
+        yaml.push('runcmd:');
+        runcmd.forEach((cmd) => yaml.push(`  - ${cmd}`));
+      }
 
-# Final message
-final_message: "System deployment complete for ${hostname} at \$TIMESTAMP"
-`;
+      if (final_message) yaml.push(`final_message: "${final_message}"`);
+
+      if (bootcmd) {
+        yaml.push('bootcmd:');
+        bootcmd.forEach((cmd) => yaml.push(`  - ${cmd}`));
+      }
+
+      if (disable_root !== undefined) yaml.push(`disable_root: ${disable_root}`);
+      if (preserve_hostname !== undefined) yaml.push(`preserve_hostname: ${preserve_hostname}`);
+
+      if (cloud_init_modules) {
+        yaml.push('cloud_init_modules:');
+        cloud_init_modules.forEach((m) => yaml.push(`  - ${m}`));
+      }
+      if (cloud_config_modules) {
+        yaml.push('cloud_config_modules:');
+        cloud_config_modules.forEach((m) => yaml.push(`  - ${m}`));
+      }
+      if (cloud_final_modules) {
+        yaml.push('cloud_final_modules:');
+        cloud_final_modules.forEach((m) => yaml.push(`  - ${m}`));
+      }
+
+      return yaml.join('\n');
     },
 
     /**
      * @method _getDefaultPackages
      * @private
      * @description Returns default package list based on system provisioning type.
-     * @param {string} systemProvisioning - The system provisioning type ('ubuntu', 'rocky', etc.).
      * @memberof UnderpostCloudInit
      * @returns {string[]} Array of package names.
      */
-    _getDefaultPackages(systemProvisioning) {
-      const isRHELBased = systemProvisioning === 'rocky' || systemProvisioning === 'rhel';
-
-      const commonPackages = [
-        'git',
-        'htop',
-        'curl',
-        'wget',
-        'chrony',
-        'lldpd',
-        'lshw',
-        'smartmontools',
-        'net-tools',
-        'util-linux',
-      ];
-
-      if (isRHELBased) {
-        return ['epel-release', ...commonPackages];
-      }
-
-      return commonPackages;
+    _getDefaultPackages() {
+      return ['git', 'htop', 'curl', 'wget', 'chrony', 'lldpd', 'lshw', 'smartmontools', 'net-tools', 'util-linux'];
     },
   };
 }
