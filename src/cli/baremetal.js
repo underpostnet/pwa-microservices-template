@@ -15,7 +15,7 @@ import path from 'path';
 import Downloader from '../server/downloader.js';
 import UnderpostCloudInit from './cloud-init.js';
 import UnderpostRepository from './repository.js';
-import { newInstance, s4, timer } from '../client/components/core/CommonJs.js';
+import { newInstance, range, s4, timer } from '../client/components/core/CommonJs.js';
 import { spawnSync } from 'child_process';
 
 const logger = loggerFactory(import.meta);
@@ -61,6 +61,7 @@ class UnderpostBaremetal {
      * @param {boolean} [options.controlServerUninstall=false] - Flag to uninstall the control server.
      * @param {boolean} [options.controlServerRestart=false] - Flag to restart the control server.
      * @param {boolean} [options.controlServerDbInstall=false] - Flag to install the control server's database.
+     * @param {boolean} [options.createMachine=false] - Flag to create a machine in MAAS.
      * @param {boolean} [options.controlServerDbUninstall=false] - Flag to uninstall the control server's database.
      * @param {string} [options.mac=''] - MAC address of the baremetal machine.
      * @param {boolean} [options.installPacker=false] - Flag to install Packer CLI.
@@ -103,6 +104,7 @@ class UnderpostBaremetal {
         controlServerRestart: false,
         controlServerDbInstall: false,
         controlServerDbUninstall: false,
+        createMachine: false,
         mac: '',
         installPacker: false,
         packerMaasImageTemplate: false,
@@ -153,7 +155,12 @@ class UnderpostBaremetal {
       ipConfig = ipConfig ? ipConfig : 'none';
 
       // Set default MAC address
-      let macAddress = options.mac ? options.mac : '00:00:00:00:00:00';
+      let macAddress = options.mac
+        ? options.mac
+        : ((options.mac = range(1, 6)
+            .map(() => s4().substring(0, 2))
+            .join(':')),
+          options.mac);
 
       const workflowsConfig = UnderpostBaremetal.API.loadWorkflowsConfig();
 
@@ -616,8 +623,20 @@ rm -rf ${artifacts.join(' ')}`);
         });
 
       // Handle commissioning tasks (placeholder for future implementation).
+      let machine, systemId;
       if (options.commission === true) {
         let { firmwares, networkInterfaceName, maas, menuentryStr, type } = workflowsConfig[workflowId];
+
+        if (options.createMachine === true) {
+          machine = UnderpostBaremetal.API.machineFactory({
+            hostname,
+            ipAddress,
+            macAddress,
+            maas: workflowsConfig[workflowId].maas,
+          }).machine;
+          systemId = machine.system_id;
+        }
+
         // Use commissioning config (Ubuntu ephemeral) for PXE boot resources
         const commissioningImage = maas.commissioning;
         const resource = resources.find(
@@ -674,6 +693,7 @@ rm -rf ${artifacts.join(' ')}`);
           });
 
           const { cmd } = UnderpostBaremetal.API.kernelCmdBootParamsFactory({
+            systemId,
             ipClient: ipAddress,
             ipDhcpServer: callbackMetaData.runnerHost.ip,
             ipConfig,
@@ -700,7 +720,7 @@ rm -rf ${artifacts.join(' ')}`);
           fs.writeFileSync(`${process.env.TFTP_ROOT}/grub/grub.cfg`, grubCfg, 'utf8');
           shellExec(`mkdir -p ${tftpRootPath}/pxe/grub`);
           fs.writeFileSync(`${tftpRootPath}/pxe/grub/grub.cfg`, grubCfg, 'utf8');
-
+          console.log('System id:', ` ${systemId.bgBlue.bold.white} `);
           UnderpostBaremetal.API.updateKernelFiles({
             commissioningImage,
             resourcesPath,
@@ -855,7 +875,7 @@ rm -rf ${artifacts.join(' ')}`);
 
         logger.info('Waiting for commissioning...', commissionMonitorPayload);
 
-        await UnderpostBaremetal.API.commissionMonitor(commissionMonitorPayload);
+        const { discovery } = await UnderpostBaremetal.API.commissionMonitor(commissionMonitorPayload);
 
         if (type === 'chroot' && options.cloudInit === true) {
           openTerminal(`node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs cloud-init`);
@@ -974,6 +994,8 @@ rm -rf ${artifacts.join(' ')}`);
           if (initrd) shellExec(`mv ${initrd} ${extractDir}/initrd`);
         }
       } finally {
+        shellExec(`ls -la ${mountPoint}/`);
+
         // Unmount ISO
         shellExec(`sudo umount ${mountPoint}`, { silent: true });
         logger.info(`Unmounted ISO`);
@@ -986,6 +1008,59 @@ rm -rf ${artifacts.join(' ')}`);
         'initrd.img': `${extractDir}/initrd`,
         isoUrl,
       };
+    },
+
+    /**
+     * @method machineFactory
+     * @description Creates a new machine in MAAS with specified options.
+     * @param {object} options - Options for creating the machine.
+     * @param {string} options.macAddress - The MAC address of the machine.
+     * @param {string} options.hostname - The hostname for the machine.
+     * @param {string} options.ipAddress - The IP address for the machine.
+     * @param {string} options.powerType - The power type for the machine (default is 'manual').
+     * @param {object} options.maas - Additional MAAS-specific options.
+     * @returns {object} An object containing the created machine details.
+     * @memberof UnderpostBaremetal
+     */
+    machineFactory(
+      options = {
+        macAddress: '',
+        hostname: '',
+        ipAddress: '',
+        powerType: 'manual',
+        maas: {},
+      },
+    ) {
+      if (!options.powerType) options.powerType = 'manual';
+      const maas = options.maas || {};
+      const payload = {
+        architecture: (maas.commissioning?.architecture || 'arm64/generic').match('arm')
+          ? 'arm64/generic'
+          : 'amd64/generic',
+        mac_address: options.macAddress,
+        mac_addresses: options.macAddress,
+        hostname: options.hostname,
+        power_type: options.powerType,
+        ip: options.ipAddress,
+      };
+      logger.info('Creating MAAS machine', payload);
+      const machine = shellExec(
+        `maas ${process.env.MAAS_ADMIN_USERNAME} machines create ${Object.keys(payload)
+          .map((k) => `${k}="${payload[k]}"`)
+          .join(' ')}`,
+        {
+          silent: true,
+          stdout: true,
+        },
+      );
+      // console.log(machine);
+      try {
+        return { machine: JSON.parse(machine) };
+      } catch (error) {
+        console.log(error);
+        logger.error(error);
+        throw new Error(`Failed to create MAAS machine. Output:\n${machine}`);
+      }
     },
 
     /**
@@ -1326,6 +1401,7 @@ menuentry '${menuentryStr}' {
      * @description Constructs kernel command line parameters for NFS booting.
      * @param {object} options - Options for constructing the command line.
      * @param {string} options.ipClient - The IP address of the client.
+     * @param {string} options.systemId - The system ID of the client.
      * @param {string} options.ipDhcpServer - The IP address of the DHCP server.
      * @param {string} options.ipFileServer - The IP address of the file server.
      * @param {string} options.ipConfig - The IP configuration method (e.g., 'dhcp').
@@ -1336,6 +1412,7 @@ menuentry '${menuentryStr}' {
      * @param {string} options.fileSystemUrl - The URL of the root filesystem.
      * @param {number} options.bootstrapHttpServerPort - The port of the bootstrap HTTP server.
      * @param {string} options.type - The type of boot ('iso-ram', 'chroot', 'iso-nfs', etc.).
+     * @param {string} options.macAddress - The MAC address of the client.
      * @param {boolean} options.cloudInit - Whether to include cloud-init parameters.
      * @returns {object} An object containing the constructed command line string.
      * @memberof UnderpostBaremetal
@@ -1343,6 +1420,7 @@ menuentry '${menuentryStr}' {
     kernelCmdBootParamsFactory(
       options = {
         ipClient: '',
+        systemId: '',
         ipDhcpServer: '',
         ipFileServer: '',
         ipConfig: '',
@@ -1353,12 +1431,14 @@ menuentry '${menuentryStr}' {
         fileSystemUrl: '',
         bootstrapHttpServerPort: 8888,
         type: '',
+        macAddress: '',
         cloudInit: false,
       },
     ) {
       // Construct kernel command line arguments for NFS boot.
       const {
         ipClient,
+        systemId,
         ipDhcpServer,
         ipFileServer,
         ipConfig,
@@ -1369,6 +1449,7 @@ menuentry '${menuentryStr}' {
         fileSystemUrl,
         bootstrapHttpServerPort,
         type,
+        macAddress,
         cloudInit,
       } = options;
 
@@ -1413,32 +1494,53 @@ menuentry '${menuentryStr}' {
       const kernelParams = [
         ...permissionsParams,
         `ignore_uuid`,
-        // `rootwait`,
-        // `ipv6.disable=1`,
-        // `fixrtc`,
+        `rootwait`,
+        `ipv6.disable=1`,
+        `fixrtc`,
         // `console=serial0,115200`,
         // `console=tty1`,
-        // `casper-getty`,
         // `layerfs-path=filesystem.squashfs`,
         // `root=/dev/ram0`,
         // `toram`,
-        // 'nomodeset',
+        'nomodeset',
         // `net.ifnames=0`, // only networkInterfaceName = eth0
         // `biosdevname=0`, // only networkInterfaceName = eth0
-        // `editable_rootfs=tmpfs`,
-        // `ramdisk_size=3550000`,
-        // `cma=120M`,
+        `editable_rootfs=tmpfs`,
+        `ramdisk_size=3550000`,
         // `root=/dev/sda1`, // rpi4 usb port unit
-        // `overlayroot=tmpfs`,
-        // `overlayroot_cfgdisk=disabled`,
-        // `ds=nocloud-net;s=http://${ipHost}:8888/${hostname}/pxe/`,
+        'apparmor=0', // Disable AppArmor security
+      ];
+
+      const performanceParams = [
+        // --- Boot Automation & Stability ---
+        'auto=true', // Enable automated installation/configuration
+        'noeject', // Do not attempt to eject boot media on reboot
+        `casper-getty`, // Enable console login for live sessions
+        'nowatchdog', // Disable watchdog timers to prevent unexpected reboots
+        'noprompt', // Don't wait for "Press Enter" during boot/reboot
+
+        // --- CPU & System Performance ---
+        'mitigations=off', // Disable CPU security mitigations for maximum speed
+        'clocksource=tsc', // Use fastest available hardware clock
+        'tsc=reliable', // Trust CPU clock without extra verification
+        'hpet=disable', // Disable legacy slow timer
+        'nohz=on', // Reduce overhead by disabling timer ticks on idle CPUs
+
+        // --- Memory & Hardware Optimization ---
+        'cma=40M', // Reserve contiguous RAM for RPi hardware/video
+        'zswap.enabled=1', // Use compressed RAM cache (vital for NFS/SD)
+        'zswap.compressor=zstd', // Best balance of speed and compression
+        'zswap.max_pool_percent=30', // Use max 30% of RAM as compressed storage
+        'zswap.zpool=zsmalloc', // Efficient memory management for zswap
+        'fsck.mode=skip', // Skip disk checks to accelerate boot
+        'max_loop=255', // Ensure enough loop devices for squashfs/snaps
+
+        // --- Immutable Filesystem ---
+        'overlayroot=tmpfs', // Run entire OS in RAM to protect storage
+        'overlayroot_cfgdisk=disabled', // Ignore external overlay configurations
       ];
 
       const baseNfsParams = [`netboot=nfs`];
-
-      if (cloudInit) {
-        kernelParams.push(`ds=nocloud-net;s=http://${ipFileServer}:${bootstrapHttpServerPort}/${hostname}/cloud-init/`);
-      }
 
       let cmd = [];
       if (type === 'iso-ram') {
@@ -1446,23 +1548,22 @@ menuentry '${menuentryStr}' {
         if (fileSystemUrl) netBootParams.push(`url=${fileSystemUrl.replace('https', 'http')}`);
         cmd = [ipParam, `boot=casper`, ...netBootParams, ...kernelParams];
       } else if (type === 'chroot') {
-        const qemuNfsRootParams = [
-          `root=/dev/nfs`,
-          `rootfstype=nfs`,
-          `initrd=initrd.img`,
-          `init=/sbin/init`,
-          // `systemd.mask=systemd-network-generator.service`,
-          // `systemd.mask=systemd-networkd.service`,
-          // `systemd.mask=systemd-fsck-root.service`,
-          // `systemd.mask=systemd-udev-trigger.service`,
-        ];
-
+        const qemuNfsRootParams = [`root=/dev/nfs`, `rootfstype=nfs`, `initrd=initrd.img`, `init=/sbin/init`];
         cmd = [ipParam, ...baseNfsParams, ...qemuNfsRootParams, nfsRootParam, ...kernelParams];
       } else {
         // 'iso-nfs'
-        cmd = [ipParam, ...baseNfsParams, nfsRootParam, ...kernelParams];
+        cmd = [ipParam, ...baseNfsParams, nfsRootParam, ...kernelParams, ...performanceParams];
+        if (cloudInit)
+          cmd = cmd.concat([
+            `cloud-init=verbose`,
+            `log_host=${ipDhcpServer}`,
+            `log_port=5247`,
+            `cloud-config-url=http://${ipDhcpServer}:5248/MAAS/metadata/by-id/${systemId}/?op=get_preseed`,
+            // `BOOTIF=${macAddress}`,
+            `cc:{'datasource_list':['MAAS']}`,
+          ]);
       }
-
+      cmd.push('---');
       const cmdStr = cmd.join(' ');
       logger.info('Constructed kernel command line');
       console.log(newInstance(cmdStr).bgRed.bold.black);
@@ -1475,15 +1576,11 @@ menuentry '${menuentryStr}' {
      * once a matching MAC address is found. It also opens terminal windows for live logs.
      * @param {object} params - The parameters for the function.
      * @param {string} params.macAddress - The MAC address to monitor for.
-     * @param {object} params.maas - MAAS configuration details.
-     * @param {string} params.networkInterfaceName - The name of the network interface.
-     * @param {string} params.hostname - The desired hostname for the machine.
      * @param {string} params.ipAddress - The IP address of the machine (used if MAC is all zeros).
-     * @param {string} params.workflowId - The workflow identifier for hostname prefixing.
      * @returns {Promise<void>} A promise that resolves when commissioning is initiated or after a delay.
      * @memberof UnderpostBaremetal
      */
-    async commissionMonitor({ macAddress, maas, networkInterfaceName, hostname, ipAddress, workflowId }) {
+    async commissionMonitor({ macAddress, ipAddress }) {
       {
         // Query observed discoveries from MAAS.
         const discoveries = JSON.parse(
@@ -1493,85 +1590,32 @@ menuentry '${menuentryStr}' {
           }),
         );
 
-        // Iterate through discoveries to find a matching MAC address.
         for (const discovery of discoveries) {
-          const machine = {
-            architecture: (maas.commissioning?.architecture || 'arm64/generic').match('amd')
-              ? 'amd64/generic'
-              : 'arm64/generic',
-            mac_address: discovery.mac_address,
-            hostname: discovery.hostname
-              ? discovery.hostname
-              : discovery.mac_organization
-                ? discovery.mac_organization
-                : discovery.domain
-                  ? discovery.domain
-                  : `generic-host-${s4()}${s4()}`,
-            power_type: 'manual',
-            mac_addresses: discovery.mac_address,
-            ip: discovery.ip,
-          };
-          machine.hostname = machine.hostname.replaceAll(' ', '').replaceAll('.', ''); // Sanitize hostname.
+          const hostname = discovery.hostname
+            ? discovery.hostname
+            : discovery.mac_organization
+              ? discovery.mac_organization
+              : discovery.domain
+                ? discovery.domain
+                : `generic-host-${s4()}${s4()}`;
 
           console.log(
             'mac target:'.green + macAddress,
-            'mac discovered:'.green + machine.mac_addresses,
+            'mac discovered:'.green + discovery.mac_address,
             'ip target:'.green + ipAddress,
             'ip discovered:'.green + discovery.ip,
-            'hostname:'.blue + machine.hostname,
+            'hostname:'.blue + hostname,
           );
 
-          if (discovery.ip === ipAddress)
-            try {
-              machine.hostname = `${hostname}`;
-              // machine.mac_address = macAddress;
-
-              logger.info('Machine discovered! Creating in MAAS...', machine);
-
-              // Create a new machine in MAAS.
-              let newMachine = shellExec(
-                `maas ${process.env.MAAS_ADMIN_USERNAME} machines create ${Object.keys(machine)
-                  .map((k) => `${k}="${machine[k]}"`)
-                  .join(' ')}`,
-                {
-                  silent: true,
-                  stdout: true,
-                },
-              );
-              newMachine = { discovery, machine: JSON.parse(newMachine) };
-              logger.info('Machine created successfully:', newMachine.machine.system_id);
-
-              for (const discoverInterfaceName of ['eth0' /* networkInterfaceName */]) {
-                const jsonInterfaceData = shellExec(
-                  `maas ${process.env.MAAS_ADMIN_USERNAME} interface read ${newMachine.machine.boot_interface.system_id} ${discoverInterfaceName}`,
-                  {
-                    silent: true,
-                    stdout: true,
-                  },
-                );
-                try {
-                  const interfaceData = JSON.parse(jsonInterfaceData);
-                  logger.info('Interface data:', { discoverInterfaceName, interfaceData });
-                } catch (error) {
-                  console.log(error);
-                  logger.error(error, { discoverInterfaceName, jsonInterfaceData });
-                }
-              }
-            } catch (error) {
-              logger.error('Error during machine commissioning:', error);
-              logger.error(error.stack);
-            } finally {
-              return;
-            }
+          if (discovery.ip === ipAddress) {
+            logger.info('Machine discovered!', discovery);
+            return { discovery };
+          }
         }
         await timer(1000);
-        await UnderpostBaremetal.API.commissionMonitor({
-          networkInterfaceName,
-          hostname,
+        return await UnderpostBaremetal.API.commissionMonitor({
           ipAddress,
           macAddress,
-          maas,
-          workflowId,
         });
       }
     },
