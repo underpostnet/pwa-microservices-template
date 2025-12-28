@@ -65,6 +65,8 @@ class UnderpostBaremetal {
      * @param {boolean} [options.createMachine=false] - Flag to create a machine in MAAS.
      * @param {boolean} [options.controlServerDbUninstall=false] - Flag to uninstall the control server's database.
      * @param {string} [options.mac=''] - MAC address of the baremetal machine.
+     * @param {boolean} [options.ipxe=false] - Flag to use iPXE for booting.
+     * @param {boolean} [options.ipxeRebuild=false] - Flag to rebuild the iPXE binary with embedded script.
      * @param {boolean} [options.installPacker=false] - Flag to install Packer CLI.
      * @param {string} [options.packerMaasImageTemplate] - Template path from canonical/packer-maas to extract (requires workflow-id).
      * @param {string} [options.packerWorkflowId] - Workflow ID for Packer MAAS image operations (used with --packer-maas-image-build or --packer-maas-image-upload).
@@ -107,6 +109,8 @@ class UnderpostBaremetal {
         controlServerDbUninstall: false,
         createMachine: false,
         mac: '',
+        ipxe: false,
+        ipxeRebuild: false,
         installPacker: false,
         packerMaasImageTemplate: false,
         packerWorkflowId: '',
@@ -209,14 +213,52 @@ class UnderpostBaremetal {
             silent: true,
           }),
         );
-        machine = searhMachine
-          ? searhMachine
-          : UnderpostBaremetal.API.machineFactory({
+
+        if (searhMachine) {
+          // Check if existing machine's MAC matches the specified MAC
+          const existingMac = searhMachine.boot_interface?.mac_address || searhMachine.mac_address;
+
+          // If using hardware MAC (macAddress is null), skip MAC validation and use existing machine
+          if (macAddress === null) {
+            logger.info(`Using hardware MAC mode - keeping existing machine ${hostname} with MAC ${existingMac}`);
+            machine = searhMachine;
+          } else if (existingMac && existingMac !== macAddress) {
+            logger.warn(`⚠ Machine ${hostname} exists with MAC ${existingMac}, but --mac specified ${macAddress}`);
+            logger.info(`Deleting existing machine ${searhMachine.system_id} to recreate with correct MAC...`);
+
+            // Delete the existing machine
+            shellExec(`maas maas machine delete ${searhMachine.system_id}`, {
+              silent: true,
+            });
+
+            // Create new machine with correct MAC
+            machine = UnderpostBaremetal.API.machineFactory({
               hostname,
               ipAddress,
               macAddress,
               maas: workflowsConfig[workflowId].maas,
             }).machine;
+
+            logger.info(`✓ Machine recreated with MAC ${macAddress}`);
+          } else {
+            logger.info(`Using existing machine ${hostname} with MAC ${existingMac}`);
+            machine = searhMachine;
+          }
+        } else {
+          // No existing machine found, create new one
+          // For hardware MAC mode (macAddress is null), we'll create machine after discovery
+          if (macAddress === null) {
+            logger.info(`Hardware MAC mode - machine will be created after discovery`);
+            machine = null;
+          } else {
+            machine = UnderpostBaremetal.API.machineFactory({
+              hostname,
+              ipAddress,
+              macAddress,
+              maas: workflowsConfig[workflowId].maas,
+            }).machine;
+          }
+        }
       }
 
       if (options.installPacker) {
@@ -714,16 +756,88 @@ rm -rf ${artifacts.join(' ')}`);
             machine,
           });
 
+          // Check if iPXE mode is enabled AND the iPXE EFI binary exists
+          let useIpxe = options.ipxe;
+          if (options.ipxe) {
+            const arch = commissioningImage.architecture.split('/')[0];
+            const ipxeScript = UnderpostBaremetal.API.ipxeScriptFactory({
+              maasIp: callbackMetaData.runnerHost.ip,
+              macAddress,
+              architecture: arch,
+            });
+            fs.writeFileSync(`${tftpRootPath}/stable-id.ipxe`, ipxeScript, 'utf8');
+
+            // Create embedded boot script that does DHCP and chains to the main script
+            const embeddedScript = UnderpostBaremetal.API.ipxeEmbeddedScriptFactory({
+              tftpServer: callbackMetaData.runnerHost.ip,
+              scriptPath: `/${tftpPrefix}/stable-id.ipxe`,
+              macAddress: macAddress,
+            });
+            fs.writeFileSync(`${tftpRootPath}/boot.ipxe`, embeddedScript, 'utf8');
+
+            logger.info('✓ iPXE script generated for MAAS commissioning', {
+              registeredMAC: macAddress,
+              path: `${tftpRootPath}/stable-id.ipxe`,
+              embeddedPath: `${tftpRootPath}/boot.ipxe`,
+            });
+            if (macAddress === null) {
+              logger.info('ℹ Hardware MAC mode - device will use actual hardware MAC address');
+              logger.info('ℹ MAAS will identify the machine by its hardware MAC after discovery');
+            } else {
+              logger.info('ℹ Machine registered in MAAS with MAC:', macAddress);
+              if (macAddress !== '00:00:00:00:00:00') {
+                logger.info('ℹ MAAS will identify the machine by MAC:', macAddress);
+              } else {
+                logger.info('ℹ Device will boot with its actual hardware MAC address');
+                logger.info('ℹ MAAS will identify the machine by its hardware MAC');
+              }
+            }
+
+            // Rebuild iPXE with embedded boot script if requested or if binary doesn't exist
+            const embeddedScriptPath = `${tftpRootPath}/boot.ipxe`;
+            const shouldRebuild = options.ipxeRebuild || !fs.existsSync(`${tftpRootPath}/ipxe.efi`);
+
+            if (shouldRebuild && fs.existsSync(embeddedScriptPath)) {
+              logger.info('Rebuilding iPXE with embedded boot script...', {
+                embeddedScriptPath,
+                forced: options.ipxeRebuild,
+              });
+              shellExec(
+                `${underpostRoot}/scripts/ipxe-setup.sh ${tftpRootPath} --target-arch ${arch} --embed-script ${embeddedScriptPath} --rebuild`,
+              );
+            } else if (shouldRebuild) {
+              logger.warn('⚠ Embedded script not found, building without embedded script');
+              shellExec(`${underpostRoot}/scripts/ipxe-setup.sh ${tftpRootPath} --target-arch ${arch}`);
+            } else {
+              logger.info('ℹ Using existing iPXE binary (use --ipxe-rebuild to force rebuild)');
+            }
+
+            // Only use iPXE chainloading if the binary exists
+            if (fs.existsSync(`${tftpRootPath}/ipxe.efi`)) {
+              logger.info('✓ iPXE EFI binary found');
+            } else {
+              useIpxe = false;
+              logger.warn(`⚠ iPXE EFI binary not found at ${tftpRootPath}/ipxe.efi - falling back to direct GRUB boot`);
+              logger.warn('  The iPXE script was generated but cannot be used without the iPXE EFI binary.');
+              logger.warn('  Consider booting without --ipxe flag or providing the iPXE EFI binary.');
+            }
+          }
+
           const { grubCfgSrc } = UnderpostBaremetal.API.grubFactory({
             menuentryStr,
             kernelPath: `/${tftpPrefix}/pxe/vmlinuz-efi`,
             initrdPath: `/${tftpPrefix}/pxe/initrd.img`,
             cmd,
             tftpIp: callbackMetaData.runnerHost.ip,
+            ipxe: useIpxe,
+            ipxePath: `/${tftpPrefix}/ipxe.efi`,
           });
           UnderpostBaremetal.API.writeGrubConfigToFile({
             grubCfgSrc: machine ? grubCfgSrc.replaceAll('system-id', machine.system_id) : grubCfgSrc,
           });
+          if (machine) {
+            logger.info('✓ GRUB config written with system_id', { system_id: machine.system_id });
+          }
           UnderpostBaremetal.API.updateKernelFiles({
             commissioningImage,
             resourcesPath,
@@ -895,8 +1009,8 @@ rm -rf ${artifacts.join(' ')}`);
      * @method macAddressFactory
      * @description Generates or returns a MAC address based on options.
      * @param {object} options - Options for MAC address generation.
-     * @param {string} options.mac - 'random' for random MAC, specific MAC string, or empty for default.
-     * @returns {string} The generated or specified MAC address.
+     * @param {string} options.mac - 'random' for random MAC, 'hardware' to use device's actual MAC, specific MAC string, or empty for default.
+     * @returns {object} Object with mac property - null for 'hardware', generated/specified MAC otherwise.
      * @memberof UnderpostBaremetal
      */
     macAddressFactory(options = { mac: '' }) {
@@ -906,12 +1020,15 @@ rm -rf ${artifacts.join(' ')}`);
         .join(':');
       if (options) {
         if (!options.mac) options.mac = defaultMac;
-        if (options.mac === 'random')
+        if (options.mac === 'hardware') {
+          // Return null to indicate hardware MAC should be used (no spoofing)
+          options.mac = null;
+        } else if (options.mac === 'random') {
           options.mac = range(1, len)
             .map(() => s4().toLowerCase().substring(0, 2))
             .join(':');
-      }
-      options.mac = defaultMac;
+        }
+      } else options = { mac: defaultMac };
       return options;
     },
 
@@ -1340,6 +1457,170 @@ rm -rf ${artifacts.join(' ')}`);
     },
 
     /**
+     * @method ipxeEmbeddedScriptFactory
+     * @description Generates the embedded iPXE boot script that performs DHCP and chains to the main script.
+     * This script is embedded into the iPXE binary or loaded first by GRUB.
+     * Supports MAC address spoofing for baremetal commissioning workflows.
+     * @param {object} params - The parameters for generating the script.
+     * @param {string} params.tftpServer - The IP address of the TFTP server.
+     * @param {string} params.scriptPath - The path to the main iPXE script on TFTP server.
+     * @param {string} [params.macAddress] - Optional MAC address to spoof for MAAS registration.
+     * @returns {string} The embedded iPXE script content.
+     * @memberof UnderpostBaremetal
+     */
+    ipxeEmbeddedScriptFactory({ tftpServer, scriptPath, macAddress = null }) {
+      const macSpoofingBlock =
+        macAddress && macAddress !== '00:00:00:00:00:00'
+          ? `
+# MAC Address Spoofing
+echo Spoofing MAC address to: ${macAddress}
+set net0/mac ${macAddress} || goto dhcp_normal
+echo MAC spoofed to: \${net0/mac}
+goto dhcp_continue
+
+:dhcp_normal
+echo MAC spoofing not supported or failed, using hardware MAC
+`
+          : `
+# Using hardware MAC address (no spoofing)
+echo Using device hardware MAC address
+echo MAC spoofing disabled - device will identify with actual MAC
+`;
+
+      return `#!ipxe
+# Embedded iPXE Boot Script
+# This script performs DHCP configuration and chains to the main boot script
+
+echo ========================================
+echo iPXE Embedded Boot Loader
+echo ========================================
+echo TFTP Server: ${tftpServer}
+echo Script Path: ${scriptPath}
+echo ========================================
+
+${macSpoofingBlock}
+:dhcp_continue
+
+# Show network interface info
+echo Network Interface Info:
+echo Interface: net0
+ifstat
+
+# Perform DHCP to get network configuration
+echo Performing DHCP configuration...
+dhcp net0 || goto dhcp_retry
+
+echo DHCP configuration successful
+echo IP Address: \${net0/ip}
+echo Netmask: \${net0/netmask}
+echo Gateway: \${net0/gateway}
+echo DNS: \${net0/dns}
+echo TFTP Server: \${next-server}
+
+# Chain to the main iPXE script
+echo ========================================
+echo Chainloading main boot script...
+echo Script: tftp://${tftpServer}${scriptPath}
+echo ========================================
+chain tftp://${tftpServer}${scriptPath} || goto chain_failed
+
+:dhcp_retry
+echo DHCP failed, retrying in 5 seconds...
+sleep 5
+goto dhcp_continue
+
+:chain_failed
+echo ========================================
+echo ERROR: Failed to chain to main script
+echo TFTP Server: ${tftpServer}
+echo Script Path: ${scriptPath}
+echo ========================================
+echo Retrying in 10 seconds...
+sleep 10
+goto dhcp_continue
+
+# Fallback: drop to iPXE shell
+echo Dropping to iPXE shell for manual debugging
+shell
+`;
+    },
+
+    /**
+     * @method ipxeScriptFactory
+     * @description Generates the iPXE script content for stable identity.
+     * This iPXE script only handles network boot and chainloading to MAAS.
+     * @param {object} params - The parameters for generating the script.
+     * @param {string} params.maasIp - The IP address of the MAAS server.
+     * @param {string} [params.macAddress] - The MAC address registered in MAAS (for display only).
+     * @returns {string} The iPXE script content.
+     * @memberof UnderpostBaremetal
+     */
+    ipxeScriptFactory({ maasIp, macAddress, architecture }) {
+      const macInfo =
+        macAddress && macAddress !== '00:00:00:00:00:00'
+          ? `echo Registered MAC: ${macAddress}`
+          : `echo Using hardware MAC address`;
+
+      return `#!ipxe
+echo ========================================
+echo iPXE Network Boot
+echo ========================================
+echo MAAS Server: ${maasIp}
+echo Architecture: ${architecture}
+${macInfo}
+echo ========================================
+
+# Show current network configuration
+echo Current Network Configuration:
+ifstat
+
+# Display MAC address information
+echo MAC Address: \${net0/mac}
+echo IP Address: \${net0/ip}
+echo Gateway: \${net0/gateway}
+echo DNS: \${net0/dns}
+
+# Set MAAS metadata URL for commissioning
+echo ========================================
+echo Chainloading MAAS bootloader...
+echo ========================================
+
+# Chainload MAAS bootloader via HTTP
+# MAAS expects to handle the boot process from here
+set maas-url http://${maasIp}:5248/MAAS/api/2.0
+echo MAAS URL: \${maas-url}
+
+# Chain to MAAS bootloader (UEFI for arm64/amd64)
+set boot-url http://${maasIp}:5248/images/bootloader
+echo Boot URL: \${boot-url}
+
+# Try to chain to MAAS UEFI bootloader
+chain \${boot-url}/uefi/${architecture}/bootx64.efi || chain \${boot-url}/uefi/${architecture}/bootaa64.efi || goto maas_pxe_fallback
+
+:maas_pxe_fallback
+echo UEFI chainload failed, trying PXE chainload...
+# Fallback to PXE chainload for MAAS
+chain tftp://${maasIp}/pxelinux.0 || goto error
+
+:error
+echo ========================================
+echo ERROR: Failed to chainload MAAS
+echo ========================================
+echo MAAS IP: ${maasIp}
+echo MAC: \${net0/mac}
+echo IP: \${net0/ip}
+echo ========================================
+echo Retrying in 10 seconds...
+sleep 10
+goto maas_pxe_fallback
+
+# Drop to shell for debugging
+echo Dropping to iPXE shell for manual intervention
+shell
+`;
+    },
+
+    /**
      * @method grubFactory
      * @description Generates the GRUB configuration file content.
      * @param {object} params - The parameters for generating the configuration.
@@ -1348,10 +1629,31 @@ rm -rf ${artifacts.join(' ')}`);
      * @param {string} params.initrdPath - The path to the initrd file (relative to TFTP root).
      * @param {string} params.cmd - The kernel command line parameters.
      * @param {string} params.tftpIp - The IP address of the TFTP server.
+     * @param {boolean} [params.ipxe] - Flag to enable iPXE chainloading.
+     * @param {string} [params.ipxePath] - The path to the iPXE binary.
      * @returns {object} An object containing 'grubCfgSrc' the GRUB configuration source string.
      * @memberof UnderpostBaremetal
      */
-    grubFactory({ menuentryStr, kernelPath, initrdPath, cmd, tftpIp }) {
+    grubFactory({ menuentryStr, kernelPath, initrdPath, cmd, tftpIp, ipxe, ipxePath }) {
+      if (ipxe) {
+        return {
+          grubCfgSrc: `
+  set default="0"
+  set timeout=10
+  insmod tftp
+  set root=(tftp,${tftpIp})
+
+  menuentry 'iPXE ${menuentryStr}' {
+      echo "Loading iPXE with embedded script..."
+      echo "[INFO] TFTP Server: ${tftpIp}"
+      echo "[INFO] iPXE Binary: ${ipxePath}"
+      echo "[INFO] iPXE will execute embedded script (dhcp + chain)"
+      chainloader ${ipxePath}
+      boot
+  }
+  `,
+        };
+      }
       return {
         grubCfgSrc: `
   set default="0"
@@ -1565,8 +1867,8 @@ rm -rf ${artifacts.join(' ')}`);
         // `root=/dev/ram0`,
         // `toram`,
         'nomodeset',
-        // `net.ifnames=0`, // only networkInterfaceName = eth0
-        // `biosdevname=0`, // only networkInterfaceName = eth0
+        // 'net.ifnames=0', // Disable predictable network interface names
+        // 'biosdevname=0', // Disable BIOS device naming
         `editable_rootfs=tmpfs`,
         `ramdisk_size=3550000`,
         // `root=/dev/sda1`, // rpi4 usb port unit
@@ -1615,17 +1917,21 @@ rm -rf ${artifacts.join(' ')}`);
       } else {
         // 'iso-nfs'
         cmd = [ipParam, ...baseNfsParams, nfsRootParam, ...kernelParams, ...performanceParams];
-        if (cloudInit)
+        if (cloudInit) {
+          const cloudInitPreseedUrl = `http://${ipDhcpServer}:5248/MAAS/metadata/by-id/${options.machine?.system_id ? options.machine.system_id : 'system-id'}/?op=get_preseed`;
           cmd = cmd.concat([
-            `cloud-init=verbose`,
+            `cloud-init=enabled`,
+            'autoinstall',
+            `cloud-config-url=${cloudInitPreseedUrl}`,
+            `ds=nocloud-net;s=${cloudInitPreseedUrl}`,
             `log_host=${ipDhcpServer}`,
             `log_port=5247`,
-            `cloud-config-url=http://${ipDhcpServer}:5248/MAAS/metadata/by-id/${options.machine?.system_id ? options.machine.system_id : 'system-id'}/?op=get_preseed`,
             // `BOOTIF=${macAddress}`,
-            // `cc:{'datasource_list':['MAAS']}`,
+            // `cc:{'datasource_list': ['MAAS']}end_cc`,
           ]);
+        }
       }
-      cmd.push('---');
+      // cmd.push('---');
       const cmdStr = cmd.join(' ');
       logger.info('Constructed kernel command line');
       console.log(newInstance(cmdStr).bgRed.bold.black);
@@ -1671,6 +1977,11 @@ rm -rf ${artifacts.join(' ')}`);
           if (discovery.ip === ipAddress) {
             logger.info('Machine discovered!', discovery);
             if (!machine) {
+              logger.info('Creating new machine with discovered hardware MAC...', {
+                discoveredMAC: discovery.mac_address,
+                ipAddress,
+                hostname,
+              });
               machine = UnderpostBaremetal.API.machineFactory({
                 ipAddress,
                 macAddress: discovery.mac_address,
@@ -1686,35 +1997,45 @@ rm -rf ${artifacts.join(' ')}`);
               });
             } else {
               const systemId = machine.system_id;
-              console.log('Using existing machine system id:', systemId.bgYellow.bold.black);
-              logger.info('Updating machine network interface MAC address to match discovery...');
+              console.log('Using pre-registered machine system_id:', systemId.bgYellow.bold.black);
 
-              shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine mark-broken ${systemId}`, {
-                silent: true,
-              });
+              // Update the boot interface MAC if hardware MAC differs from pre-registered MAC
+              // This handles both hardware mode (macAddress is null) and MAC mismatch scenarios
+              if (macAddress === null || macAddress !== discovery.mac_address) {
+                logger.info('Updating machine interface with discovered hardware MAC...', {
+                  preRegisteredMAC: macAddress || 'none (hardware mode)',
+                  discoveredMAC: discovery.mac_address,
+                });
 
-              shellExec(
-                // name=${networkInterfaceName}
-                `maas ${process.env.MAAS_ADMIN_USERNAME} interface update ${systemId} ${machine.boot_interface.id}` +
-                  ` mac_address=${discovery.mac_address}`,
-                {
+                shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine mark-broken ${systemId}`, {
                   silent: true,
-                },
-              );
+                });
 
-              shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine mark-fixed ${systemId}`, {
-                silent: true,
-              });
-
-              // commissioning_scripts=90-verify-user.sh
-              machine = JSON.parse(
                 shellExec(
-                  `maas ${process.env.MAAS_ADMIN_USERNAME} machine commission --debug --insecure ${systemId} enable_ssh=1 skip_bmc_config=1 skip_networking=1 skip_storage=1`,
+                  // name=${networkInterfaceName}
+                  `maas ${process.env.MAAS_ADMIN_USERNAME} interface update ${systemId} ${machine.boot_interface.id}` +
+                    ` mac_address=${discovery.mac_address}`,
                   {
                     silent: true,
                   },
-                ),
-              );
+                );
+
+                shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine mark-fixed ${systemId}`, {
+                  silent: true,
+                });
+
+                logger.info('✓ Machine interface MAC address updated successfully');
+
+                // commissioning_scripts=90-verify-user.sh
+                machine = JSON.parse(
+                  shellExec(
+                    `maas ${process.env.MAAS_ADMIN_USERNAME} machine commission --debug --insecure ${systemId} enable_ssh=1 skip_bmc_config=1 skip_networking=1 skip_storage=1`,
+                    {
+                      silent: true,
+                    },
+                  ),
+                );
+              }
               logger.info('Machine resource uri', machine.resource_uri);
               for (const iface of machine.interface_set)
                 logger.info('Interface info', {

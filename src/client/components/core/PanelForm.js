@@ -179,10 +179,24 @@ const PanelForm = {
             return { status: 'error' };
           },
           initAdd: async function () {
-            s(`.modal-${options.route}`).scrollTo({ top: 0, behavior: 'smooth' });
+            setTimeout(() => {
+              s(`.modal-${options.route}`).scrollTo({ top: 0, behavior: 'smooth' });
+            }, 50);
           },
           initEdit: async function ({ data }) {
-            s(`.modal-${options.route}`).scrollTo({ top: 0, behavior: 'smooth' });
+            // Clear file input when entering edit mode
+            const fileFormData = formData.find((f) => f.inputType === 'file');
+            if (fileFormData && s(`.${fileFormData.id}`)) {
+              s(`.${fileFormData.id}`).value = '';
+              s(`.${fileFormData.id}`).inputFiles = null;
+              htmls(
+                `.file-name-render-${fileFormData.id}`,
+                `<div class="abs center"><i style="font-size: 25px" class="fa-solid fa-cloud"></i></div>`,
+              );
+            }
+            setTimeout(() => {
+              s(`.modal-${options.route}`).scrollTo({ top: 0, behavior: 'smooth' });
+            }, 50);
           },
           noResultFound: async function () {
             LoadingAnimation.spinner.stop(`.panel-placeholder-bottom-${idPanel}`);
