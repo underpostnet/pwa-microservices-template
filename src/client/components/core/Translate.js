@@ -188,6 +188,9 @@ const TranslateCore = {
     Translate.Data['error-update-user'] = { en: 'error update user', es: 'error al actualizar el usuario' };
 
     Translate.Data['edit'] = { en: 'Edit', es: 'Editar' };
+    Translate.Data['copy-share-link'] = { en: 'Copy share link', es: 'Copiar enlace compartido' };
+    Translate.Data['link-copied'] = { en: 'Link copied to clipboard', es: 'Enlace copiado al portapapeles' };
+    Translate.Data['error-copying-link'] = { en: 'Error copying link', es: 'Error al copiar enlace' };
     Translate.Data['unconfirmed'] = { en: 'unconfirmed', es: 'No confirmado' };
     Translate.Data['confirmed'] = { en: 'confirmed', es: 'Confirmado' };
     Translate.Data['confirm'] = { en: 'confirm', es: 'confirmar' };
@@ -523,6 +526,10 @@ const TranslateCore = {
     Translate.Data['clear-file'] = {
       en: 'Clear File',
       es: 'Limpiar Archivos',
+    };
+    Translate.Data['require-title-and-content-or-file'] = {
+      en: 'Require title and content or file',
+      es: 'Requiere título y contenido o archivo',
     };
   },
 };
