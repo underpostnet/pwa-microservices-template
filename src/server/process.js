@@ -12,14 +12,8 @@ import dotenv from 'dotenv';
 import { loggerFactory } from './logger.js';
 import clipboard from 'clipboardy';
 import UnderpostRootEnv from '../cli/env.js';
-import { EventEmitter } from 'events';
 
 dotenv.config();
-
-// Increase max listeners to prevent warnings during heavy shell command usage
-EventEmitter.defaultMaxListeners = 100;
-process.stdout.setMaxListeners(100);
-process.stderr.setMaxListeners(100);
 
 const logger = loggerFactory(import.meta);
 
@@ -102,12 +96,12 @@ const ProcessController = {
  * @param {boolean} [options.async=false] - Run command asynchronously.
  * @param {boolean} [options.stdout=false] - Return stdout content (string) instead of shelljs result object.
  * @param {boolean} [options.disableLog=false] - Prevent logging of the command.
- * @param {Function} [options.callback] - Optional callback function with code, success, error parameters, for async execution.
+ * @param {Function} [options.callback=null] - Callback function for asynchronous execution.
  * @returns {string|shelljs.ShellString} The result of the shell command (string if `stdout: true`, otherwise a ShellString object).
  */
 const shellExec = (
   cmd,
-  options = { silent: false, async: false, stdout: false, disableLog: false, callback: (code, success, error) => null },
+  options = { silent: false, async: false, stdout: false, disableLog: false, callback: null },
 ) => {
   if (!options.disableLog) logger.info(`cmd`, cmd);
   if (options.callback) return shell.exec(cmd, options, options.callback);
