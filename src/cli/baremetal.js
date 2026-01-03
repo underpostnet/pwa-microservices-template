@@ -82,9 +82,12 @@ class UnderpostBaremetal {
      * @param {string} [options.isoUrl=''] - Uses a custom ISO URL for baremetal machine commissioning.
      * @param {boolean} [options.ubuntuToolsBuild=false] - Builds ubuntu tools for chroot environment.
      * @param {boolean} [options.ubuntuToolsTest=false] - Tests ubuntu tools in chroot environment.
+     * @param {boolean} [options.rockyToolsBuild=false] - Builds rocky linux tools for chroot environment.
+     * @param {boolean} [options.rockyToolsTest=false] - Tests rocky linux tools in chroot environment.
      * @param {string} [options.bootcmd=''] - Comma-separated list of boot commands to execute.
      * @param {string} [options.runcmd=''] - Comma-separated list of run commands to execute.
      * @param {boolean} [options.nfsBuild=false] - Flag to build the NFS root filesystem.
+     * @param {boolean} [options.nfsBuildServer=false] - Flag to build the NFS server components.
      * @param {boolean} [options.nfsMount=false] - Flag to mount the NFS root filesystem.
      * @param {boolean} [options.nfsUnmount=false] - Flag to unmount the NFS root filesystem.
      * @param {boolean} [options.nfsSh=false] - Flag to chroot into the NFS environment for shell access.
@@ -127,9 +130,12 @@ class UnderpostBaremetal {
         isoUrl: '',
         ubuntuToolsBuild: false,
         ubuntuToolsTest: false,
+        rockyToolsBuild: false,
+        rockyToolsTest: false,
         bootcmd: '',
         runcmd: '',
         nfsBuild: false,
+        nfsBuildServer: false,
         nfsMount: false,
         nfsUnmount: false,
         nfsSh: false,
@@ -172,7 +178,7 @@ class UnderpostBaremetal {
       let bootstrapArch;
 
       // Set bootstrap architecture.
-      if (workflowsConfig[workflowId].type === 'chroot') {
+      if (workflowsConfig[workflowId].type === 'chroot-debootstrap') {
         const { architecture } = workflowsConfig[workflowId].debootstrap.image;
         bootstrapArch = architecture;
       } else if (workflowsConfig[workflowId].type === 'chroot-container') {
@@ -590,7 +596,7 @@ rm -rf ${artifacts.join(' ')}`);
         shellExec(`mkdir -p ${nfsHostPath}`);
 
         // Perform the first stage of debootstrap.
-        if (workflowsConfig[workflowId].type === 'chroot') {
+        if (workflowsConfig[workflowId].type === 'chroot-debootstrap') {
           const { architecture, name } = workflowsConfig[workflowId].debootstrap.image;
           shellExec(
             [
@@ -636,7 +642,7 @@ rm -rf ${artifacts.join(' ')}`);
         });
 
         // Perform the second stage of debootstrap within the chroot environment.
-        if (workflowsConfig[workflowId].type === 'chroot') {
+        if (workflowsConfig[workflowId].type === 'chroot-debootstrap') {
           UnderpostBaremetal.API.crossArchRunner({
             nfsHostPath,
             bootstrapArch,
@@ -653,7 +659,10 @@ rm -rf ${artifacts.join(' ')}`);
               nfsHostPath,
               bootstrapArch,
               callbackMetaData,
-              steps: [`dnf install -y --allowerasing findutils systemd ${packages.join(' ')}`],
+              steps: [
+                `dnf install -y --allowerasing findutils systemd ${packages.join(' ')}`,
+                `dnf install -y dracut-network nfs-utils dracut-config-generic`,
+              ],
             });
           }
           UnderpostBaremetal.API.crossArchRunner({
@@ -661,18 +670,44 @@ rm -rf ${artifacts.join(' ')}`);
             bootstrapArch,
             callbackMetaData,
             steps: [
-              `ls -la /boot`,
-              `VMLINUZ=$(find /boot -name "vmlinuz*" | head -n 1)`,
-              `if [ -z "$VMLINUZ" ]; then VMLINUZ=$(find /lib/modules -name "vmlinuz*" | head -n 1); fi`,
-              `cp $VMLINUZ /boot/vmlinuz-efi`,
-              `INITRD=$(find /boot -name "initramfs*" | grep -v kdump | head -n 1)`,
-              `if [ -z "$INITRD" ]; then INITRD=$(find /lib/modules -name "initramfs*" | grep -v kdump | head -n 1); fi`,
-              `cp $INITRD /boot/initrd.img`,
+              `ls -la /boot /lib/modules/*/`,
+              // Install file and binutils for PE32+ detection
+              `dnf install -y file binutils kernel-modules-core 2>/dev/null || yum install -y file binutils kernel-modules-core 2>/dev/null || echo "Package install skipped"`,
+              // Search for bootable kernel in order of preference:
+              // 1. Raw ARM64 Image file (preferred for GRUB)
+              // 2. vmlinuz or vmlinux (may be PE32+ on Rocky Linux)
+              `echo "Searching for bootable kernel..."`,
+              `KERNEL_FILE=""`,
+              // First try to find raw Image file
+              `if [ -f /boot/Image ]; then KERNEL_FILE=/boot/Image; echo "Found raw ARM64 Image: $KERNEL_FILE"; fi`,
+              `if [ -z "$KERNEL_FILE" ]; then KERNEL_FILE=$(find /lib/modules -name "Image" -o -name "Image.gz" 2>/dev/null | head -n 1); test -n "$KERNEL_FILE" && echo "Found kernel Image in modules: $KERNEL_FILE"; fi`,
+              // Fallback to vmlinuz
+              `if [ -z "$KERNEL_FILE" ]; then KERNEL_FILE=$(find /boot -name "vmlinuz-*" 2>/dev/null | head -n 1); test -n "$KERNEL_FILE" && echo "Found vmlinuz: $KERNEL_FILE"; fi`,
+              `if [ -z "$KERNEL_FILE" ]; then KERNEL_FILE=$(find /lib/modules -name "vmlinuz" 2>/dev/null | head -n 1); test -n "$KERNEL_FILE" && echo "Found vmlinuz in modules: $KERNEL_FILE"; fi`,
+              // Last resort: any vmlinux
+              `if [ -z "$KERNEL_FILE" ]; then KERNEL_FILE=$(find /lib/modules -name "vmlinux" 2>/dev/null | head -n 1); test -n "$KERNEL_FILE" && echo "Found vmlinux: $KERNEL_FILE"; fi`,
+              `if [ -z "$KERNEL_FILE" ]; then echo "ERROR: No kernel found!"; exit 1; fi`,
+              // Copy and check kernel type
+              `cp "$KERNEL_FILE" /boot/vmlinuz-efi.tmp`,
+              // Decompress if gzipped
+              `if file /boot/vmlinuz-efi.tmp | grep -q gzip; then echo "Decompressing gzipped kernel..."; gunzip -c /boot/vmlinuz-efi.tmp > /boot/vmlinuz-efi && rm /boot/vmlinuz-efi.tmp; else mv /boot/vmlinuz-efi.tmp /boot/vmlinuz-efi; fi`,
+              `KERNEL_TYPE=$(file /boot/vmlinuz-efi 2>/dev/null)`,
+              `echo "Final kernel file type: $KERNEL_TYPE"`,
+              // Handle PE32+ if still present - use kernel directly without extraction since iPXE can boot it
+              `case "$KERNEL_TYPE" in *PE32+*|*EFI*application*) echo "WARNING: Kernel is PE32+ EFI executable"; echo "GRUB may fail to boot this - recommend using iPXE chainload or installing kernel-core package"; echo "Keeping PE32+ kernel as-is for now..."; ;; *ARM64*|*aarch64*|*Image*|*data*) echo "Kernel appears to be raw ARM64 format - suitable for GRUB"; ;; *) echo "Unknown kernel format - attempting to use anyway"; ;; esac`,
+              // Get kernel version for initramfs rebuild
+              `KVER=$(basename $(dirname "$KERNEL_FILE"))`,
+              `echo "Kernel version: $KVER"`,
+              // Rebuild initramfs with NFS support using network-legacy (no NetworkManager dependency)
+              `echo "Rebuilding initramfs with NFS and network support..."`,
+              `dracut --force --add "nfs network-legacy base" --add-drivers "nfs sunrpc" --omit "network-manager ifcfg" --kver $KVER /boot/initrd.img $KVER || echo "Initramfs rebuild failed"`,
+              // Fallback: if rebuild fails, use existing initramfs
+              `if [ ! -f /boot/initrd.img ]; then echo "Initramfs rebuild failed, using existing..."; INITRD=$(find /boot -name "initramfs*" | grep -v kdump | head -n 1); if [ -z "$INITRD" ]; then INITRD=$(find /lib/modules -name "initramfs*" | grep -v kdump | head -n 1); fi; cp $INITRD /boot/initrd.img; fi`,
+              `ls -la /boot/vmlinuz-efi /boot/initrd.img`,
               `echo "root:root" | chpasswd`,
             ],
           });
         }
-        return;
       }
 
       // Fetch boot resources and machines if commissioning or listing.
@@ -714,8 +749,155 @@ rm -rf ${artifacts.join(' ')}`);
           ignore: machine ? [machine.system_id] : [],
         });
 
-      // Handle commissioning tasks (placeholder for future implementation).
+      if (workflowsConfig[workflowId].type === 'chroot-debootstrap') {
+        if (options.ubuntuToolsBuild) {
+          UnderpostCloudInit.API.buildTools({
+            workflowId,
+            nfsHostPath,
+            hostname,
+            callbackMetaData,
+            dev: options.dev,
+          });
 
+          const { chronyc, keyboard } = workflowsConfig[workflowId];
+          const { timezone, chronyConfPath } = chronyc;
+          const systemProvisioning = 'ubuntu';
+
+          UnderpostBaremetal.API.crossArchRunner({
+            nfsHostPath,
+            bootstrapArch,
+            callbackMetaData,
+            steps: [
+              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].base(),
+              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].user(),
+              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].timezone({
+                timezone,
+                chronyConfPath,
+              }),
+              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].keyboard(keyboard.layout),
+            ],
+          });
+        }
+
+        if (options.ubuntuToolsTest)
+          UnderpostBaremetal.API.crossArchRunner({
+            nfsHostPath,
+            bootstrapArch,
+            callbackMetaData,
+            steps: [
+              `chmod +x /underpost/date.sh`,
+              `chmod +x /underpost/keyboard.sh`,
+              `chmod +x /underpost/dns.sh`,
+              `chmod +x /underpost/help.sh`,
+              `chmod +x /underpost/host.sh`,
+              `chmod +x /underpost/test.sh`,
+              `chmod +x /underpost/start.sh`,
+              `chmod +x /underpost/reset.sh`,
+              `chmod +x /underpost/shutdown.sh`,
+              `chmod +x /underpost/device_scan.sh`,
+              `chmod +x /underpost/mac.sh`,
+              `chmod +x /underpost/enlistment.sh`,
+              `sudo chmod 700 ~/.ssh/`, // Set secure permissions for .ssh directory.
+              `sudo chmod 600 ~/.ssh/authorized_keys`, // Set secure permissions for authorized_keys.
+              `sudo chmod 644 ~/.ssh/known_hosts`, // Set permissions for known_hosts.
+              `sudo chmod 600 ~/.ssh/id_rsa`, // Set secure permissions for private key.
+              `sudo chmod 600 /etc/ssh/ssh_host_ed25519_key`, // Set secure permissions for host key.
+              `chown -R root:root ~/.ssh`, // Ensure root owns the .ssh directory.
+              `/underpost/test.sh`,
+            ],
+          });
+      }
+
+      if (workflowsConfig[workflowId].type === 'chroot-container') {
+        if (options.rockyToolsBuild) {
+          const { chronyc, keyboard } = workflowsConfig[workflowId];
+          const { timezone } = chronyc;
+          const systemProvisioning = 'rocky';
+
+          UnderpostBaremetal.API.crossArchRunner({
+            nfsHostPath,
+            bootstrapArch,
+            callbackMetaData,
+            steps: [
+              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].base(),
+              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].user(),
+              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].timezone({
+                timezone,
+              }),
+              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].keyboard(keyboard.layout),
+            ],
+          });
+        }
+
+        if (options.rockyToolsTest)
+          UnderpostBaremetal.API.crossArchRunner({
+            nfsHostPath,
+            bootstrapArch,
+            callbackMetaData,
+            steps: [
+              `node --version`,
+              `npm --version`,
+              `underpost --version`,
+              `timedatectl status`,
+              `localectl status`,
+              `id root`,
+              `ls -la /home/root/.ssh/`,
+              `cat /home/root/.ssh/authorized_keys`,
+              'underpost test',
+            ],
+          });
+      }
+
+      if (options.cloudInit || options.cloudInitUpdate) {
+        const { chronyc, networkInterfaceName } = workflowsConfig[workflowId];
+        const { timezone, chronyConfPath } = chronyc;
+        const authCredentials = UnderpostCloudInit.API.authCredentialsFactory();
+        const { cloudConfigSrc } = UnderpostCloudInit.API.configFactory(
+          {
+            controlServerIp: callbackMetaData.runnerHost.ip,
+            hostname,
+            commissioningDeviceIp: ipAddress,
+            gatewayip: callbackMetaData.runnerHost.ip,
+            mac: macAddress,
+            timezone,
+            chronyConfPath,
+            networkInterfaceName,
+            ubuntuToolsBuild: options.ubuntuToolsBuild,
+            bootcmd: options.bootcmd,
+            runcmd: options.runcmd,
+          },
+          authCredentials,
+        );
+
+        shellExec(`mkdir -p ${bootstrapHttpServerPath}`);
+        fs.writeFileSync(
+          `${bootstrapHttpServerPath}/${hostname}/cloud-init/user-data`,
+          `#cloud-config\n${cloudConfigSrc}`,
+          'utf8',
+        );
+        fs.writeFileSync(
+          `${bootstrapHttpServerPath}/${hostname}/cloud-init/meta-data`,
+          `instance-id: ${hostname}\nlocal-hostname: ${hostname}`,
+          'utf8',
+        );
+        fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/vendor-data`, ``, 'utf8');
+
+        logger.info(`Cloud-init files written to ${bootstrapHttpServerPath}`);
+      }
+
+      // Rebuild NFS server configuration.
+      if (
+        (options.nfsBuildServer === true || options.commission === true) &&
+        (workflowsConfig[workflowId].type === 'iso-nfs' ||
+          workflowsConfig[workflowId].type === 'chroot-debootstrap' ||
+          workflowsConfig[workflowId].type === 'chroot-container')
+      ) {
+        shellExec(`${underpostRoot}/scripts/nat-iptables.sh`, { silent: true });
+        UnderpostBaremetal.API.rebuildNfsServer({
+          nfsHostPath,
+        });
+      }
+      // Handle commissioning tasks
       if (options.commission === true) {
         let { firmwares, networkInterfaceName, maas, menuentryStr, type } = workflowsConfig[workflowId];
 
@@ -811,6 +993,7 @@ rm -rf ${artifacts.join(' ')}`);
             cloudInit: options.cloudInit,
             machine,
             dev: options.dev,
+            osIdLike: workflowsConfig[workflowId].osIdLike || '',
           });
 
           // Check if iPXE mode is enabled AND the iPXE EFI binary exists
@@ -887,121 +1070,8 @@ rm -rf ${artifacts.join(' ')}`);
           bootstrapHttpServerPort:
             options.bootstrapHttpServerPort || workflowsConfig[workflowId].bootstrapHttpServerPort,
         });
-      }
 
-      if (options.cloudInit || options.cloudInitUpdate) {
-        const { chronyc, networkInterfaceName } = workflowsConfig[workflowId];
-        const { timezone, chronyConfPath } = chronyc;
-        const authCredentials = UnderpostCloudInit.API.authCredentialsFactory();
-        const { cloudConfigSrc } = UnderpostCloudInit.API.configFactory(
-          {
-            controlServerIp: callbackMetaData.runnerHost.ip,
-            hostname,
-            commissioningDeviceIp: ipAddress,
-            gatewayip: callbackMetaData.runnerHost.ip,
-            mac: macAddress,
-            timezone,
-            chronyConfPath,
-            networkInterfaceName,
-            ubuntuToolsBuild: options.ubuntuToolsBuild,
-            bootcmd: options.bootcmd,
-            runcmd: options.runcmd,
-          },
-          authCredentials,
-        );
-
-        shellExec(`mkdir -p ${bootstrapHttpServerPath}`);
-        fs.writeFileSync(
-          `${bootstrapHttpServerPath}/${hostname}/cloud-init/user-data`,
-          `#cloud-config\n${cloudConfigSrc}`,
-          'utf8',
-        );
-        fs.writeFileSync(
-          `${bootstrapHttpServerPath}/${hostname}/cloud-init/meta-data`,
-          `instance-id: ${hostname}\nlocal-hostname: ${hostname}`,
-          'utf8',
-        );
-        fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/vendor-data`, ``, 'utf8');
-
-        logger.info(`Cloud-init files written to ${bootstrapHttpServerPath}`);
-        if (options.cloudInitUpdate) return;
-      }
-
-      if (workflowsConfig[workflowId].type === 'chroot') {
-        if (options.ubuntuToolsBuild) {
-          UnderpostCloudInit.API.buildTools({
-            workflowId,
-            nfsHostPath,
-            hostname,
-            callbackMetaData,
-            dev: options.dev,
-          });
-
-          const { chronyc, keyboard } = workflowsConfig[workflowId];
-          const { timezone, chronyConfPath } = chronyc;
-          const systemProvisioning = 'ubuntu';
-
-          UnderpostBaremetal.API.crossArchRunner({
-            nfsHostPath,
-            bootstrapArch,
-            callbackMetaData,
-            steps: [
-              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].base(),
-              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].user(),
-              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].timezone({
-                timezone,
-                chronyConfPath,
-              }),
-              ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].keyboard(keyboard.layout),
-            ],
-          });
-        }
-
-        if (options.ubuntuToolsTest)
-          UnderpostBaremetal.API.crossArchRunner({
-            nfsHostPath,
-            bootstrapArch,
-            callbackMetaData,
-            steps: [
-              `chmod +x /underpost/date.sh`,
-              `chmod +x /underpost/keyboard.sh`,
-              `chmod +x /underpost/dns.sh`,
-              `chmod +x /underpost/help.sh`,
-              `chmod +x /underpost/host.sh`,
-              `chmod +x /underpost/test.sh`,
-              `chmod +x /underpost/start.sh`,
-              `chmod +x /underpost/reset.sh`,
-              `chmod +x /underpost/shutdown.sh`,
-              `chmod +x /underpost/device_scan.sh`,
-              `chmod +x /underpost/mac.sh`,
-              `chmod +x /underpost/enlistment.sh`,
-              `sudo chmod 700 ~/.ssh/`, // Set secure permissions for .ssh directory.
-              `sudo chmod 600 ~/.ssh/authorized_keys`, // Set secure permissions for authorized_keys.
-              `sudo chmod 644 ~/.ssh/known_hosts`, // Set permissions for known_hosts.
-              `sudo chmod 600 ~/.ssh/id_rsa`, // Set secure permissions for private key.
-              `sudo chmod 600 /etc/ssh/ssh_host_ed25519_key`, // Set secure permissions for host key.
-              `chown -R root:root ~/.ssh`, // Ensure root owns the .ssh directory.
-              `/underpost/test.sh`,
-            ],
-          });
-      }
-
-      shellExec(`${underpostRoot}/scripts/nat-iptables.sh`, { silent: true });
-      // Rebuild NFS server configuration.
-      if (
-        workflowsConfig[workflowId].type === 'iso-nfs' ||
-        workflowsConfig[workflowId].type === 'chroot' ||
-        workflowsConfig[workflowId].type === 'chroot-container'
-      )
-        UnderpostBaremetal.API.rebuildNfsServer({
-          nfsHostPath,
-        });
-
-      // Final commissioning steps.
-      if (options.commission === true) {
-        const { type } = workflowsConfig[workflowId];
-
-        if (type === 'chroot' || type === 'chroot-container')
+        if (type === 'chroot-debootstrap' || type === 'chroot-container')
           await UnderpostBaremetal.API.nfsMountCallback({
             hostname,
             nfsHostPath,
@@ -1027,7 +1097,7 @@ rm -rf ${artifacts.join(' ')}`);
 
         const { discovery } = await UnderpostBaremetal.API.commissionMonitor(commissionMonitorPayload);
 
-        if ((type === 'chroot' || type === 'chroot-container') && options.cloudInit === true) {
+        if ((type === 'chroot-debootstrap' || type === 'chroot-container') && options.cloudInit === true) {
           openTerminal(`node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs cloud-init`);
           openTerminal(
             `node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs cloud-init-machine`,
@@ -1895,11 +1965,12 @@ shell
      * @param {string} options.networkInterfaceName - The name of the network interface.
      * @param {string} options.fileSystemUrl - The URL of the root filesystem.
      * @param {number} options.bootstrapHttpServerPort - The port of the bootstrap HTTP server.
-     * @param {string} options.type - The type of boot ('iso-ram', 'chroot', 'iso-nfs', etc.).
+     * @param {string} options.type - The type of boot ('iso-ram', 'chroot-debootstrap', 'chroot-container', 'iso-nfs', etc.).
      * @param {string} options.macAddress - The MAC address of the client.
      * @param {boolean} options.cloudInit - Whether to include cloud-init parameters.
      * @param {object} options.machine - The machine object containing system_id.
      * @param {boolean} [options.dev=false] - Whether to enable dev mode with dracut debugging parameters.
+     * @param {string} [options.osIdLike=''] - OS family identifier (e.g., 'rhel centos fedora' or 'debian ubuntu').
      * @returns {object} An object containing the constructed command line string.
      * @memberof UnderpostBaremetal
      */
@@ -1920,6 +1991,7 @@ shell
         cloudInit: false,
         machine: { system_id: '' },
         dev: false,
+        osIdLike: '',
       },
     ) {
       // Construct kernel command line arguments for NFS boot.
@@ -1937,6 +2009,7 @@ shell
         type,
         macAddress,
         cloudInit,
+        osIdLike,
       } = options;
 
       const ipParam = true
@@ -1945,12 +2018,11 @@ shell
         : 'ip=dhcp';
 
       const nfsOptions = `${
-        type === 'chroot' || type === 'chroot-container'
+        type === 'chroot-debootstrap' || type === 'chroot-container'
           ? [
               'tcp',
               'nfsvers=3',
               'nolock',
-              'vers=3',
               // 'protocol=tcp',
               // 'hard=true',
               'port=2049',
@@ -2030,61 +2102,36 @@ shell
         'overlayroot_cfgdisk=disabled', // Ignore external overlay configurations
       ];
 
-      const baseNfsParams = [`netboot=nfs`];
-
       let cmd = [];
       if (type === 'iso-ram') {
         const netBootParams = [`netboot=url`];
         if (fileSystemUrl) netBootParams.push(`url=${fileSystemUrl.replace('https', 'http')}`);
         cmd = [ipParam, `boot=casper`, ...netBootParams, ...kernelParams];
-      } else if (type === 'chroot' || type === 'chroot-container') {
-        let qemuNfsRootParams = [
-          `root=/dev/nfs`,
-          `rootfstype=nfs`,
-          `initrd=initrd.img`,
-          `init=/sbin/init`,
-          `rd.neednet=1`,
-          `rd.driver.pre=nfs`,
-          `rd.driver.pre=bcmgenet`,
-          `rd.driver.pre=genet`,
-          `rd.timeout=90`,
-          `rd.retry=10`,
-          `rd.net.timeout.carrier=60`,
-          `rd.net.timeout.ifup=60`,
-          `rd.net.timeout.iflink=60`,
-          `rd.nm=0`,
-          `rd.networkmanager=0`,
-          `rd.net.legacy`,
-          `rd.peerdns=0`,
-          `rd.iscsi.firmware=0`,
-        ];
+      } else if (type === 'chroot-debootstrap' || type === 'chroot-container') {
+        let qemuNfsRootParams = [`root=/dev/nfs`, `rootfstype=nfs`];
 
-        // Add Rocky Linux / RHEL specific parameters
-        if (hostname.match(/rocky|rhel|centos|alma/i)) {
-          qemuNfsRootParams = qemuNfsRootParams.concat([
-            `selinux=0`,
-            `enforcing=0`,
-            `systemd.unified_cgroup_hierarchy=0`,
-            `systemd.mask=nm-wait-online-initrd.service`,
-            `systemd.mask=NetworkManager-wait-online.service`,
-          ]);
+        // Determine OS family from osIdLike configuration
+        const isRhelBased = osIdLike && osIdLike.match(/rhel|centos|fedora|alma|rocky/i);
+        const isDebianBased = osIdLike && osIdLike.match(/debian|ubuntu/i);
+
+        // Add RHEL/Rocky/Fedora based images specific parameters
+        if (isRhelBased) {
+          qemuNfsRootParams = qemuNfsRootParams.concat([`rd.neednet=1`, `rd.timeout=180`, `selinux=0`, `enforcing=0`]);
+        }
+        // Add Debian/Ubuntu based images specific parameters
+        else if (isDebianBased) {
+          qemuNfsRootParams = qemuNfsRootParams.concat([`initrd=initrd.img`, `init=/sbin/init`]);
         }
 
         // Add debugging parameters in dev mode for dracut troubleshooting
         if (options.dev) {
-          qemuNfsRootParams = qemuNfsRootParams.concat([
-            `rd.shell`,
-            `rd.debug`,
-            `rd.info`,
-            `systemd.log_level=debug`,
-            `systemd.log_target=console`,
-          ]);
+          // qemuNfsRootParams = qemuNfsRootParams.concat([`rd.shell`, `rd.debug`]);
         }
 
-        cmd = [ipParam, ...baseNfsParams, ...qemuNfsRootParams, nfsRootParam, ...kernelParams];
+        cmd = [ipParam, ...qemuNfsRootParams, nfsRootParam, ...kernelParams];
       } else {
         // 'iso-nfs'
-        cmd = [ipParam, ...baseNfsParams, nfsRootParam, ...kernelParams, ...performanceParams];
+        cmd = [ipParam, `netboot=nfs`, nfsRootParam, ...kernelParams, ...performanceParams];
 
         cmd.push(`ifname=${networkInterfaceName}:${macAddress}`);
 
@@ -2119,7 +2166,7 @@ shell
      * @param {string} [params.hostname] - The hostname for the machine (optional).
      * @param {string} [params.architecture] - The architecture of the machine (optional).
      * @param {object} [params.machine] - Existing machine payload to use (optional).
-     * @returns {Promise<void>} A promise that resolves when commissioning is initiated or after a delay.
+     * @returns {Promise<void>} A promise object with machine and discovery details.
      * @memberof UnderpostBaremetal
      */
     async commissionMonitor({ macAddress, ipAddress, hostname, architecture, machine }) {
@@ -2419,7 +2466,10 @@ EOF`);
       if (!workflowsConfig[workflowId]) {
         throw new Error(`Workflow configuration not found for ID: ${workflowId}`);
       }
-      if (workflowsConfig[workflowId].type === 'chroot' || workflowsConfig[workflowId].type === 'chroot-container') {
+      if (
+        workflowsConfig[workflowId].type === 'chroot-debootstrap' ||
+        workflowsConfig[workflowId].type === 'chroot-container'
+      ) {
         const mounts = {
           bind: ['/proc', '/sys', '/run'],
           rbind: ['/dev'],
@@ -2650,6 +2700,84 @@ logdir /var/log/chrony
           `sudo sed -i 's/XKBLAYOUT="us"/XKBLAYOUT="${keyCode}"/' /etc/default/keyboard`,
           `sudo dpkg-reconfigure --frontend noninteractive keyboard-configuration`,
           `sudo systemctl restart keyboard-setup.service`,
+        ],
+      },
+      /**
+       * @property {object} rocky
+       * @description Provisioning steps for Rocky Linux-based systems.
+       * @memberof UnderpostBaremetal.systemProvisioningFactory
+       * @namespace UnderpostBaremetal.systemProvisioningFactory.rocky
+       */
+      rocky: {
+        /**
+         * @method base
+         * @description Generates shell commands for basic Rocky Linux system provisioning.
+         * This includes installing Node.js, npm, and underpost CLI tools.
+         * @param {object} params - The parameters for the function.
+         * @memberof UnderpostBaremetal.systemProvisioningFactory.rocky
+         * @returns {string[]} An array of shell commands.
+         */
+        base: () => [
+          `dnf -y update`,
+          `dnf -y install epel-release`,
+          `dnf -y install --allowerasing bzip2 sudo curl net-tools openssh-server nano vim-enhanced less openssl-devel wget git gnupg2 libnsl perl`,
+          `dnf clean all`,
+
+          // Install Node.js
+          `curl -fsSL https://rpm.nodesource.com/setup_24.x | bash -`,
+          `dnf install nodejs -y`,
+          `dnf clean all`,
+
+          // Verify Node.js and npm versions
+          `node --version`,
+          `npm --version`,
+
+          // Install underpost ci/cd cli
+          `npm install -g underpost`,
+          `underpost --version`,
+        ],
+        /**
+         * @method user
+         * @description Generates shell commands for creating a root user and configuring SSH access on Rocky Linux.
+         * This is a critical security step for initial access to the provisioned system.
+         * @memberof UnderpostBaremetal.systemProvisioningFactory.rocky
+         * @returns {string[]} An array of shell commands.
+         */
+        user: () => [
+          `useradd -m -s /bin/bash -G wheel root`, // Create a root user with bash shell and wheel group (sudo on RHEL)
+          `echo 'root:root' | chpasswd`, // Set a default password for the root user
+          `mkdir -p /home/root/.ssh`, // Create .ssh directory for authorized keys
+          // Add the public SSH key to authorized_keys for passwordless login
+          `echo '${fs.readFileSync(
+            `/home/dd/engine/engine-private/deploy/id_rsa.pub`,
+            'utf8',
+          )}' > /home/root/.ssh/authorized_keys`,
+          `chown -R root:root /home/root/.ssh`, // Set ownership for security
+          `chmod 700 /home/root/.ssh`, // Set permissions for the .ssh directory
+          `chmod 600 /home/root/.ssh/authorized_keys`, // Set permissions for authorized_keys
+        ],
+        /**
+         * @method timezone
+         * @description Generates shell commands for configuring the system timezone on Rocky Linux.
+         * @param {object} params - The parameters for the function.
+         * @param {string} params.timezone - The timezone string (e.g., 'America/Santiago').
+         * @memberof UnderpostBaremetal.systemProvisioningFactory.rocky
+         * @returns {string[]} An array of shell commands.
+         */
+        timezone: ({ timezone }) => [`timedatectl set-timezone ${timezone}`, `timedatectl status`],
+        /**
+         * @method keyboard
+         * @description Generates shell commands for configuring the keyboard layout on Rocky Linux.
+         * This uses localectl to set the keyboard layout for both console and X11.
+         * @param {string} [keyCode='us'] - The keyboard layout code (e.g., 'us', 'es').
+         * @memberof UnderpostBaremetal.systemProvisioningFactory.rocky
+         * @returns {string[]} An array of shell commands.
+         */
+        keyboard: (keyCode = 'us') => [
+          `localectl set-locale LANG=en_US.UTF-8`,
+          `localectl set-keymap ${keyCode}`,
+          `localectl set-x11-keymap ${keyCode}`,
+          `localectl status`,
         ],
       },
     },

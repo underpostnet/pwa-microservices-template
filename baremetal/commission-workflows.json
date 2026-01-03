@@ -1,6 +1,7 @@
 {
   "rpi4mbarm64-iso-ram": {
     "type": "iso-ram",
+    "osIdLike": "debian ubuntu",
     "tftpPrefix": "rpi4mb",
     "bootstrapHttpServerPort": 8888,
     "isoUrl": "",
@@ -28,7 +29,8 @@
     }
   },
   "rpi4mbarm64-chroot": {
-    "type": "chroot",
+    "type": "chroot-debootstrap",
+    "osIdLike": "debian ubuntu",
     "tftpPrefix": "rpi4mb",
     "bootstrapHttpServerPort": 8888,
     "menuentryStr": "UNDERPOST.NET UEFI/GRUB/MAAS RPi4 CHROOT commissioning (ARM64)",
@@ -62,6 +64,7 @@
   },
   "rpi4mbarm64-iso-nfs": {
     "type": "iso-nfs",
+    "osIdLike": "debian ubuntu",
     "tftpPrefix": "rpi4mb",
     "bootstrapHttpServerPort": 8888,
     "isoUrl": "",
@@ -90,10 +93,11 @@
   },
   "rpi4mbarm64-chroot-rocky9": {
     "type": "chroot-container",
+    "osIdLike": "rhel centos fedora",
     "tftpPrefix": "rpi4mb",
     "bootstrapHttpServerPort": 8888,
     "menuentryStr": "UNDERPOST.NET Rocky9 Container CHROOT NFS (ARM64)",
-    "networkInterfaceName": "enabcm6e4ei0",
+    "networkInterfaceName": "eth0",
     "firmwares": [
       {
         "url": "https://github.com/pftf/RPi4/releases/download/v1.41/RPi4_UEFI_Firmware_v1.41.zip",
@@ -108,7 +112,22 @@
     "container": {
       "image": "quay.io/rockylinux/rockylinux:9",
       "architecture": "arm64",
-      "packages": ["sudo", "iproute", "tar", "wget", "curl", "vim-minimal", "kernel"]
+      "packages": [
+        "sudo",
+        "iproute",
+        "tar",
+        "wget",
+        "curl",
+        "vim-minimal",
+        "kernel",
+        "dracut-network",
+        "dracut-config-generic",
+        "nfs-utils",
+        "file",
+        "binutils",
+        "iputils",
+        "net-tools"
+      ]
     },
     "keyboard": {
       "layout": "es"
