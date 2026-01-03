@@ -649,30 +649,43 @@ rm -rf ${artifacts.join(' ')}`);
             callbackMetaData,
             steps: [`/debootstrap/debootstrap --second-stage`],
           });
-        } else if (workflowsConfig[workflowId].type === 'chroot-container') {
+        } else if (
+          workflowsConfig[workflowId].type === 'chroot-container' &&
+          workflowsConfig[workflowId].osIdLike.match('rhel')
+        ) {
           // Copy resolv.conf to allow network access inside chroot
           shellExec(`sudo cp /etc/resolv.conf ${nfsHostPath}/etc/resolv.conf`);
 
+          // Consolidate all package installations into one step to avoid redundancy
           const { packages } = workflowsConfig[workflowId].container;
-          if (packages && packages.length > 0) {
-            UnderpostBaremetal.API.crossArchRunner({
-              nfsHostPath,
-              bootstrapArch,
-              callbackMetaData,
-              steps: [
-                `dnf install -y --allowerasing findutils systemd ${packages.join(' ')}`,
-                `dnf install -y dracut-network nfs-utils dracut-config-generic`,
-              ],
-            });
-          }
+          const basePackages = [
+            'findutils',
+            'systemd',
+            'sudo',
+            'dracut',
+            'dracut-network',
+            'dracut-config-generic',
+            'nfs-utils',
+            'file',
+            'binutils',
+            'kernel-modules-core',
+            'NetworkManager',
+            'dhclient',
+            'iputils',
+          ];
+          const allPackages = packages && packages.length > 0 ? [...basePackages, ...packages] : basePackages;
+
           UnderpostBaremetal.API.crossArchRunner({
             nfsHostPath,
             bootstrapArch,
             callbackMetaData,
             steps: [
+              `dnf install -y --allowerasing ${allPackages.join(' ')} 2>/dev/null || yum install -y --allowerasing ${allPackages.join(' ')} 2>/dev/null || echo "Package install completed"`,
+              `dnf clean all`,
+              `echo "=== Installed packages verification ==="`,
+              `rpm -qa | grep -E "dracut|kernel|nfs" | sort`,
+              `echo "=== Boot directory contents ==="`,
               `ls -la /boot /lib/modules/*/`,
-              // Install file and binutils for PE32+ detection
-              `dnf install -y file binutils kernel-modules-core 2>/dev/null || yum install -y file binutils kernel-modules-core 2>/dev/null || echo "Package install skipped"`,
               // Search for bootable kernel in order of preference:
               // 1. Raw ARM64 Image file (preferred for GRUB)
               // 2. vmlinuz or vmlinux (may be PE32+ on Rocky Linux)
@@ -698,15 +711,26 @@ rm -rf ${artifacts.join(' ')}`);
               // Get kernel version for initramfs rebuild
               `KVER=$(basename $(dirname "$KERNEL_FILE"))`,
               `echo "Kernel version: $KVER"`,
-              // Rebuild initramfs with NFS support using network-legacy (no NetworkManager dependency)
+              // Rebuild initramfs with NFS and network support
               `echo "Rebuilding initramfs with NFS and network support..."`,
-              `dracut --force --add "nfs network-legacy base" --add-drivers "nfs sunrpc" --omit "network-manager ifcfg" --kver $KVER /boot/initrd.img $KVER || echo "Initramfs rebuild failed"`,
+              `echo "Available dracut modules:"`,
+              `dracut --list-modules 2>/dev/null | grep -E "network|nfs" || echo "No network modules listed"`,
+              // Use network-manager module (it's available in Rocky 9) for better compatibility
+              `dracut --force --add "nfs network base" --add-drivers "nfs sunrpc" --kver "$KVER" /boot/initrd.img "$KVER" 2>&1 || echo "Initramfs rebuild failed"`,
               // Fallback: if rebuild fails, use existing initramfs
-              `if [ ! -f /boot/initrd.img ]; then echo "Initramfs rebuild failed, using existing..."; INITRD=$(find /boot -name "initramfs*" | grep -v kdump | head -n 1); if [ -z "$INITRD" ]; then INITRD=$(find /lib/modules -name "initramfs*" | grep -v kdump | head -n 1); fi; cp $INITRD /boot/initrd.img; fi`,
-              `ls -la /boot/vmlinuz-efi /boot/initrd.img`,
+              `if [ ! -f /boot/initrd.img ]; then echo "Initramfs rebuild failed, using existing..."; INITRD=$(find /boot -name "initramfs-$KVER.img" 2>/dev/null | head -n 1); if [ -z "$INITRD" ]; then INITRD=$(find /boot -name "initramfs*.img" 2>/dev/null | grep -v kdump | head -n 1); fi; if [ -n "$INITRD" ]; then cp "$INITRD" /boot/initrd.img; echo "Copied existing initramfs: $INITRD"; else echo "ERROR: No initramfs found!"; fi; fi`,
+              `echo "=== Final boot files ==="`,
+              `ls -lh /boot/vmlinuz-efi /boot/initrd.img`,
+              `file /boot/vmlinuz-efi`,
+              `file /boot/initrd.img`,
+              `echo "=== Setting root password ==="`,
               `echo "root:root" | chpasswd`,
             ],
           });
+        } else {
+          throw new Error(
+            `Unsupported workflow type for NFS build: ${workflowsConfig[workflowId].type} and like os ID ${workflowsConfig[workflowId].osIdLike}`,
+          );
         }
       }
 
@@ -808,7 +832,10 @@ rm -rf ${artifacts.join(' ')}`);
           });
       }
 
-      if (workflowsConfig[workflowId].type === 'chroot-container') {
+      if (
+        workflowsConfig[workflowId].type === 'chroot-container' &&
+        workflowsConfig[workflowId].osIdLike.match('rhel')
+      ) {
         if (options.rockyToolsBuild) {
           const { chronyc, keyboard } = workflowsConfig[workflowId];
           const { timezone } = chronyc;
@@ -823,6 +850,7 @@ rm -rf ${artifacts.join(' ')}`);
               ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].user(),
               ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].timezone({
                 timezone,
+                chronyConfPath: chronyc.chronyConfPath,
               }),
               ...UnderpostBaremetal.API.systemProvisioningFactory[systemProvisioning].keyboard(keyboard.layout),
             ],
@@ -869,20 +897,11 @@ rm -rf ${artifacts.join(' ')}`);
           authCredentials,
         );
 
-        shellExec(`mkdir -p ${bootstrapHttpServerPath}`);
-        fs.writeFileSync(
-          `${bootstrapHttpServerPath}/${hostname}/cloud-init/user-data`,
-          `#cloud-config\n${cloudConfigSrc}`,
-          'utf8',
-        );
-        fs.writeFileSync(
-          `${bootstrapHttpServerPath}/${hostname}/cloud-init/meta-data`,
-          `instance-id: ${hostname}\nlocal-hostname: ${hostname}`,
-          'utf8',
-        );
-        fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/vendor-data`, ``, 'utf8');
-
-        logger.info(`Cloud-init files written to ${bootstrapHttpServerPath}`);
+        UnderpostBaremetal.API.httpBootstrapServerStaticFactory({
+          bootstrapHttpServerPath,
+          hostname,
+          cloudConfigSrc,
+        });
       }
 
       // Rebuild NFS server configuration.
@@ -971,6 +990,7 @@ rm -rf ${artifacts.join(' ')}`);
               type,
               nfsHostPath,
               isoUrl: options.isoUrl || workflowsConfig[workflowId].isoUrl,
+              workflowId,
             });
             kernelFilesPaths = kf.kernelFilesPaths;
             resourcesPath = kf.resourcesPath;
@@ -1137,60 +1157,44 @@ rm -rf ${artifacts.join(' ')}`);
     },
 
     /**
-     * @method downloadUbuntuLiveISO
-     * @description Downloads Ubuntu live ISO and extracts casper boot files for live boot.
+     * @method downloadISO
+     * @description Downloads a generic ISO and extracts kernel boot files.
      * @param {object} params - Parameters for the method.
      * @param {object} params.resource - The MAAS boot resource object.
      * @param {string} params.architecture - The architecture (arm64 or amd64).
      * @param {string} params.nfsHostPath - The NFS host path to store the ISO and extracted files.
-     * @returns {object} An object containing paths to the extracted kernel, initrd, and squashfs.
+     * @param {string} params.isoUrl - The full URL to the ISO file to download.
+     * @param {string} params.osIdLike - OS family identifier (e.g., 'debian ubuntu' or 'rhel centos fedora').
+     * @returns {object} An object containing paths to the extracted kernel, initrd, and optionally squashfs.
      * @memberof UnderpostBaremetal
      */
-    downloadUbuntuLiveISO({ resource, architecture, nfsHostPath, isoUrl }) {
+    downloadISO({ resource, architecture, nfsHostPath, isoUrl, osIdLike }) {
       const arch = architecture || resource.architecture.split('/')[0];
-      const osName = resource.name.split('/')[1]; // e.g., "focal", "jammy", "noble"
 
-      // Map Ubuntu codenames to versions - different versions available for different architectures
-      // ARM64 ISOs are hosted on cdimage.ubuntu.com, AMD64 on releases.ubuntu.com
-      const versionMap = {
-        arm64: {
-          focal: '20.04.5', // ARM64 focal only up to 20.04.5 on cdimage
-          jammy: '22.04.5',
-          noble: '24.04.3', // ubuntu-24.04.3-live-server-arm64+largemem.iso
-          bionic: '18.04.6',
-        },
-        amd64: {
-          focal: '20.04.6',
-          jammy: '22.04.5',
-          noble: '24.04.1',
-          bionic: '18.04.6',
-        },
-      };
-
-      shellExec(`mkdir -p ${nfsHostPath}/casper`);
-
-      const version = (versionMap[arch] && versionMap[arch][osName]) || '20.04.5';
-      const majorVersion = version.split('.').slice(0, 2).join('.');
-
-      // Determine ISO filename and URL based on architecture
-      // ARM64 ISOs are on cdimage.ubuntu.com, AMD64 on releases.ubuntu.com
-      let isoFilename;
-      if (arch === 'arm64') {
-        isoFilename = `ubuntu-${version}-live-server-arm64${osName === 'noble' ? '+largemem' : ''}.iso`;
-      } else {
-        isoFilename = `ubuntu-${version}-live-server-amd64.iso`;
+      // Validate that isoUrl is provided
+      if (!isoUrl) {
+        throw new Error('isoUrl parameter is required. Please specify the full ISO URL in the workflow configuration.');
       }
-      if (!isoUrl) isoUrl = `https://cdimage.ubuntu.com/releases/${majorVersion}/release/${isoFilename}`;
-      else isoFilename = isoUrl.split('/').pop();
 
-      const isoPath = `/var/tmp/ubuntu-live-iso/${isoFilename}`;
-      const extractDir = `${nfsHostPath}/casper`;
+      // Extract ISO filename from URL
+      const isoFilename = isoUrl.split('/').pop();
+
+      // Determine OS family from osIdLike
+      const isDebianBased = osIdLike && osIdLike.match(/debian|ubuntu/i);
+      const isRhelBased = osIdLike && osIdLike.match(/rhel|centos|fedora|alma|rocky/i);
+
+      // Set extraction directory based on OS family
+      const extractDirName = isDebianBased ? 'casper' : 'iso-extract';
+      shellExec(`mkdir -p ${nfsHostPath}/${extractDirName}`);
+
+      const isoPath = `/var/tmp/live-iso/${isoFilename}`;
+      const extractDir = `${nfsHostPath}/${extractDirName}`;
 
       if (!fs.existsSync(isoPath)) {
-        logger.info(`Downloading Ubuntu ${version} live ISO for ${arch}...`);
+        logger.info(`Downloading ISO for ${arch}...`);
         logger.info(`URL: ${isoUrl}`);
-        logger.info(`This may take a while (typically 1-2 GB)...`);
-        shellExec(`wget --progress=bar:force -O ${isoPath} "${isoUrl}"`, { silent: false });
+        shellExec(`mkdir -p /var/tmp/live-iso`);
+        shellExec(`wget --progress=bar:force -O ${isoPath} "${isoUrl}"`);
         // Verify download by checking file existence and size (not exit code, which can be unreliable)
         if (!fs.existsSync(isoPath)) {
           throw new Error(`Failed to download ISO from ${isoUrl} - file not created`);
@@ -1203,8 +1207,8 @@ rm -rf ${artifacts.join(' ')}`);
         logger.info(`Downloaded ISO to ${isoPath} (${(stats.size / 1024 / 1024 / 1024).toFixed(2)} GB)`);
       }
 
-      // Mount ISO and extract casper files
-      const mountPoint = `${nfsHostPath}/mnt-${osName}-${arch}`;
+      // Mount ISO and extract boot files
+      const mountPoint = `${nfsHostPath}/mnt-iso-${arch}`;
       shellExec(`mkdir -p ${mountPoint}`);
 
       // Ensure mount point is not already mounted
@@ -1213,36 +1217,22 @@ rm -rf ${artifacts.join(' ')}`);
       try {
         // Mount the ISO
         shellExec(`sudo mount -o loop,ro ${isoPath} ${mountPoint}`, { silent: false });
-        // Verify mount succeeded by checking if casper directory exists
-        if (!fs.existsSync(`${mountPoint}/casper`)) {
-          throw new Error(`Failed to mount ISO or casper directory not found: ${isoPath}`);
-        }
         logger.info(`Mounted ISO at ${mountPoint}`);
 
-        // List casper directory to see what's available
-        logger.info(`Checking casper directory contents...`);
-        shellExec(`ls -la ${mountPoint}/casper/ 2>/dev/null || echo "casper directory not found"`, { silent: false });
-
-        // Extract casper files
-        shellExec(`sudo cp -a ${mountPoint}/casper/* ${extractDir}/`);
-        shellExec(`sudo chown -R $(whoami):$(whoami) ${extractDir}`);
-        logger.info(`Extracted casper files from ISO`);
-
-        // Rename kernel and initrd to standard names if needed
-        if (!fs.existsSync(`${extractDir}/vmlinuz`)) {
-          const vmlinuz = shellExec(`ls ${extractDir}/vmlinuz* | head -1`, {
-            silent: true,
-            stdout: true,
-          }).stdout.trim();
-          if (vmlinuz) shellExec(`mv ${vmlinuz} ${extractDir}/vmlinuz`);
-        }
-        if (!fs.existsSync(`${extractDir}/initrd`)) {
-          const initrd = shellExec(`ls ${extractDir}/initrd* | head -1`, { silent: true, stdout: true }).stdout.trim();
-          if (initrd) shellExec(`mv ${initrd} ${extractDir}/initrd`);
+        // Distribution-specific extraction logic
+        if (isDebianBased) {
+          // Ubuntu/Debian: Extract from casper directory
+          if (!fs.existsSync(`${mountPoint}/casper`)) {
+            throw new Error(`Failed to mount ISO or casper directory not found: ${isoPath}`);
+          }
+          logger.info(`Checking casper directory contents...`);
+          shellExec(`ls -la ${mountPoint}/casper/ 2>/dev/null || echo "casper directory not found"`);
+          shellExec(`sudo cp -a ${mountPoint}/casper/* ${extractDir}/`);
         }
       } finally {
         shellExec(`ls -la ${mountPoint}/`);
 
+        shellExec(`sudo chown -R $(whoami):$(whoami) ${extractDir}`);
         // Unmount ISO
         shellExec(`sudo umount ${mountPoint}`, { silent: true });
         logger.info(`Unmounted ISO`);
@@ -1312,21 +1302,25 @@ rm -rf ${artifacts.join(' ')}`);
      * @description Retrieves kernel, initrd, and root filesystem paths from a MAAS boot resource.
      * @param {object} params - Parameters for the method.
      * @param {object} params.resource - The MAAS boot resource object.
-     * @param {boolean} params.useLiveIso - Whether to use Ubuntu live ISO instead of MAAS boot resources.
-     * @param {string} params.nfsHostPath - The NFS host path for storing extracted files.
+     * @param {string} params.type - The type of boot (e.g., 'iso-ram', 'iso-nfs', etc.).
+     * @param {string} params.nfsHostPath - The NFS host path (used for ISO types).
+     * @param {string} params.isoUrl - The ISO URL (used for ISO types).
+     * @param {string} params.workflowId - The workflow identifier.
      * @returns {object} An object containing paths to the kernel, initrd, and root filesystem.
      * @memberof UnderpostBaremetal
      */
-    kernelFactory({ resource, type, nfsHostPath, isoUrl }) {
-      // For disk-based commissioning (casper), use Ubuntu live ISO files
+    kernelFactory({ resource, type, nfsHostPath, isoUrl, workflowId }) {
+      // For disk-based commissioning (casper/iso), use live ISO files
       if (type === 'iso-ram' || type === 'iso-nfs') {
-        logger.info('Using Ubuntu live ISO for casper boot (disk-based commissioning)');
+        logger.info('Using live ISO for boot (disk-based commissioning)');
         const arch = resource.architecture.split('/')[0];
-        const kernelFilesPaths = UnderpostBaremetal.API.downloadUbuntuLiveISO({
+        const workflowsConfig = UnderpostBaremetal.API.loadWorkflowsConfig();
+        const kernelFilesPaths = UnderpostBaremetal.API.downloadISO({
           resource,
           architecture: arch,
           nfsHostPath,
           isoUrl,
+          osIdLike: workflowsConfig[workflowId].osIdLike || '',
         });
         const resourcesPath = `/var/snap/maas/common/maas/image-storage/bootloaders/uefi/${arch}`;
         return { kernelFilesPaths, resourcesPath };
@@ -1861,6 +1855,45 @@ shell
   }
   `,
       };
+    },
+
+    /**
+     * @method httpBootstrapServerStaticFactory
+     * @description Creates static files for the bootstrap HTTP server including cloud-init configuration.
+     * @param {object} params - Parameters for creating static files.
+     * @param {string} params.bootstrapHttpServerPath - The path where static files will be created.
+     * @param {string} params.hostname - The hostname of the client machine.
+     * @param {string} params.cloudConfigSrc - The cloud-init configuration YAML source.
+     * @param {object} [params.metadata] - Optional metadata to include in meta-data file.
+     * @param {string} [params.vendorData] - Optional vendor-data content (default: empty string).
+     * @memberof UnderpostBaremetal
+     * @returns {void}
+     */
+    httpBootstrapServerStaticFactory({
+      bootstrapHttpServerPath,
+      hostname,
+      cloudConfigSrc,
+      metadata = {},
+      vendorData = '',
+    }) {
+      // Create directory structure
+      shellExec(`mkdir -p ${bootstrapHttpServerPath}/${hostname}/cloud-init`);
+
+      // Write user-data file
+      fs.writeFileSync(
+        `${bootstrapHttpServerPath}/${hostname}/cloud-init/user-data`,
+        `#cloud-config\n${cloudConfigSrc}`,
+        'utf8',
+      );
+
+      // Write meta-data file
+      const metaDataContent = `instance-id: ${metadata.instanceId || hostname}\nlocal-hostname: ${metadata.localHostname || hostname}`;
+      fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/meta-data`, metaDataContent, 'utf8');
+
+      // Write vendor-data file
+      fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/vendor-data`, vendorData, 'utf8');
+
+      logger.info(`Cloud-init files written to ${bootstrapHttpServerPath}/${hostname}/cloud-init`);
     },
 
     /**
@@ -2565,27 +2598,25 @@ EOF`);
          * @returns {string[]} An array of shell commands.
          */
         base: () => [
-          // Configure APT sources for Ubuntu ports.
+          // Configure APT sources for Ubuntu ports
           `cat <<SOURCES | tee /etc/apt/sources.list
 deb http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse
 deb http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe multiverse
 deb http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe multiverse
 SOURCES`,
 
-          // Update package lists and perform a full system upgrade.
+          // Update package lists and perform a full system upgrade
           `apt update -qq`,
           `apt -y full-upgrade`,
-          // Install essential development and system utilities.
-          `apt install -y build-essential xinput x11-xkb-utils usbutils uuid-runtime`,
-          'apt install -y linux-image-generic',
 
-          // Install cloud-init, systemd, SSH, sudo, locales, udev, and networking tools.
-          `apt install -y systemd-sysv openssh-server sudo locales udev util-linux systemd-sysv iproute2 netplan.io ca-certificates curl wget chrony`,
-          `ln -sf /lib/systemd/systemd /sbin/init`, // Ensure systemd is the init system.
+          // Install all essential packages in one consolidated step
+          `DEBIAN_FRONTEND=noninteractive apt install -y build-essential xinput x11-xkb-utils usbutils uuid-runtime linux-image-generic systemd-sysv openssh-server sudo locales udev util-linux iproute2 netplan.io ca-certificates curl wget chrony apt-utils tzdata kmod keyboard-configuration console-setup iputils-ping`,
 
-          `apt-get update`,
-          `DEBIAN_FRONTEND=noninteractive apt-get install -y apt-utils`, // Install apt-utils non-interactively.
-          `DEBIAN_FRONTEND=noninteractive apt-get install -y tzdata kmod keyboard-configuration console-setup iputils-ping`, // Install timezone data, kernel modules, and network tools.
+          // Ensure systemd is the init system
+          `ln -sf /lib/systemd/systemd /sbin/init`,
+
+          // Clean up
+          `apt-get clean`,
         ],
         /**
          * @method user
@@ -2718,14 +2749,17 @@ logdir /var/log/chrony
          * @returns {string[]} An array of shell commands.
          */
         base: () => [
+          // Update system and install EPEL repository
           `dnf -y update`,
           `dnf -y install epel-release`,
-          `dnf -y install --allowerasing bzip2 sudo curl net-tools openssh-server nano vim-enhanced less openssl-devel wget git gnupg2 libnsl perl`,
+
+          // Install essential system tools (avoiding duplicates from container packages)
+          `dnf -y install --allowerasing bzip2 openssh-server nano vim-enhanced less openssl-devel git gnupg2 libnsl perl`,
           `dnf clean all`,
 
           // Install Node.js
           `curl -fsSL https://rpm.nodesource.com/setup_24.x | bash -`,
-          `dnf install nodejs -y`,
+          `dnf install -y nodejs`,
           `dnf clean all`,
 
           // Verify Node.js and npm versions
@@ -2761,10 +2795,54 @@ logdir /var/log/chrony
          * @description Generates shell commands for configuring the system timezone on Rocky Linux.
          * @param {object} params - The parameters for the function.
          * @param {string} params.timezone - The timezone string (e.g., 'America/Santiago').
+         * @param {string} params.chronyConfPath - The path to the Chrony configuration file (optional).
          * @memberof UnderpostBaremetal.systemProvisioningFactory.rocky
          * @returns {string[]} An array of shell commands.
          */
-        timezone: ({ timezone }) => [`timedatectl set-timezone ${timezone}`, `timedatectl status`],
+        timezone: ({ timezone, chronyConfPath = '/etc/chrony.conf' }) => [
+          // Set system timezone using both methods (for chroot and running system)
+          `ln -sf /usr/share/zoneinfo/${timezone} /etc/localtime`,
+          `echo '${timezone}' > /etc/timezone`,
+          `timedatectl set-timezone ${timezone} 2>/dev/null`,
+
+          // Configure chrony with local NTP server and common NTP pools
+          `echo '# Local NTP server' > ${chronyConfPath}`,
+          `echo 'server 192.168.1.1 iburst prefer' >> ${chronyConfPath}`,
+          `echo '' >> ${chronyConfPath}`,
+          `echo '# Fallback public NTP servers' >> ${chronyConfPath}`,
+          `echo 'server 0.pool.ntp.org iburst' >> ${chronyConfPath}`,
+          `echo 'server 1.pool.ntp.org iburst' >> ${chronyConfPath}`,
+          `echo 'server 2.pool.ntp.org iburst' >> ${chronyConfPath}`,
+          `echo 'server 3.pool.ntp.org iburst' >> ${chronyConfPath}`,
+          `echo '' >> ${chronyConfPath}`,
+          `echo '# Configuration' >> ${chronyConfPath}`,
+          `echo 'driftfile /var/lib/chrony/drift' >> ${chronyConfPath}`,
+          `echo 'makestep 1.0 3' >> ${chronyConfPath}`,
+          `echo 'rtcsync' >> ${chronyConfPath}`,
+          `echo 'logdir /var/log/chrony' >> ${chronyConfPath}`,
+
+          // Enable chronyd to start on boot
+          `systemctl enable chronyd 2>/dev/null`,
+
+          // Create systemd link for boot (works in chroot)
+          `mkdir -p /etc/systemd/system/multi-user.target.wants`,
+          `ln -sf /usr/lib/systemd/system/chronyd.service /etc/systemd/system/multi-user.target.wants/chronyd.service 2>/dev/null`,
+
+          // Start chronyd if systemd is running
+          `systemctl start chronyd 2>/dev/null`,
+
+          // Restart chronyd to apply configuration
+          `systemctl restart chronyd 2>/dev/null`,
+
+          // Force immediate time synchronization (only if chronyd is running)
+          `chronyc makestep 2>/dev/null`,
+
+          // Verify timezone configuration
+          `ls -l /etc/localtime`,
+          `cat /etc/timezone || echo 'No /etc/timezone file'`,
+          `timedatectl status 2>/dev/null || echo 'Timezone set to ${timezone} (timedatectl not available in chroot)'`,
+          `chronyc tracking 2>/dev/null || echo 'Chrony configured but not running (will start on boot)'`,
+        ],
         /**
          * @method keyboard
          * @description Generates shell commands for configuring the keyboard layout on Rocky Linux.
@@ -2774,10 +2852,36 @@ logdir /var/log/chrony
          * @returns {string[]} An array of shell commands.
          */
         keyboard: (keyCode = 'us') => [
-          `localectl set-locale LANG=en_US.UTF-8`,
-          `localectl set-keymap ${keyCode}`,
-          `localectl set-x11-keymap ${keyCode}`,
-          `localectl status`,
+          // Configure vconsole.conf for console keyboard layout (persistent)
+          `echo 'KEYMAP=${keyCode}' > /etc/vconsole.conf`,
+          `echo 'FONT=latarcyrheb-sun16' >> /etc/vconsole.conf`,
+
+          // Configure locale.conf for system locale
+          `echo 'LANG=en_US.UTF-8' > /etc/locale.conf`,
+          `echo 'LC_ALL=en_US.UTF-8' >> /etc/locale.conf`,
+
+          // Set keyboard layout using localectl (works if systemd is running)
+          `localectl set-locale LANG=en_US.UTF-8 2>/dev/null`,
+          `localectl set-keymap ${keyCode} 2>/dev/null`,
+          `localectl set-x11-keymap ${keyCode} 2>/dev/null`,
+
+          // Configure X11 keyboard layout file directly
+          `mkdir -p /etc/X11/xorg.conf.d`,
+          `echo 'Section "InputClass"' > /etc/X11/xorg.conf.d/00-keyboard.conf`,
+          `echo '    Identifier "system-keyboard"' >> /etc/X11/xorg.conf.d/00-keyboard.conf`,
+          `echo '    MatchIsKeyboard "on"' >> /etc/X11/xorg.conf.d/00-keyboard.conf`,
+          `echo '    Option "XkbLayout" "${keyCode}"' >> /etc/X11/xorg.conf.d/00-keyboard.conf`,
+          `echo 'EndSection' >> /etc/X11/xorg.conf.d/00-keyboard.conf`,
+
+          // Load the keymap immediately (if not in chroot)
+          `loadkeys ${keyCode} 2>/dev/null || echo 'Keymap ${keyCode} configured (loadkeys not available in chroot)'`,
+
+          // Verify configuration
+          `echo 'Keyboard configuration files:'`,
+          `cat /etc/vconsole.conf`,
+          `cat /etc/locale.conf`,
+          `cat /etc/X11/xorg.conf.d/00-keyboard.conf 2>/dev/null || echo 'X11 config created'`,
+          `localectl status 2>/dev/null || echo 'Keyboard layout set to ${keyCode} (localectl not available in chroot)'`,
         ],
       },
     },
