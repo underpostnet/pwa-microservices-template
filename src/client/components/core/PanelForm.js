@@ -6,7 +6,7 @@ import { NotificationManager } from './NotificationManager.js';
 import { DocumentService } from '../../services/document/document.service.js';
 import { FileService } from '../../services/file/file.service.js';
 import { getSrcFromFileData } from './Input.js';
-import { imageShimmer, renderCssAttr } from './Css.js';
+import { imageShimmer, renderCssAttr, darkTheme, ThemeEvents, subThemeManager, lightenHex, darkenHex } from './Css.js';
 import { Translate } from './Translate.js';
 import { Modal } from './Modal.js';
 import { closeModalRouteChangeEvents, listenQueryPathInstance, setQueryPath, getQueryParams } from './Router.js';
@@ -30,11 +30,14 @@ const PanelForm = {
       share: {
         copyLink: false,
       },
+      showCreatorProfile: false,
     },
   ) {
     const { idPanel, defaultUrlImage, Elements } = options;
 
-    let prefixTags = [idPanel, 'public'];
+    // Authenticated users don't need 'public' tag - they see all their own posts
+    // Only include 'public' for unauthenticated users (handled by backend)
+    let prefixTags = [idPanel];
     this.Data[idPanel] = {
       originData: [],
       data: [],
@@ -112,6 +115,7 @@ const PanelForm = {
         route: options.route,
         formContainerClass: 'session-in-log-in',
         share: options.share,
+        showCreatorProfile: options.showCreatorProfile,
         onClick: async function ({ payload }) {
           if (options.route) {
             setQueryPath({ path: options.route, queryPath: payload._id });
@@ -327,6 +331,9 @@ const PanelForm = {
             const location = `${prefixTags.join('/')}`;
             const blob = new Blob([data.mdFileId], { type: 'text/markdown' });
             const md = new File([blob], mdFileName, { type: 'text/markdown' });
+            // Parse and normalize tags
+            // Note: 'public' tag is automatically extracted by the backend and converted to isPublic field
+            // It will be filtered from the tags array to keep visibility control separate from content tags
             const tags = data.tags
               ? uniqueArray(
                   data.tags
@@ -397,6 +404,7 @@ const PanelForm = {
                   }
                 }
               })();
+              // Backend will automatically extract 'public' from tags and set isPublic field
               const body = {
                 location,
                 tags,
@@ -420,6 +428,9 @@ const PanelForm = {
                 _id: documentData._id,
                 id: documentData._id,
                 createdAt: documentData.createdAt,
+                // Use server response data - backend has already processed tags and isPublic
+                isPublic: documentData.isPublic || false,
+                tags: (documentData.tags || []).filter((t) => !prefixTags.includes(t)),
               };
 
               if (documentStatus === 'error') status = 'error';
@@ -560,13 +571,24 @@ const PanelForm = {
                 id: documentObject._id,
                 title: documentObject.title,
                 createdAt: documentObject.createdAt,
+                // Backend filters 'public' tag automatically - it's converted to isPublic field
                 tags: documentObject.tags.filter((t) => !prefixTags.includes(t)),
                 mdFileId: marked.parse(mdFileId),
                 userId: documentObject.userId._id,
+                userInfo:
+                  documentObject.userId && typeof documentObject.userId === 'object'
+                    ? {
+                        username: documentObject.userId.username,
+                        email: documentObject.userId.email,
+                        _id: documentObject.userId._id,
+                        profileImageId: documentObject.userId.profileImageId,
+                      }
+                    : null,
                 fileId,
                 tools: Elements.Data.user.main.model.user._id === documentObject.userId._id,
                 _id: documentObject._id,
                 totalCopyShareLinkCount: documentObject.totalCopyShareLinkCount || 0,
+                isPublic: documentObject.isPublic || false,
               });
             } catch (fileError) {
               logger.error('Error fetching files for document:', documentObject._id, fileError);

@@ -2,8 +2,8 @@ import { getId, isValidDate, newInstance } from './CommonJs.js';
 import { LoadingAnimation } from '../core/LoadingAnimation.js';
 import { Validator } from '../core/Validator.js';
 import { Input } from '../core/Input.js';
-import { darkTheme, ThemeEvents } from './Css.js';
-import { append, copyData, getDataFromInputFile, htmls, s } from './VanillaJs.js';
+import { darkTheme, ThemeEvents, subThemeManager, lightenHex, darkenHex } from './Css.js';
+import { append, copyData, getDataFromInputFile, htmls, s, sa } from './VanillaJs.js';
 import { BtnIcon } from './BtnIcon.js';
 import { Translate } from './Translate.js';
 import { DropDown } from './DropDown.js';
@@ -16,6 +16,7 @@ import { Badge } from './Badge.js';
 import { Content } from './Content.js';
 import { DocumentService } from '../../services/document/document.service.js';
 import { NotificationManager } from './NotificationManager.js';
+import { getApiBaseUrl } from '../../services/core/core.service.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -35,6 +36,7 @@ const Panel = {
       share: {
         copyLink: false,
       },
+      showCreatorProfile: false,
     },
   ) {
     const idPanel = options?.idPanel ? options.idPanel : getId(this.Tokens, `${idPanel}-`);
@@ -206,8 +208,49 @@ const Panel = {
           e.preventDefault();
           // if (options.onClick) await options.onClick({ payload });
         };
+
+        // Add theme change handler for creator profile header
+        if (options.showCreatorProfile && obj.userInfo) {
+          const updateCreatorProfileTheme = () => {
+            const profileHeader = s(`.creator-profile-header-${id}`);
+            if (profileHeader) {
+              profileHeader.style.borderBottom = `1px solid ${darkTheme ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)'}`;
+              profileHeader.style.background = `${darkTheme ? 'rgba(255,255,255,0.02)' : 'rgba(0,0,0,0.02)'}`;
+
+              // Update avatar border if it's an image
+              const avatarImg = profileHeader.querySelector('.creator-avatar');
+              if (avatarImg && avatarImg.tagName === 'IMG') {
+                avatarImg.style.border = `2px solid ${darkTheme ? 'rgba(102, 126, 234, 0.5)' : 'rgba(102, 126, 234, 0.3)'}`;
+              }
+
+              // Update username color
+              const username = profileHeader.querySelector('.creator-username');
+              if (username) {
+                username.style.color = `${darkTheme ? 'rgba(255,255,255,0.9)' : 'rgba(0,0,0,0.85)'}`;
+              }
+
+              // Update "Creator" label color
+              const creatorLabel = username?.nextElementSibling;
+              if (creatorLabel) {
+                creatorLabel.style.color = `${darkTheme ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.45)'}`;
+              }
+            }
+          };
+
+          // Register theme change handler
+          const profileThemeHandlerId = `${id}-creator-profile-theme`;
+          ThemeEvents[profileThemeHandlerId] = updateCreatorProfileTheme;
+        }
       });
       if (s(`.${idPanel}-${id}`)) s(`.${idPanel}-${id}`).remove();
+
+      // Check if document is public (from obj.isPublic field)
+      const isPublic = obj.isPublic === true;
+      // Visibility icon: globe for public, padlock for private
+      const visibilityIcon = isPublic
+        ? '<i class="fas fa-globe" title="Public document"></i>'
+        : '<i class="fas fa-lock" title="Private document"></i>';
+
       return html` <div class="in box-shadow ${idPanel} ${idPanel}-${id}" style="position: relative;">
         <div class="fl ${idPanel}-tools session-fl-log-in  ${obj.tools ? '' : 'hide'}">
           ${await BtnIcon.Render({
@@ -234,6 +277,51 @@ const Panel = {
           })}
         </div>
         <div class="in container-${idPanel}-${id}">
+          <div class="panel-visibility-icon">${visibilityIcon}</div>
+          ${options.showCreatorProfile && obj.userInfo
+            ? html`<div
+                class="creator-profile-header creator-profile-header-${id}"
+                style="padding: 10px 12px; margin-bottom: 10px; border-bottom: 1px solid ${darkTheme
+                  ? 'rgba(255,255,255,0.1)'
+                  : 'rgba(0,0,0,0.08)'}; display: flex; align-items: center; gap: 10px; background: ${darkTheme
+                  ? 'rgba(255,255,255,0.02)'
+                  : 'rgba(0,0,0,0.02)'}; border-radius: 4px 4px 0 0;"
+              >
+                ${obj.userInfo.profileImageId && obj.userInfo.profileImageId._id
+                  ? html`<img
+                      class="creator-avatar"
+                      src="${getApiBaseUrl({ id: obj.userInfo.profileImageId._id, endpoint: 'file/blob' })}"
+                      alt="${obj.userInfo.username || obj.userInfo.email}"
+                      style="width: 36px; height: 36px; border-radius: 50%; object-fit: cover; border: 2px solid ${darkTheme
+                        ? 'rgba(102, 126, 234, 0.5)'
+                        : 'rgba(102, 126, 234, 0.3)'}; flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.15);"
+                      title="${obj.userInfo.email || obj.userInfo.username}"
+                    />`
+                  : html`<div
+                      class="creator-avatar"
+                      style="width: 36px; height: 36px; border-radius: 50%; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 16px; flex-shrink: 0; box-shadow: 0 2px 8px rgba(0,0,0,0.15);"
+                      title="${obj.userInfo.email || obj.userInfo.username}"
+                    >
+                      ${(obj.userInfo.username || obj.userInfo.email || 'U').charAt(0).toUpperCase()}
+                    </div>`}
+                <div style="display: flex; flex-direction: column; min-width: 0; flex: 1;">
+                  <span
+                    class="creator-username"
+                    style="font-size: 14px; font-weight: 600; color: ${darkTheme
+                      ? 'rgba(255,255,255,0.9)'
+                      : 'rgba(0,0,0,0.85)'}; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;"
+                  >
+                    ${obj.userInfo.username || obj.userInfo.email || 'Unknown'}
+                  </span>
+                  <span
+                    style="font-size: 11px; color: ${darkTheme
+                      ? 'rgba(255,255,255,0.5)'
+                      : 'rgba(0,0,0,0.45)'}; line-height: 1.3; text-transform: uppercase; letter-spacing: 0.5px; font-weight: 500;"
+                    >Creator</span
+                  >
+                </div>
+              </div>`
+            : ''}
           <div class="in ${idPanel}-head">
             <div class="in ${idPanel}-title">
               ${options.titleIcon}
@@ -263,18 +351,79 @@ const Panel = {
                   }
 
                   if (formData.find((f) => f.model === infoKey && f.panel && f.panel.type === 'tags')) {
-                    setTimeout(async () => {
+                    // Function to render tags with current theme
+                    const renderTags = async () => {
                       let tagRender = html``;
                       for (const tag of obj[infoKey]) {
+                        // Use subThemeManager colors for consistent theming
+                        const themeColor = darkTheme ? subThemeManager.darkColor : subThemeManager.lightColor;
+                        const hasThemeColor = themeColor && themeColor !== null;
+
+                        let tagBg, tagColor;
+                        if (darkTheme) {
+                          tagBg = hasThemeColor ? darkenHex(themeColor, 0.6) : '#4a4a4a';
+                          tagColor = hasThemeColor ? lightenHex(themeColor, 0.7) : '#ffffff';
+                        } else {
+                          tagBg = hasThemeColor ? lightenHex(themeColor, 0.7) : '#a2a2a2';
+                          tagColor = hasThemeColor ? darkenHex(themeColor, 0.5) : '#ffffff';
+                        }
+
                         tagRender += await Badge.Render({
                           text: tag,
-                          style: { color: 'white' },
-                          classList: 'inl',
-                          style: { margin: '3px', background: `#a2a2a2` },
+                          style: { color: tagColor },
+                          classList: 'inl panel-tag-clickable',
+                          style: {
+                            margin: '3px',
+                            background: tagBg,
+                            color: tagColor,
+                            cursor: 'pointer',
+                            transition: 'all 0.2s ease',
+                          },
                         });
                       }
-                      if (s(`.tag-render-${id}`)) htmls(`.tag-render-${id}`, tagRender);
-                    });
+                      if (s(`.tag-render-${id}`)) {
+                        htmls(`.tag-render-${id}`, tagRender);
+
+                        // Add click handlers to tags for search integration
+                        setTimeout(() => {
+                          const tagElements = sa(`.tag-render-${id} .panel-tag-clickable`);
+                          tagElements.forEach((tagEl) => {
+                            tagEl.onclick = (e) => {
+                              e.stopPropagation();
+                              const tagText = tagEl.textContent.trim();
+
+                              // Open search bar if closed
+                              if (
+                                !s('.main-body-btn-ui-bar-custom-open').classList.contains('hide') ||
+                                !s(`.main-body-btn-ui-open`).classList.contains('hide')
+                              )
+                                s('.main-body-btn-bar-custom').click();
+
+                              // Find and populate search box if it exists
+                              const searchBox = s('.top-bar-search-box');
+                              if (searchBox) {
+                                searchBox.value = tagText;
+                                searchBox.focus();
+
+                                // Trigger input event to start search
+                                const inputEvent = new Event('input', { bubbles: true });
+                                searchBox.dispatchEvent(inputEvent);
+
+                                logger.info(`Tag clicked: ${tagText} - search triggered`);
+                              }
+                            };
+                          });
+                        }, 100);
+                      }
+                    };
+
+                    // Initial render
+                    setTimeout(renderTags);
+
+                    // Add theme change handler for this tag set
+                    const tagThemeHandlerId = `${id}-tags-${infoKey}-theme`;
+                    ThemeEvents[tagThemeHandlerId] = renderTags;
+
                     return html``;
                   }
                   {
@@ -662,6 +811,29 @@ const Panel = {
           ? getDarkStyles(idPanel, scrollClassContainer)
           : getLightStyles(idPanel, scrollClassContainer);
       }
+
+      // Update tag hover styles
+      const tagStyleElement = s(`.${idPanel}-tag-styles`);
+      if (tagStyleElement) {
+        const themeColor = darkTheme ? subThemeManager.darkColor : subThemeManager.lightColor;
+        const hasThemeColor = themeColor && themeColor !== null;
+        let hoverBg;
+        if (darkTheme) {
+          hoverBg = hasThemeColor ? darkenHex(themeColor, 0.5) : '#5a5a5a';
+        } else {
+          hoverBg = hasThemeColor ? lightenHex(themeColor, 0.6) : '#8a8a8a';
+        }
+
+        tagStyleElement.textContent = css`
+          .panel-tag-clickable:hover {
+            background: ${hoverBg} !important;
+            transform: scale(1.05);
+          }
+          .panel-tag-clickable:active {
+            transform: scale(0.98);
+          }
+        `;
+      }
     };
 
     // Add theme change listener
@@ -680,15 +852,39 @@ const Panel = {
           width: 100%;
         }
         .${idPanel}-title {
-          color: rgba(109, 104, 255, 1);
+          color: ${(() => {
+            const themeColor = darkTheme ? subThemeManager.darkColor : subThemeManager.lightColor;
+            const hasThemeColor = themeColor && themeColor !== null;
+            if (hasThemeColor) {
+              return darkTheme ? lightenHex(themeColor, 0.3) : darkenHex(themeColor, 0.2);
+            } else {
+              return darkTheme ? '#8a85ff' : 'rgba(109, 104, 255, 1)';
+            }
+          })()};
           font-size: 24px;
           padding: 5px;
         }
         .a-title-${idPanel} {
-          color: rgba(109, 104, 255, 1);
+          color: ${(() => {
+            const themeColor = darkTheme ? subThemeManager.darkColor : subThemeManager.lightColor;
+            const hasThemeColor = themeColor && themeColor !== null;
+            if (hasThemeColor) {
+              return darkTheme ? lightenHex(themeColor, 0.3) : darkenHex(themeColor, 0.2);
+            } else {
+              return darkTheme ? '#8a85ff' : 'rgba(109, 104, 255, 1)';
+            }
+          })()};
         }
         .a-title-${idPanel}:hover {
-          color: #e89f4c;
+          color: ${(() => {
+            const themeColor = darkTheme ? subThemeManager.darkColor : subThemeManager.lightColor;
+            const hasThemeColor = themeColor && themeColor !== null;
+            if (hasThemeColor) {
+              return darkTheme ? lightenHex(themeColor, 0.5) : lightenHex(themeColor, 0.3);
+            } else {
+              return darkTheme ? '#ffb74d' : '#e89f4c';
+            }
+          })()};
         }
         .${idPanel}-row {
           padding: 5px;
@@ -705,6 +901,7 @@ const Panel = {
           margin-left: 10px;
           top: -7px;
         }
+
         .${idPanel}-row-key {
         }
         .${idPanel}-row-value {
@@ -765,6 +962,23 @@ const Panel = {
         }
       </style>
       <style class="${idPanel}-styles"></style>
+      <style class="${idPanel}-tag-styles">
+        .panel-tag-clickable:hover {
+          background: ${(() => {
+            const themeColor = darkTheme ? subThemeManager.darkColor : subThemeManager.lightColor;
+            const hasThemeColor = themeColor && themeColor !== null;
+            if (darkTheme) {
+              return hasThemeColor ? darkenHex(themeColor, 0.5) : '#5a5a5a';
+            } else {
+              return hasThemeColor ? lightenHex(themeColor, 0.6) : '#8a8a8a';
+            }
+          })()} !important;
+          transform: scale(1.05);
+        }
+        .panel-tag-clickable:active {
+          transform: scale(0.98);
+        }
+      </style>
       <div class="${idPanel}-container">
         <div class="in modal ${idPanel}-form-container ${options.formContainerClass ? options.formContainerClass : ''}">
           <div class="in ${idPanel}-form-header">
@@ -856,6 +1070,19 @@ function getBaseStyles(idPanel, scrollClassContainer) {
     .${idPanel}-dropdown {
       min-height: 100px;
     }
+    .panel-visibility-icon {
+      position: absolute;
+      top: 34px;
+      left: 0px;
+      font-size: 14px;
+      opacity: 0.7;
+      transition: opacity 0.2s ease;
+      pointer-events: none;
+      z-index: 10;
+    }
+    .${idPanel}:hover .panel-visibility-icon {
+      opacity: 1;
+    }
   `;
 }
 
@@ -872,15 +1099,27 @@ function getLightStyles(idPanel, scrollClassContainer) {
       background: #ffffff;
     }
     .${idPanel}-title {
-      color: rgba(109, 104, 255, 1);
+      color: ${(() => {
+        const themeColor = subThemeManager.lightColor;
+        const hasThemeColor = themeColor && themeColor !== null;
+        return hasThemeColor ? darkenHex(themeColor, 0.2) : 'rgba(109, 104, 255, 1)';
+      })()};
       font-size: 24px;
       padding: 5px;
     }
     .a-title-${idPanel} {
-      color: rgba(109, 104, 255, 1);
+      color: ${(() => {
+        const themeColor = subThemeManager.lightColor;
+        const hasThemeColor = themeColor && themeColor !== null;
+        return hasThemeColor ? darkenHex(themeColor, 0.2) : 'rgba(109, 104, 255, 1)';
+      })()};
     }
     .a-title-${idPanel}:hover {
-      color: #e89f4c;
+      color: ${(() => {
+        const themeColor = subThemeManager.lightColor;
+        const hasThemeColor = themeColor && themeColor !== null;
+        return hasThemeColor ? lightenHex(themeColor, 0.3) : '#e89f4c';
+      })()};
     }
     .${idPanel}-row-pin-value {
       font-size: 20px;
@@ -893,6 +1132,10 @@ function getLightStyles(idPanel, scrollClassContainer) {
     .${idPanel}-btn-tool:hover {
       color: #000000 !important;
       font-size: 17px !important;
+    }
+    .panel-visibility-icon .fa-globe,
+    .panel-visibility-icon .fa-lock {
+      color: #666;
     }
   `;
 }
@@ -910,15 +1153,27 @@ function getDarkStyles(idPanel, scrollClassContainer) {
       background: #3a3a3a;
     }
     .${idPanel}-title {
-      color: #8a85ff;
+      color: ${(() => {
+        const themeColor = subThemeManager.darkColor;
+        const hasThemeColor = themeColor && themeColor !== null;
+        return hasThemeColor ? lightenHex(themeColor, 0.3) : '#8a85ff';
+      })()};
       font-size: 24px;
       padding: 5px;
     }
     .a-title-${idPanel} {
-      color: #8a85ff;
+      color: ${(() => {
+        const themeColor = subThemeManager.darkColor;
+        const hasThemeColor = themeColor && themeColor !== null;
+        return hasThemeColor ? lightenHex(themeColor, 0.3) : '#8a85ff';
+      })()};
     }
     .a-title-${idPanel}:hover {
-      color: #ffb74d;
+      color: ${(() => {
+        const themeColor = subThemeManager.darkColor;
+        const hasThemeColor = themeColor && themeColor !== null;
+        return hasThemeColor ? lightenHex(themeColor, 0.5) : '#ffb74d';
+      })()};
     }
     .${idPanel}-row-pin-value {
       font-size: 20px;
@@ -931,6 +1186,10 @@ function getDarkStyles(idPanel, scrollClassContainer) {
     .${idPanel}-btn-tool:hover {
       color: #ffffff !important;
       font-size: 17px !important;
+    }
+    .panel-visibility-icon .fa-globe,
+    .panel-visibility-icon .fa-lock {
+      color: #999;
     }
   `;
 }
