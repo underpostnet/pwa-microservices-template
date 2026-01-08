@@ -1,3 +1,11 @@
+/**
+ * Input component module for form controls and file handling utilities.
+ * Provides input rendering, file data conversion, and blob endpoint integration.
+ *
+ * @module src/client/components/core/Input.js
+ * @namespace InputClient
+ */
+
 import { AgGrid } from './AgGrid.js';
 import { BtnIcon } from './BtnIcon.js';
 import { isValidDate } from './CommonJs.js';
@@ -8,8 +16,25 @@ import { RichText } from './RichText.js';
 import { ToggleSwitch } from './ToggleSwitch.js';
 import { Translate } from './Translate.js';
 import { htmls, htmlStrSanitize, s } from './VanillaJs.js';
+import { getApiBaseUrl } from '../../services/core/core.service.js';
+
+/**
+ * Logger instance for this module.
+ * @type {Function}
+ * @memberof InputClient
+ * @private
+ */
 const logger = loggerFactory(import.meta);
 
+/**
+ * Creates a FormData object from file input event.
+ * Filters files by extension if provided.
+ * @function fileFormDataFactory
+ * @memberof InputClient
+ * @param {Event} e - The input change event containing files.
+ * @param {string[]} [extensions] - Optional array of allowed MIME types.
+ * @returns {FormData} FormData object containing the valid files.
+ */
 const fileFormDataFactory = (e, extensions) => {
   const form = new FormData();
   for (const keyFile of Object.keys(e.target.files)) {
@@ -22,17 +47,156 @@ const fileFormDataFactory = (e, extensions) => {
   return form;
 };
 
+/**
+ * Convert file data to File object.
+ * Supports both legacy format (with buffer data) and new format (metadata only).
+ *
+ * Legacy format: `{ data: { data: [0, 1, 2, ...] }, mimetype: 'text/markdown', name: 'file.md' }`
+ * New format: `{ _id: '...', mimetype: 'text/markdown', name: 'file.md' }`
+ *
+ * @function getFileFromFileData
+ * @memberof InputClient
+ * @param {Object} fileData - File data object in legacy or new format.
+ * @param {Object} [fileData.data] - Legacy format data container.
+ * @param {Array<number>} [fileData.data.data] - Legacy format byte array.
+ * @param {string} [fileData._id] - New format file ID.
+ * @param {string} fileData.mimetype - MIME type of the file.
+ * @param {string} fileData.name - Name of the file.
+ * @returns {File|null} File object if legacy format, null if metadata-only or invalid.
+ */
 const getFileFromFileData = (fileData) => {
-  const blob = new Blob([new Uint8Array(fileData.data.data)], { type: fileData.mimetype });
-  return new File([blob], fileData.name, { type: fileData.mimetype });
+  if (!fileData) {
+    logger.error('getFileFromFileData: fileData is undefined');
+    return null;
+  }
+
+  // Check if this is legacy format with buffer data
+  if (fileData.data?.data) {
+    try {
+      const blob = new Blob([new Uint8Array(fileData.data.data)], { type: fileData.mimetype });
+      return new File([blob], fileData.name, { type: fileData.mimetype });
+    } catch (error) {
+      logger.error('Error creating File from legacy buffer data:', error);
+      return null;
+    }
+  }
+
+  // New format - metadata only, cannot create File without content
+  // Return null and let caller fetch from blob endpoint if needed
+  if (fileData._id && !fileData.data?.data) {
+    logger.warn(
+      'getFileFromFileData: File is metadata-only, cannot create File object without content. File ID:',
+      fileData._id,
+    );
+    return null;
+  }
+
+  logger.error('getFileFromFileData: Invalid file data structure', fileData);
+  return null;
 };
 
+/**
+ * Fetch file content from blob endpoint and create File object.
+ * Used for metadata-only format files during edit mode.
+ *
+ * @async
+ * @function getFileFromBlobEndpoint
+ * @memberof InputClient
+ * @param {Object} fileData - File metadata object with _id.
+ * @param {string} fileData._id - File ID for blob endpoint lookup.
+ * @param {string} [fileData.name] - Optional file name.
+ * @param {string} [fileData.mimetype] - Optional MIME type.
+ * @returns {Promise<File|null>} File object from blob endpoint, or null on error.
+ */
+const getFileFromBlobEndpoint = async (fileData) => {
+  if (!fileData || !fileData._id) {
+    return null;
+  }
+
+  try {
+    const blobUrl = getApiBaseUrl({ id: fileData._id, endpoint: 'file/blob' });
+    const response = await fetch(blobUrl, { credentials: 'include' });
+    if (!response.ok) {
+      logger.error('Failed to fetch file from blob endpoint:', response.statusText);
+      return null;
+    }
+
+    const blob = await response.blob();
+    return new File([blob], fileData.name || 'file', { type: fileData.mimetype || blob.type });
+  } catch (error) {
+    logger.error('Error fetching file from blob endpoint:', error);
+    return null;
+  }
+};
+
+/**
+ * Get image/file source URL from file data.
+ * Supports both legacy format (with buffer) and new format (metadata only).
+ * For new format, returns blob endpoint URL.
+ *
+ * @function getSrcFromFileData
+ * @memberof InputClient
+ * @param {Object} fileData - File data object in legacy or new format.
+ * @param {Object} [fileData.data] - Legacy format data container.
+ * @param {Array<number>} [fileData.data.data] - Legacy format byte array.
+ * @param {string} [fileData._id] - New format file ID for blob endpoint.
+ * @param {string} fileData.mimetype - MIME type of the file.
+ * @returns {string|null} Object URL for legacy format, blob endpoint URL for new format, or null on error.
+ */
 const getSrcFromFileData = (fileData) => {
-  const file = getFileFromFileData(fileData);
-  return URL.createObjectURL(file);
+  if (!fileData) {
+    logger.error('getSrcFromFileData: fileData is undefined');
+    return null;
+  }
+
+  // Legacy format with buffer data - create object URL
+  if (fileData.data?.data) {
+    try {
+      const file = getFileFromFileData(fileData);
+      if (file) {
+        return URL.createObjectURL(file);
+      }
+    } catch (error) {
+      logger.error('Error getting src from legacy buffer data:', error);
+    }
+  }
+
+  // New format - use blob endpoint
+  if (fileData._id) {
+    try {
+      return getApiBaseUrl({ id: fileData._id, endpoint: 'file/blob' });
+    } catch (error) {
+      logger.error('Error generating blob URL:', error);
+      return null;
+    }
+  }
+
+  logger.error('getSrcFromFileData: Cannot generate src, invalid file data:', fileData);
+  return null;
 };
 
+/**
+ * Input component for rendering various form input types.
+ * Supports text, password, file, color, date, dropdown, toggle, rich text, and grid inputs.
+ * @namespace InputClient.Input
+ * @memberof InputClient
+ */
 const Input = {
+  /**
+   * Renders an input element based on the provided options.
+   * @async
+   * @function Render
+   * @memberof InputClient.Input
+   * @param {Object} options - Input configuration options.
+   * @param {string} options.id - Unique identifier for the input.
+   * @param {string} [options.type] - Input type (text, password, file, color, datetime-local, etc.).
+   * @param {string} [options.placeholder] - Placeholder text.
+   * @param {string} [options.label] - Label text for the input.
+   * @param {string} [options.containerClass] - CSS class for the container.
+   * @param {string} [options.inputClass] - CSS class for the input element.
+   * @param {boolean} [options.disabled] - Whether the input is disabled.
+   * @returns {Promise<string>} HTML string for the input component.
+   */
   Render: async function (options) {
     const { id } = options;
     options?.placeholder
@@ -184,8 +348,8 @@ const Input = {
     }
     return obj;
   },
-  setValues: function (formData, obj, originObj, fileObj) {
-    setTimeout(() => {
+  setValues: async function (formData, obj, originObj, fileObj) {
+    setTimeout(async () => {
       for (const inputData of formData) {
         if (!s(`.${inputData.id}`)) continue;
 
@@ -194,11 +358,31 @@ const Input = {
             if (fileObj && fileObj[inputData.model] && s(`.${inputData.id}`)) {
               const dataTransfer = new DataTransfer();
 
-              if (fileObj[inputData.model].fileBlob)
-                dataTransfer.items.add(getFileFromFileData(fileObj[inputData.model].fileBlob));
+              if (fileObj[inputData.model].fileBlob) {
+                let fileBlobData = getFileFromFileData(fileObj[inputData.model].fileBlob);
 
-              if (fileObj[inputData.model].mdBlob)
-                dataTransfer.items.add(getFileFromFileData(fileObj[inputData.model].mdBlob));
+                // If fileBlob is metadata-only, try to fetch from blob endpoint
+                if (!fileBlobData && fileObj[inputData.model].fileBlob?._id) {
+                  fileBlobData = await getFileFromBlobEndpoint(fileObj[inputData.model].fileBlob);
+                }
+
+                if (fileBlobData) {
+                  dataTransfer.items.add(fileBlobData);
+                }
+              }
+
+              if (fileObj[inputData.model].mdBlob) {
+                let mdBlobData = getFileFromFileData(fileObj[inputData.model].mdBlob);
+
+                // If mdBlob is metadata-only, try to fetch from blob endpoint
+                if (!mdBlobData && fileObj[inputData.model].mdBlob?._id) {
+                  mdBlobData = await getFileFromBlobEndpoint(fileObj[inputData.model].mdBlob);
+                }
+
+                if (mdBlobData) {
+                  dataTransfer.items.add(mdBlobData);
+                }
+              }
 
               if (dataTransfer.files.length) {
                 s(`.${inputData.id}`).files = dataTransfer.files;
@@ -384,4 +568,12 @@ function isTextInputFocused() {
   return active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
 }
 
-export { Input, InputFile, fileFormDataFactory, getSrcFromFileData, getFileFromFileData, isTextInputFocused };
+export {
+  Input,
+  InputFile,
+  fileFormDataFactory,
+  getSrcFromFileData,
+  getFileFromFileData,
+  getFileFromBlobEndpoint,
+  isTextInputFocused,
+};
