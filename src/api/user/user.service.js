@@ -20,6 +20,7 @@ import { DataBaseProvider } from '../../db/DataBaseProvider.js';
 import { FileFactory } from '../file/file.service.js';
 import { UserDto } from './user.model.js';
 import { selectDtoFactory, ValkeyAPI } from '../../server/valkey.js';
+import { timer } from '../../client/components/core/CommonJs.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -36,7 +37,11 @@ const UserService = {
         email: req.body.email,
       });
 
-      if (!user) throw new Error('Email address does not exist');
+      // Simulate success even if email doesn't exist to prevent email enumeration attacks
+      if (!user) {
+        await timer(3000);
+        return { message: 'email send successfully' };
+      }
 
       const token = jwtSign({ email: req.body.email }, options, 15);
       const payloadToken = jwtSign({ email: req.body.email }, options, 15);
@@ -176,15 +181,18 @@ const UserService = {
                   runValidators: true,
                 },
               );
-              setTimeout(async () => {
-                await User.findByIdAndUpdate(
-                  _id,
-                  { failedLoginAttempts: 0 },
-                  {
-                    runValidators: true,
-                  },
-                );
-              }, 60 * 1000 * 15);
+              setTimeout(
+                async () => {
+                  await User.findByIdAndUpdate(
+                    _id,
+                    { failedLoginAttempts: 0 },
+                    {
+                      runValidators: true,
+                    },
+                  );
+                },
+                60 * 1000 * 15,
+              );
               throw new Error(`Account locked. Please try again in: 15 min.`);
             } else if (user.failedLoginAttempts < 0 && getMinutesRemaining() > 0) {
               throw new Error(accountLocketMessage());
@@ -236,6 +244,21 @@ const UserService = {
 
     /** @type {import('../file/file.model.js').FileModel} */
     const File = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.models.File;
+
+    if (req.path.startsWith('/public')) {
+      // First lookup user by username
+      const userByUsername = await User.findOne({
+        username: req.params.username,
+      });
+      if (!userByUsername) throw new Error('User not found');
+      if (!userByUsername.publicProfile) throw new Error('Public profile is private');
+
+      // Then fetch complete public data by ID
+      const user = await User.findOne({
+        _id: userByUsername._id,
+      }).select(UserDto.public.get());
+      return user;
+    }
 
     if (req.path.startsWith('/email')) {
       return await User.findOne({
@@ -479,14 +502,13 @@ const UserService = {
             const _id = req.auth.user._id;
             if (_id !== req.params.id) throw new Error(`Invalid token user id`);
             const user = await User.findOne({ _id });
-            await User.findByIdAndUpdate(
-              _id,
-              {
-                email: req.body.email && !user.emailConfirmed ? req.body.email : user.email,
-                username: req.body.username,
-              },
-              { runValidators: true },
-            );
+            const updateData = {
+              email: req.body.email && !user.emailConfirmed ? req.body.email : user.email,
+              username: req.body.username,
+            };
+            if (req.body.publicProfile !== undefined) updateData.publicProfile = req.body.publicProfile;
+            if (req.body.briefDescription !== undefined) updateData.briefDescription = req.body.briefDescription;
+            await User.findByIdAndUpdate(_id, updateData, { runValidators: true });
             return await User.findOne({
               _id,
             }).select(UserDto.select.get());

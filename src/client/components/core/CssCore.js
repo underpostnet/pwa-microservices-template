@@ -232,6 +232,9 @@ const CssCommonCore = async () => {
         width: 40px;
         text-align: center;
       }
+      .input-container {
+        width: 275px;
+      }
     </style>
     ${boxShadow({ selector: '.account-profile-image' })}
     <div class="ag-grid-style"></div>`;
@@ -404,9 +407,7 @@ const CssCoreDark = {
           color: #fff;
           background: #313131;
         }
-        .input-container {
-          width: 256px;
-        }
+
         .btn-eye-password {
           text-align: center;
           background: #1a1a1a;
@@ -480,7 +481,7 @@ const CssCoreDark = {
           cursor: pointer;
         }
         .btn-custom {
-          width: 260px;
+          width: 278px;
           font-size: 20px;
           padding: 10px;
           min-height: 45px;
@@ -491,7 +492,7 @@ const CssCoreDark = {
         }
         .toggle-form-container,
         .dropdown-option {
-          width: 238px;
+          width: 255px;
           font-size: 20px;
           padding: 10px;
         }
@@ -503,7 +504,7 @@ const CssCoreDark = {
           background: #232323;
         }
         .form-button {
-          width: 260px;
+          width: 278px;
           font-size: 20px;
           padding: 10px;
           text-align: center;
@@ -599,10 +600,14 @@ const CssCoreLight = {
         }
 
         .box-shadow {
-          box-shadow: 0 4px 8px 0 rgba(0, 0, 0, 0.2), 0 6px 20px 0 rgba(0, 0, 0, 0.19);
+          box-shadow:
+            0 4px 8px 0 rgba(0, 0, 0, 0.2),
+            0 6px 20px 0 rgba(0, 0, 0, 0.19);
         }
         .box-shadow:hover {
-          box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2), 0 10px 30px 0 rgba(0, 0, 0, 0.3);
+          box-shadow:
+            0 8px 16px 0 rgba(0, 0, 0, 0.2),
+            0 10px 30px 0 rgba(0, 0, 0, 0.3);
         }
         .box-content-border {
           border: 2px solid #bbb;
@@ -715,7 +720,6 @@ const CssCoreLight = {
           border-radius: 5px;
           border: 2px solid #bbb;
           transition: 0.3s;
-          width: 256px;
         }
         .input-container:hover {
           color: #1a1a1a;
@@ -793,7 +797,7 @@ const CssCoreLight = {
           cursor: pointer;
         }
         .btn-custom {
-          width: 260px;
+          width: 278px;
           font-size: 20px;
           padding: 10px;
           min-height: 45px;
@@ -805,7 +809,7 @@ const CssCoreLight = {
         }
         .toggle-form-container,
         .dropdown-option {
-          width: 238px;
+          width: 255px;
           font-size: 20px;
           padding: 10px;
         }
@@ -817,7 +821,7 @@ const CssCoreLight = {
           background: #e4e4e4;
         }
         .form-button {
-          width: 260px;
+          width: 278px;
           font-size: 20px;
           padding: 10px;
           text-align: center;

@@ -20,7 +20,28 @@ const UserSchema = new Schema(
     lastLoginDate: { type: Date },
     failedLoginAttempts: { type: Number, default: 0 },
     password: { type: String, trim: true, required: 'Password is required' },
-    username: { type: String, trim: true, unique: true, required: 'Username is required' },
+    username: {
+      type: String,
+      trim: true,
+      unique: true,
+      required: 'Username is required',
+      validate: [
+        {
+          validator: function (username) {
+            // Allow only alphanumeric characters, hyphens, and underscores (URI-safe)
+            return /^[a-zA-Z0-9_-]+$/.test(username);
+          },
+          message: 'Username can only contain letters, numbers, hyphens, and underscores',
+        },
+        {
+          validator: function (username) {
+            // Length validation
+            return username && username.length >= 2 && username.length <= 20;
+          },
+          message: 'Username must be between 2 and 20 characters',
+        },
+      ],
+    },
     role: { type: String, enum: userRoleEnum, default: 'guest' },
     activeSessions: {
       type: [
@@ -60,6 +81,8 @@ const UserSchema = new Schema(
         context: [{ type: String, enum: ['client', 'supplier', 'employee', 'owner'] }],
       },
     ],
+    publicProfile: { type: Boolean, default: false },
+    briefDescription: { type: String, default: 'Uploader' },
   },
   {
     timestamps: true,
@@ -80,12 +103,26 @@ const UserDto = {
         role: 1,
         emailConfirmed: 1,
         profileImageId: 1,
+        publicProfile: 1,
+        briefDescription: 1,
         createdAt: 1,
         updatedAt: 1,
       };
     },
     getAll: () => {
       return { _id: 1 };
+    },
+  },
+  public: {
+    get: () => {
+      return {
+        _id: 1,
+        username: 1,
+        profileImageId: 1,
+        publicProfile: 1,
+        briefDescription: 1,
+        createdAt: 1,
+      };
     },
   },
   auth: {
