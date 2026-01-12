@@ -141,19 +141,23 @@ const UserService = {
           const { _id } = user;
           const validPassword = await verifyPassword(req.body.password, user.password);
           if (validPassword === true) {
-            if (!user.profileImageId)
-              await User.findByIdAndUpdate(
-                user._id,
-                { profileImageId: await options.getDefaultProfileImageId(File) },
-                {
-                  runValidators: true,
-                },
-              );
             {
               if (getMinutesRemaining() <= 0 || user.failedLoginAttempts >= 0) {
                 const user = await User.findOne({
                   _id,
                 }).select(UserDto.select.get());
+
+                // Check if profileImageId exists, if not set to null explicitly
+                if (!user.profileImageId) {
+                  user.profileImageId = null;
+                } else {
+                  const fileExists = await File.findById(user.profileImageId);
+                  if (!fileExists) {
+                    await User.findByIdAndUpdate(_id, { profileImageId: null }, { runValidators: true });
+                    user.profileImageId = null;
+                  }
+                }
+
                 await User.findByIdAndUpdate(
                   _id,
                   { lastLoginDate: new Date(), failedLoginAttempts: 0 },
@@ -233,9 +237,8 @@ const UserService = {
         };
       }
 
-      default: {
-        return await createUserAndSession(req, res, User, File, options);
-      }
+      default:
+        return await createUserAndSession(req, res, User, options);
     }
   },
   get: async (req, res, options) => {
@@ -258,6 +261,11 @@ const UserService = {
         _id: userByUsername._id,
       }).select(UserDto.public.get());
       return user;
+    }
+
+    if (req.path.startsWith('/assets')) {
+      options.png.header(res);
+      return options.png.buffer[req.params.id];
     }
 
     if (req.path.startsWith('/email')) {
@@ -354,18 +362,6 @@ const UserService = {
           });
 
         if (!user) throw new Error('user not found');
-
-        const file = await File.findOne({ _id: user.profileImageId });
-
-        if (!file && !(await ValkeyAPI.getValkeyObject(options, req.auth.user.email))) {
-          await User.findByIdAndUpdate(
-            user._id,
-            { profileImageId: await options.getDefaultProfileImageId(File) },
-            {
-              runValidators: true,
-            },
-          );
-        }
 
         const guestUser = await ValkeyAPI.getValkeyObject(options, req.auth.user.email);
         if (guestUser)

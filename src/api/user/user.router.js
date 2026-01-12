@@ -4,8 +4,6 @@ import { loggerFactory } from '../../server/logger.js';
 import { UserController } from './user.controller.js';
 import express from 'express';
 import { DataBaseProvider } from '../../db/DataBaseProvider.js';
-import { FileFactory } from '../file/file.service.js';
-import { s4 } from '../../client/components/core/CommonJs.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -40,12 +38,13 @@ const UserRouter = (options) => {
       console.log(error);
     }
 
-    // default user avatar seed
+    // Cache mailer images
     options.png = {
       buffer: {
         'invalid-token': fs.readFileSync(`./src/client/public/default/assets/mailer/api-user-invalid-token.png`),
         recover: fs.readFileSync(`./src/client/public/default/assets/mailer/api-user-recover.png`),
         check: fs.readFileSync(`./src/client/public/default/assets/mailer/api-user-check.png`),
+        avatar: fs.readFileSync(`./src/client/public/default/assets/mailer/api-user-default-avatar.png`),
       },
       header: (res) => {
         res.set('Cross-Origin-Resource-Policy', 'cross-origin');
@@ -54,27 +53,6 @@ const UserRouter = (options) => {
         res.set('Content-Type', 'image/png');
       },
     };
-
-    try {
-      const models = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.models;
-      const name = 'api-user-default-avatar.png';
-      const imageFile = await models.File.findOne({ name });
-      let _id;
-      if (imageFile) {
-        _id = imageFile._id;
-      } else {
-        const file = await new models.File(
-          FileFactory.create(fs.readFileSync(`./src/client/public/default/assets/mailer/${name}`), name),
-        ).save();
-        _id = file._id;
-      }
-      options.getDefaultProfileImageId = async () => {
-        return _id;
-      };
-    } catch (error) {
-      logger.error('Error checking/creating default profile image');
-      console.log(error);
-    }
   })();
 
   router.post(`/mailer/:id`, authMiddleware, async (req, res) => {
@@ -82,6 +60,13 @@ const UserRouter = (options) => {
       #swagger.ignore = true
     */
     return await UserController.post(req, res, options);
+  });
+
+  router.get(`/assets/:id`, async (req, res) => {
+    /*
+      #swagger.ignore = true
+    */
+    return await UserController.get(req, res, options);
   });
 
   router.get(`/mailer/:id`, async (req, res) => {
