@@ -7,7 +7,7 @@ import { loggerFactory } from '../../components/core/Logger.js';
 import { Modal } from '../../components/core/Modal.js';
 import { NotificationManager } from '../../components/core/NotificationManager.js';
 import { Translate } from '../../components/core/Translate.js';
-import { getQueryParams, RouterEvents, setQueryParams } from '../../components/core/Router.js';
+import { getQueryParams, listenQueryParamsChange, RouterEvents, setQueryParams } from '../../components/core/Router.js';
 import { s } from '../../components/core/VanillaJs.js';
 import { DefaultService } from './default.service.js';
 
@@ -52,7 +52,7 @@ const columnDefFormatter = (obj, columnDefs, customFormat) => {
 
 const DefaultManagement = {
   Tokens: {},
-  loadTable: async function (id, options = { reload: true, force: true }) {
+  loadTable: async function (id, options = { reload: true, force: true, createHistory: false, skipUrlUpdate: false }) {
     try {
       const { serviceId, columnDefs, customFormat, gridId } = this.Tokens[id];
 
@@ -81,15 +81,19 @@ const DefaultManagement = {
       const sortModelStr = sortModel.length > 0 ? JSON.stringify(sortModel) : null;
 
       // Update URL parameters to reflect current grid state
-      setQueryParams(
-        {
-          page: _page,
-          limit: _limit,
-          filterModel: filterModelStr,
-          sortModel: sortModelStr,
-        },
-        { replace: true },
-      );
+      // Use pushState (createHistory) for filter/sort changes to enable browser back/forward
+      // Skip URL update when handling browser navigation to avoid interfering with history
+      if (!options.skipUrlUpdate) {
+        setQueryParams(
+          {
+            page: _page,
+            limit: _limit,
+            filterModel: filterModelStr,
+            sortModel: sortModelStr,
+          },
+          { replace: !options.createHistory },
+        );
+      }
 
       if (!options.force && this.Tokens[id].lastOptions) {
         const last = this.Tokens[id].lastOptions;
@@ -198,6 +202,7 @@ const DefaultManagement = {
     logger.info('DefaultManagement RenderTable', options);
     const id = options?.idModal ? options.idModal : getId(this.Tokens, `${serviceId}-`);
     const gridId = `${serviceId}-grid-${id}`;
+    const queryParamsListenerId = `default-management-${id}`;
     const queryParams = getQueryParams();
     const page = parseInt(queryParams.page) || 1;
     const defaultLimit = paginationOptions?.limitOptions?.[0] || 10;
@@ -282,6 +287,7 @@ const DefaultManagement = {
       filterModel,
       sortModel,
       isInitializing: true, // Flag to prevent double loading during grid ready
+      isProcessingQueryChange: false, // Flag to prevent listener recursion
     };
 
     setQueryParams({
@@ -516,6 +522,110 @@ const DefaultManagement = {
           DefaultManagement.loadTable(id);
         }
       });
+
+      // Listen to query parameter changes for browser back/forward navigation
+      listenQueryParamsChange({
+        id: queryParamsListenerId,
+        event: (queryParams) => {
+          // Prevent recursion - if we're already processing a query change, skip
+          if (this.Tokens[id].isProcessingQueryChange) {
+            return;
+          }
+
+          const newPage = parseInt(queryParams.page, 10) || 1;
+          const newLimit = parseInt(queryParams.limit, 10) || this.Tokens[id].limit || 10;
+          const newFilterModel = queryParams.filterModel;
+          const newSortModel = queryParams.sortModel;
+
+          let shouldReload = false;
+
+          // Check if page or limit changed
+          if (newPage !== this.Tokens[id].page || newLimit !== this.Tokens[id].limit) {
+            this.Tokens[id].page = newPage;
+            this.Tokens[id].limit = newLimit;
+            shouldReload = true;
+          }
+
+          // Check if filter or sort changed by comparing with actual grid state
+          const gridApi = AgGrid.grids[gridId];
+          let filterChanged = false;
+          let sortChanged = false;
+
+          if (gridApi) {
+            // Get current grid filter state
+            const currentGridFilterModel = gridApi.getFilterModel() || {};
+            const currentGridFilterStr = JSON.stringify(currentGridFilterModel);
+            const newFilterStr = newFilterModel || '{}';
+
+            // Get current grid sort state
+            const currentColumnState = gridApi.getColumnState() || [];
+            const currentGridSortModel = currentColumnState
+              .filter((col) => col.sort)
+              .map((col) => ({ colId: col.colId, sort: col.sort, sortIndex: col.sortIndex }))
+              .sort((a, b) => (a.sortIndex || 0) - (b.sortIndex || 0));
+            const currentGridSortStr = JSON.stringify(currentGridSortModel);
+            const newSortStr = newSortModel || '[]';
+
+            filterChanged = currentGridFilterStr !== newFilterStr;
+            sortChanged = currentGridSortStr !== newSortStr;
+          }
+
+          if (filterChanged || sortChanged) {
+            // Parse and apply the new filter/sort models
+            try {
+              this.Tokens[id].filterModel = newFilterModel ? JSON.parse(newFilterModel) : {};
+            } catch (e) {
+              this.Tokens[id].filterModel = {};
+            }
+            try {
+              this.Tokens[id].sortModel = newSortModel ? JSON.parse(newSortModel) : [];
+            } catch (e) {
+              this.Tokens[id].sortModel = [];
+            }
+
+            // Apply filters and sorts to the grid
+            if (gridApi) {
+              // Temporarily disable filter/sort change handlers to prevent recursion
+              this.Tokens[id].isProcessingQueryChange = true;
+
+              if (filterChanged) {
+                gridApi.setFilterModel(this.Tokens[id].filterModel);
+              }
+
+              if (sortChanged) {
+                // Apply sort model
+                const columnState = this.Tokens[id].sortModel.map((sortItem) => ({
+                  colId: sortItem.colId,
+                  sort: sortItem.sort,
+                  sortIndex: sortItem.sortIndex,
+                }));
+                if (columnState.length > 0) {
+                  gridApi.applyColumnState({
+                    state: columnState,
+                    defaultState: { sort: null },
+                  });
+                } else {
+                  gridApi.applyColumnState({
+                    defaultState: { sort: null },
+                  });
+                }
+              }
+
+              // Re-enable handlers after a short delay
+              setTimeout(() => {
+                this.Tokens[id].isProcessingQueryChange = false;
+              }, 100);
+            }
+            shouldReload = true;
+          }
+
+          if (shouldReload) {
+            // Skip URL update since browser already changed it (back/forward navigation)
+            DefaultManagement.loadTable(id, { reload: true, force: true, createHistory: false, skipUrlUpdate: true });
+          }
+        },
+      });
+
       EventsUI.onClick(`.management-table-btn-reload-${id}`, async () => {
         try {
           // Reload data from server
@@ -539,13 +649,15 @@ const DefaultManagement = {
       s(`#ag-pagination-${gridId}`).addEventListener('page-change', async (event) => {
         const token = DefaultManagement.Tokens[id];
         token.page = event.detail.page;
-        await DefaultManagement.loadTable(id);
+        // Skip URL update since Pagination component already updated it
+        await DefaultManagement.loadTable(id, { skipUrlUpdate: true });
       });
       s(`#ag-pagination-${gridId}`).addEventListener('limit-change', async (event) => {
         const token = DefaultManagement.Tokens[id];
         token.limit = event.detail.limit;
         token.page = 1; // Reset to first page
-        await DefaultManagement.loadTable(id);
+        // Skip URL update since Pagination component already updated it
+        await DefaultManagement.loadTable(id, { skipUrlUpdate: true });
       });
       RouterEvents[id] = async (...args) => {
         const queryParams = getQueryParams();
@@ -682,28 +794,46 @@ const DefaultManagement = {
             onFilterChanged: () => {
               // Skip if still initializing (state being applied in onGridReady)
               if (this.Tokens[id].isInitializing) return;
+              // Skip if we're processing a query change from browser navigation
+              if (this.Tokens[id].isProcessingQueryChange) return;
               // Reset to page 1 on filter change
               this.Tokens[id].page = 1;
-              DefaultManagement.loadTable(id);
+              // Create history entry for filter changes
+              DefaultManagement.loadTable(id, { reload: true, force: true, createHistory: true });
             },
             onSortChanged: () => {
               // Skip if still initializing (state being applied in onGridReady)
               if (this.Tokens[id].isInitializing) return;
-              DefaultManagement.loadTable(id);
+              // Skip if we're processing a query change from browser navigation
+              if (this.Tokens[id].isProcessingQueryChange) return;
+              // Create history entry for sort changes
+              DefaultManagement.loadTable(id, { reload: true, force: true, createHistory: true });
             },
-            editType: 'fullRow',
+            editType: 'fullRow', // Keep fullRow for add new row, but cells will auto-save
             // rowData: [],
             onCellValueChanged: async (...args) => {
-              console.log('onCellValueChanged', args);
-              // field: event.colDef.field,
-              // body[event.colDef.field] = event.newValue;
-              // NotificationManager.Push({
-              //   html:
-              //     result.status === 'error'
-              //       ? result.message
-              //       : `${Translate.Render('field')} ${event.colDef.headerName} ${Translate.Render('success-updated')}`,
-              //   status: result.status,
-              // });
+              const [event] = args;
+              // Only auto-save for existing rows (with _id), not new rows
+              if (event.data && event.data._id) {
+                logger.info('onCellValueChanged - auto-saving', args);
+                const body = event.data ? event.data : {};
+                const result = await ServiceProvider.put({ id: event.data._id, body });
+                NotificationManager.Push({
+                  html: result.status === 'error' ? result.message : `${Translate.Render('success-update-item')}`,
+                  status: result.status,
+                });
+                if (result.status === 'success') {
+                  AgGrid.grids[gridId].applyTransaction({
+                    update: [event.data],
+                  });
+                  // Restore default buttons after save
+                  s(`.management-table-btn-save-${id}`).classList.add('hide');
+                  if (permissions.add) s(`.management-table-btn-add-${id}`).classList.remove('hide');
+                  if (permissions.remove) s(`.management-table-btn-clean-${id}`).classList.remove('hide');
+                  if (permissions.reload) s(`.management-table-btn-reload-${id}`).classList.remove('hide');
+                  DefaultManagement.loadTable(id, { reload: false });
+                }
+              }
             },
             rowSelection: 'single',
             onSelectionChanged: async (...args) => {
@@ -712,8 +842,18 @@ const DefaultManagement = {
               const selectedRows = AgGrid.grids[gridId].getSelectedRows();
               logger.info('selectedRows', selectedRows);
             },
+            onCellEditingStarted: async (...args) => {
+              const [event] = args;
+              // Only show save button for new rows (without _id)
+              if (event.data && !event.data._id) {
+                s(`.management-table-btn-save-${id}`).classList.remove('hide');
+                if (permissions.add) s(`.management-table-btn-add-${id}`).classList.add('hide');
+                if (permissions.remove) s(`.management-table-btn-clean-${id}`).classList.add('hide');
+                if (permissions.reload) s(`.management-table-btn-reload-${id}`).classList.add('hide');
+              }
+            },
             onRowEditingStarted: async (...args) => {
-              // Show only save button when editing starts
+              // Show only save button when editing starts (for new rows)
               s(`.management-table-btn-save-${id}`).classList.remove('hide');
               if (permissions.add) s(`.management-table-btn-add-${id}`).classList.add('hide');
               if (permissions.remove) s(`.management-table-btn-clean-${id}`).classList.add('hide');
