@@ -180,6 +180,7 @@ const TranslateCore = {
     Translate.Data['load'] = { en: 'load', es: 'Cargar' };
     Translate.Data['settings'] = { en: 'settings', es: 'configuraciones' };
     Translate.Data['search'] = { en: 'Search', es: 'Buscar' };
+    Translate.Data['filter-by-file-name'] = { en: 'Filter by file name', es: 'Filtrar por nombre de archivo' };
     Translate.Data['view'] = { en: 'view', es: 'ver' };
     Translate.Data['user'] = { en: 'User', es: 'Usuario' };
     Translate.Data['pass'] = { en: 'Password', es: 'Contraseña' };
@@ -397,6 +398,55 @@ const TranslateCore = {
     };
     Translate.Data['resend'] = { en: 'Resend', es: 'Reenviar' };
     Translate.Data['delete-account'] = { en: 'Delete Account', es: 'Borrar cuenta' };
+
+    Translate.Data['doc-title'] = {
+      en: 'Doc Title',
+      es: 'Título del documento',
+    };
+    Translate.Data['md-file-name'] = {
+      en: 'MD File Name',
+      es: 'Nombre de archivo MD',
+    };
+    Translate.Data['generic-file-name'] = {
+      en: 'Generic File Name',
+      es: 'Nombre de archivo genérico',
+    };
+    Translate.Data['edit-document'] = {
+      en: 'Edit Document',
+      es: 'Editar documento',
+    };
+    Translate.Data['location'] = {
+      en: 'Location',
+      es: 'Ubicación',
+    };
+    Translate.Data['save'] = {
+      en: 'Save',
+      es: 'Guardar',
+    };
+    Translate.Data['success-update-document'] = {
+      en: 'Document updated successfully.',
+      es: 'Documento actualizado con éxito.',
+    };
+    Translate.Data['error-update-document'] = {
+      en: 'Error updating document.',
+      es: 'Error al actualizar el documento.',
+    };
+    Translate.Data['error-title-required'] = {
+      en: 'Title is required.',
+      es: 'El título es obligatorio.',
+    };
+    Translate.Data['editing'] = {
+      en: 'Editing',
+      es: 'Editando',
+    };
+    Translate.Data['no-md-file-attached'] = {
+      en: 'No markdown file attached to this document',
+      es: 'No hay archivo markdown adjunto a este documento',
+    };
+    Translate.Data['no-generic-file-attached'] = {
+      en: 'No generic file attached to this document',
+      es: 'No hay archivo genérico adjunto a este documento',
+    };
     Translate.Data['success-delete-account'] = {
       en: 'Account deleted successfully.',
       es: 'Cuenta borrada con éxito.',
