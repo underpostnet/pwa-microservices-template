@@ -443,6 +443,16 @@ class UnderpostRun {
       } else shellExec(`node ${underpostRoot}/bin/zed ${path}`);
     },
     /**
+     * @method crypto-policy
+     * @description Sets the system's crypto policies to `DEFAULT:SHA1` using `update-crypto-policies` command.
+     * @param {string} path - The input value, identifier, or path for the operation.
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @memberof UnderpostRun
+     */
+    'crypto-policy': (path, options = DEFAULT_OPTION) => {
+      shellExec(`sudo update-crypto-policies --set DEFAULT:SHA1`);
+    },
+    /**
      * @method sync
      * @description Cleans up, and then runs a deployment synchronization command (`underpost deploy --kubeadm --build-manifest --sync...`) using parameters parsed from `path` (deployId, replicas, versions, image, node).
      * @param {string} path - The input value, identifier, or path for the operation (used as a comma-separated string containing deploy parameters).
@@ -1402,11 +1412,21 @@ EOF
      * @memberof UnderpostRun
      */
     ps: async (path = '', options = DEFAULT_OPTION) => {
-      const out = shellExec(`ps aux${path ? `| grep '${path}' | grep -v grep` : ''}`, {
-        stdout: true,
-        silent: true,
-      });
-      console.log(path ? out.replaceAll(path, path.bgYellow.black.bold) : out);
+      const out = shellExec(
+        path.startsWith('top-consumers')
+          ? `ps -eo pid,%cpu,%mem,rss,cmd --sort=-%cpu | head -n ${path.split(',')[1] || 15}`
+          : path
+            ? `(ps -eo pid,%cpu,%mem,rss,cmd -ww | head -n1; ps -eo pid,%cpu,%mem,rss,cmd -ww | tail -n +2 | grep -F ${path})`
+            : `ps -eo pid,%cpu,%mem,rss,cmd -ww`,
+        {
+          stdout: true,
+          silent: true,
+        },
+      );
+
+      console.log(
+        path ? out.replaceAll(path.split(',')[2] || path, (path.split(',')[2] || path).bgYellow.black.bold) : out,
+      );
     },
 
     /**
