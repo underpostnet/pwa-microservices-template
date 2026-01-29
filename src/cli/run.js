@@ -491,7 +491,7 @@ class UnderpostRun {
         ? Underpost.deploy.getCurrentTraffic(deployId, { namespace: options.namespace })
         : '';
       let targetTraffic = currentTraffic ? (currentTraffic === 'blue' ? 'green' : 'blue') : 'green';
-      if (targetTraffic) versions = targetTraffic;
+      if (targetTraffic) versions = versions ? versions : targetTraffic;
 
       const timeoutFlags = Underpost.deploy.timeoutFlagsFactory(options);
 
@@ -1365,6 +1365,25 @@ EOF
         const hostListenResult = Underpost.deploy.etcHostFactory([host]);
         logger.info(hostListenResult.renderHosts);
       }
+    },
+
+    /**
+     * @method etc-hosts
+     * @description Generates and logs the contents for the `/etc/hosts` file based on provided hosts or deployment configurations.
+     * @param {string} path - The input value, identifier, or path for the operation (used as a comma-separated list of hosts).
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @memberof UnderpostRun
+     */
+    'etc-hosts': async (path = '', options = DEFAULT_OPTION) => {
+      const hosts = path ? path.split(',') : [];
+      if (options.deployId) {
+        const confServer = JSON.parse(
+          fs.readFileSync(`./engine-private/conf/${options.deployId}/conf.server.json`, 'utf8'),
+        );
+        hosts.push(...Object.keys(confServer));
+      }
+      const hostListenResult = Underpost.deploy.etcHostFactory(hosts);
+      logger.info(hostListenResult.renderHosts);
     },
 
     /**
