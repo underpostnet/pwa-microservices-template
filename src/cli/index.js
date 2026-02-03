@@ -557,6 +557,20 @@ program
   .option('--retry-count <count>', 'Sets HTTPProxy per-route retry count (e.g., 3).')
   .option('--retry-per-try-timeout <duration>', 'Sets HTTPProxy retry per-try timeout (e.g., "150ms").')
   .option('--disable-private-conf-update', 'Disables updates to private configuration during execution.')
+  .option('--logs', 'Streams logs during the runner execution.')
+  .option('--monitor-status <status>', 'Sets the status to monitor for pod/resource (default: "Running").')
+  .option(
+    '--monitor-status-kind-type <kind-type>',
+    'Sets the Kubernetes resource kind type to monitor (default: "pods").',
+  )
+  .option(
+    '--monitor-status-delta-ms <milliseconds>',
+    'Sets the polling interval in milliseconds for status monitoring (default: 1000).',
+  )
+  .option(
+    '--monitor-status-max-attempts <attempts>',
+    'Sets the maximum number of status check attempts (default: 600).',
+  )
   .description('Runs specified scripts using various runners.')
   .action(Underpost.run.callback);
 
@@ -596,7 +610,13 @@ program
   .action(Underpost.lxd.callback);
 
 program
-  .command('baremetal [workflow-id] [ip-address] [hostname] [ip-file-server] [ip-config] [netmask] [dns-server]')
+  .command('baremetal [workflow-id]')
+  .option('--ip-address <ip-address>', 'The IP address of the control server or the local machine.')
+  .option('--hostname <hostname>', 'The hostname of the target baremetal machine.')
+  .option('--ip-file-server <ip-file-server>', 'The IP address of the file server (NFS/TFTP).')
+  .option('--ip-config <ip-config>', 'IP configuration string for the baremetal machine.')
+  .option('--netmask <netmask>', 'Netmask of network.')
+  .option('--dns-server <dns-server>', 'DNS server IP address.')
   .option('--control-server-install', 'Installs the baremetal control server.')
   .option('--control-server-uninstall', 'Uninstalls the baremetal control server.')
   .option('--control-server-restart', 'Restarts the baremetal control server.')

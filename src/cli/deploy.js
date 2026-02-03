@@ -698,30 +698,12 @@ EOF`);
      * @memberof UnderpostDeploy
      */
     existsContainerFile({ podName, path }) {
-      if (podName === 'kind-worker') {
-        const isFile = JSON.parse(
-          shellExec(`docker exec ${podName} sh -c 'test -f "$1" && echo true || echo false' sh ${path}`, {
-            stdout: true,
-            disableLog: true,
-            silent: true,
-          }).trim(),
-        );
-        const isFolder = JSON.parse(
-          shellExec(`docker exec ${podName} sh -c 'test -d "$1" && echo true || echo false' sh ${path}`, {
-            stdout: true,
-            disableLog: true,
-            silent: true,
-          }).trim(),
-        );
-        return isFolder || isFile;
-      }
-      return JSON.parse(
-        shellExec(`kubectl exec ${podName} -- test -f ${path} && echo "true" || echo "false"`, {
-          stdout: true,
-          disableLog: true,
-          silent: true,
-        }).trim(),
-      );
+      const result = shellExec(`kubectl exec ${podName} -- test -f ${path} && echo "true" || echo "false"`, {
+        stdout: true,
+        disableLog: true,
+        silent: true,
+      }).trim();
+      return result === 'true';
     },
     /**
      * Checks the status of a deployment.

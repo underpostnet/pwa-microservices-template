@@ -25,6 +25,7 @@ import UnderpostDns from './server/dns.js';
 import UnderpostBackup from './server/backup.js';
 import UnderpostCron from './server/cron.js';
 import UnderpostStartUp from './server/start.js';
+import UnderpostTls from './server/tls.js';
 
 /**
  * Underpost main module methods
@@ -38,7 +39,7 @@ class Underpost {
    * @type {String}
    * @memberof Underpost
    */
-  static version = 'v2.99.1';
+  static version = 'v2.99.4';
   /**
    * Repository cli API
    * @static
@@ -228,6 +229,16 @@ class Underpost {
   static get start() {
     return UnderpostStartUp.API;
   }
+
+  /**
+   * TLS/SSL server utilities API
+   * @static
+   * @type {UnderpostTls.API}
+   * @memberof Underpost
+   */
+  static get tls() {
+    return UnderpostTls.API;
+  }
 }
 
 const up = Underpost;
@@ -258,6 +269,7 @@ export {
   UnderpostBackup,
   UnderpostCron,
   UnderpostStartUp,
+  UnderpostTls,
 };
 
 export default Underpost;
