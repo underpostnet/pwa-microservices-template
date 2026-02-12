@@ -138,9 +138,6 @@ program
   .option('--head-components <paths>', 'Comma-separated SSR head component paths.')
   .option('--body-components <paths>', 'Comma-separated SSR body component paths.')
 
-  .option('--deploy-id <deploy-id>', 'Build static assets for a specific deployment ID.')
-  .option('--build', 'Triggers the static build process for the specified deployment ID.')
-  .option('--build-host <build-host>', 'Sets a custom build host for static documents or assets.')
   .option('--build-path <build-path>', 'Sets a custom build path for static documents or assets.')
   .option('--env <env>', 'Sets the environment for the static build (e.g., "development", "production").')
   .option('--minify', 'Minify HTML output (default: true for production).')
@@ -165,6 +162,7 @@ program
   .option('--filter <keyword>', 'Filters the list by matching key or value (only for list operation).')
   .option('--deploy-id <deploy-id>', 'Sets the deployment configuration ID for the operation context.')
   .option('--build', 'Sets the build context for the operation.')
+  .option('--copy', 'Copies the configuration value to the clipboard (only for get operation).')
   .description(`Manages Underpost configurations using various operators.`)
   .action((...args) => Underpost.env[args[0]](args[1], args[2], args[3]));
 
@@ -320,8 +318,6 @@ program
   .option('--kubeadm', 'Set kubeadm cluster env image context management.')
   .option('--k3s', 'Set k3s cluster env image context management.')
   .option('--node-name', 'Set node name for kubeadm or k3s cluster env image context management.')
-  .option('--secrets', 'Includes Dockerfile environment secrets during the build.')
-  .option('--secrets-path [secrets-path]', 'Specifies a custom path for Dockerfile environment secrets.')
   .option('--reset', 'Performs a build without using the cache.')
   .option('--dev', 'Use development mode.')
   .option('--pull-dockerhub <dockerhub-image>', 'Sets a custom Docker Hub image for base image pulls.')
@@ -629,6 +625,10 @@ program
   )
   .option('--ipxe', 'Chainloads iPXE to normalize identity before commissioning.')
   .option('--ipxe-rebuild', 'Forces rebuild of iPXE binary with embedded boot script.')
+  .option(
+    '--ipxe-build-iso <iso-path>',
+    'Builds a standalone iPXE ISO with embedded script for the specified workflow ID.',
+  )
   .option('--install-packer', 'Installs Packer CLI.')
   .option(
     '--packer-maas-image-template <template-path>',
@@ -672,7 +672,17 @@ program
   .option('--rocky-tools-test', 'Tests rocky linux tools in chroot environment.')
   .option('--bootcmd <bootcmd-list>', 'Comma-separated list of boot commands to execute.')
   .option('--runcmd <runcmd-list>', 'Comma-separated list of run commands to execute.')
-  .option('--logs <log-id>', 'Displays logs for log id: dhcp, cloud, machine, cloud-config.')
+  .option(
+    '--logs <log-id>',
+    `Displays logs for log id: ${[
+      'dhcp',
+      'dhcp-lease',
+      'dhcp-lan',
+      'cloud-init',
+      'cloud-init-machine',
+      'cloud-init-config',
+    ]}`,
+  )
   .option('--dev', 'Sets the development context environment for baremetal operations.')
   .option('--ls', 'Lists available boot resources and machines.')
   .description(

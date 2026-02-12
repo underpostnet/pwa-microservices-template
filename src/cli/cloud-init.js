@@ -261,6 +261,12 @@ curl -X POST \\
      * @param {boolean} params.ubuntuToolsBuild - Flag to determine if Ubuntu tools should be built.
      * @param {string} [params.bootcmd] - Optional custom commands to run during boot.
      * @param {string} [params.runcmd] - Optional custom commands to run during first boot.
+     * @param {object} [params.write_files] - Optional array of files to write during cloud-init, each with path, permissions, owner, and content.
+     * @param {string} [params.write_files[].path] - The file path where the content will be written on the target machine.
+     * @param {string} [params.write_files[].permissions] - The file permissions to set for the written file (e.g., '0644').
+     * @param {string} [params.write_files[].owner] - The owner of the written file (e.g., 'root:root').
+     * @param {string} [params.write_files[].content] - The content to write into the file.
+     * @param {boolean} [params.write_files[].defer] - Whether to defer writing the file until the 'final' stage of cloud-init.
      * @param {object} [authCredentials={}] - Optional MAAS authentication credentials.
      * @returns {object} The generated cloud-init configuration content.
      * @memberof UnderpostCloudInit
@@ -278,6 +284,15 @@ curl -X POST \\
         ubuntuToolsBuild,
         bootcmd: bootcmdParam,
         runcmd: runcmdParam,
+        write_files = [
+          {
+            path: '',
+            permissions: '',
+            owner: '',
+            content: '',
+            defer: false,
+          },
+        ],
       },
       authCredentials = { consumer_key: '', consumer_secret: '', token_key: '', token_secret: '' },
     ) {
@@ -305,6 +320,7 @@ curl -X POST \\
       let runcmd = [
         'echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"',
         'echo "Init runcmd"',
+        'systemctl enable --now ssh',
         'echo "- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -"',
       ];
 
@@ -334,12 +350,14 @@ curl -X POST \\
             name: process.env.MAAS_ADMIN_USERNAME,
             sudo: ['ALL=(ALL) NOPASSWD:ALL'],
             shell: '/bin/bash',
-            lock_passwd: false,
+            lock_passwd: true,
             groups: 'sudo,users,admin,wheel,lxd',
-            plain_text_passwd: process.env.MAAS_ADMIN_USERNAME,
+            // plain_text_passwd: process.env.MAAS_ADMIN_USERNAME,
             ssh_authorized_keys: [fs.readFileSync(`/home/dd/engine/engine-private/deploy/id_rsa.pub`, 'utf8')],
           },
         ],
+        disable_root: true,
+        ssh_pwauth: false,
         timezone,
         ntp: {
           enabled: true,
@@ -360,6 +378,7 @@ curl -X POST \\
           'smartmontools',
           'net-tools',
           'util-linux',
+          'openssh-server',
         ],
         resize_rootfs: false,
         growpart: { mode: 'off' },
@@ -380,7 +399,7 @@ curl -X POST \\
         final_message: '====== Cloud init finished ======',
         bootcmd,
         runcmd,
-        disable_root: true,
+        write_files,
         preserve_hostname: false,
         cloud_init_modules: [
           // minimal for commissioning
@@ -394,37 +413,37 @@ curl -X POST \\
           'ssh', // enable/configure SSH for temporary access
 
           // optional modules (commented out by default)
-          // 'migrator',
-          // 'seed_random',
-          // 'growpart',
-          // 'resizefs',
-          // 'users-groups',
+          'migrator',
+          'seed_random',
+          'growpart',
+          'resizefs',
+          'users-groups',
         ],
         cloud_config_modules: [
           // minimal so MAAS can run commissioning scripts
           'runcmd', // commissioning / final script execution
           'mounts', // mount devices during commissioning if needed
-          // 'ntp',             // optional — enable if you want time sync
+          'ntp', // optional — enable if you want time sync
 
           // typically not required for basic commissioning (commented)
-          // 'emit_upstart',
-          // 'disk_setup',
-          // 'ssh-import-id',
-          // 'locale',
-          // 'set-passwords',
-          // 'grub-dpkg',
-          // 'apt-pipelining',
-          // 'apt-configure',
-          // 'package-update-upgrade-install', // heavy; do NOT enable by default
-          // 'landscape',
-          // 'timezone',
-          // 'puppet',
-          // 'chef',
-          // 'salt-minion',
-          // 'mcollective',
-          // 'disable-ec2-metadata',
-          // 'byobu',
-          // 'ssh-import-id', // duplicate in original list
+          'emit_upstart',
+          'disk_setup',
+          'ssh-import-id',
+          'locale',
+          'set-passwords',
+          'grub-dpkg',
+          'apt-pipelining',
+          'apt-configure',
+          'package-update-upgrade-install', // heavy; do NOT enable by default
+          'landscape',
+          'timezone',
+          'puppet',
+          'chef',
+          'salt-minion',
+          'mcollective',
+          'disable-ec2-metadata',
+          'byobu',
+          'ssh-import-id', // duplicate in original list
         ],
         cloud_final_modules: [
           // minimal suggestions so final scripts run and node reports status
@@ -432,62 +451,17 @@ curl -X POST \\
           'final-message', // useful for logs/reporting
 
           // optional / commented
-          // 'rightscale_userdata',
-          // 'scripts-vendor',
-          // 'scripts-per-once',
-          // 'scripts-user',
-          // 'ssh-authkey-fingerprints',
-          // 'keys-to-console',
-          // 'power-state-change', // use carefully (can poweroff/reboot)
+          'rightscale_userdata',
+          'scripts-vendor',
+          'scripts-per-once',
+          'scripts-user',
+          'ssh-authkey-fingerprints',
+          'keys-to-console',
+          'power-state-change', // use carefully (can poweroff/reboot)
         ],
       });
 
       return { cloudConfigSrc };
-    },
-
-    /**
-     * @method authCredentialsFactory
-     * @description Retrieves MAAS API key credentials from the MAAS CLI.
-     * This method parses the output of `maas apikey` to extract the consumer key,
-     * consumer secret, token key, and token secret.
-     * @returns {object} An object containing the MAAS authentication credentials.
-     * @memberof UnderpostCloudInit
-     * @throws {Error} If the MAAS API key format is invalid.
-     */
-    authCredentialsFactory() {
-      // Expected formats:
-      // <consumer_key>:<consumer_token>:<secret> (older format)
-      // <consumer_key>:<consumer_secret>:<token_key>:<token_secret> (newer format)
-      // Commands used to generate API keys:
-      // maas apikey --with-names --username ${process.env.MAAS_ADMIN_USERNAME}
-      // maas ${process.env.MAAS_ADMIN_USERNAME} account create-authorisation-token
-      // maas apikey --generate --username ${process.env.MAAS_ADMIN_USERNAME}
-      // Reference: https://github.com/CanonicalLtd/maas-docs/issues/647
-
-      const parts = shellExec(`maas apikey --with-names --username ${process.env.MAAS_ADMIN_USERNAME}`, {
-        stdout: true,
-      })
-        .trim()
-        .split(`\n`)[0] // Take only the first line of output.
-        .split(':'); // Split by colon to get individual parts.
-
-      let consumer_key, consumer_secret, token_key, token_secret;
-
-      // Determine the format of the API key and assign parts accordingly.
-      if (parts.length === 4) {
-        [consumer_key, consumer_secret, token_key, token_secret] = parts;
-      } else if (parts.length === 3) {
-        // Handle older 3-part format, setting consumer_secret as empty.
-        [consumer_key, token_key, token_secret] = parts;
-        consumer_secret = '""';
-        token_secret = token_secret.split(' MAAS consumer')[0].trim(); // Clean up token secret.
-      } else {
-        // Throw an error if the format is not recognized.
-        throw new Error('Invalid token format');
-      }
-
-      logger.info('Maas api token generated', { consumer_key, consumer_secret, token_key, token_secret });
-      return { consumer_key, consumer_secret, token_key, token_secret };
     },
 
     /**
@@ -518,6 +492,7 @@ curl -X POST \\
         growpart,
         network,
         runcmd,
+        write_files,
         final_message,
         bootcmd,
         disable_root,
@@ -645,6 +620,21 @@ curl -X POST \\
         runcmd.forEach((cmd) => yaml.push(`  - ${cmd}`));
       }
 
+      if (write_files) {
+        yaml.push('write_files:');
+        write_files.forEach((file) => {
+          yaml.push(`  - path: ${file.path}`);
+          if (file.encoding) yaml.push(`    encoding: ${file.encoding}`);
+          if (file.owner) yaml.push(`    owner: ${file.owner}`);
+          if (file.permissions) yaml.push(`    permissions: '${file.permissions}'`);
+          if (file.defer) yaml.push(`    defer: ${file.defer}`);
+          if (file.content) {
+            yaml.push(`    content: |`);
+            file.content.split('\n').forEach((line) => yaml.push(`      ${line}`));
+          }
+        });
+      }
+
       if (final_message) yaml.push(`final_message: "${final_message}"`);
 
       if (bootcmd) {
@@ -669,6 +659,34 @@ curl -X POST \\
       }
 
       return yaml.join('\n');
+    } /**
+     * @method kernelParamsFactory
+     * @description Generates the kernel parameters for the target machine's bootloader configuration,
+     * including the necessary parameters to enable cloud-init with a specific configuration URL and logging settings.
+     * @param {array} cmd - The existing array of kernel parameters to which cloud-init parameters will be appended.
+     * @param {object} options - Options for generating kernel parameters.
+     * @param {string} options.ipDhcpServer - The IP address of the DHCP server.
+     * @param {object} [options.machine] - The machine information, including system_id for constructing the cloud-init configuration URL.
+     * @param {string} [options.machine.system_id] - The unique identifier of the machine, used to fetch the correct cloud-init preseed configuration from MAAS.
+     * @return {array} The modified array of kernel parameters with cloud-init parameters included.
+     * @memberof UnderpostCloudInit
+     */,
+    kernelParamsFactory(
+      macAddress,
+      cmd = [],
+      options = {
+        ipDhcpServer: '',
+        bootstrapHttpServerPort: 8888,
+        hostname: '',
+        machine: {
+          system_id: '',
+        },
+        authCredentials: { consumer_key: '', consumer_secret: '', token_key: '', token_secret: '' },
+      },
+    ) {
+      const { ipDhcpServer, bootstrapHttpServerPort, hostname } = options;
+      const cloudConfigUrl = `http://${ipDhcpServer}:${bootstrapHttpServerPort}/${hostname}/cloud-init/user-data`;
+      return cmd.concat([`cloud-config-url=${cloudConfigUrl}`]);
     },
   };
 }

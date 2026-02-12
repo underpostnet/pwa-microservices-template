@@ -8,13 +8,14 @@ import { fileURLToPath } from 'url';
 import { getNpmRootPath, getUnderpostRootPath } from '../server/conf.js';
 import { openTerminal, pbcopy, shellExec } from '../server/process.js';
 import dotenv from 'dotenv';
-import { loggerFactory } from '../server/logger.js';
+import { loggerFactory, loggerMiddleware } from '../server/logger.js';
 import fs from 'fs-extra';
 import path from 'path';
 import Downloader from '../server/downloader.js';
 import { newInstance, range, s4, timer } from '../client/components/core/CommonJs.js';
 import { spawnSync } from 'child_process';
 import Underpost from '../index.js';
+import express from 'express';
 
 const logger = loggerFactory(import.meta);
 
@@ -27,19 +28,6 @@ const logger = loggerFactory(import.meta);
  */
 class UnderpostBaremetal {
   static API = {
-    /**
-     * @method installPacker
-     * @description Installs Packer CLI.
-     * @memberof UnderpostBaremetal
-     * @returns {Promise<void>}
-     */
-    async installPacker(underpostRoot) {
-      const scriptPath = `${underpostRoot}/scripts/packer-setup.sh`;
-      logger.info(`Installing Packer using script: ${scriptPath}`);
-      shellExec(`sudo chmod +x ${scriptPath}`);
-      shellExec(`sudo ${scriptPath}`);
-    },
-
     /**
      * @method callback
      * @description Initiates a baremetal provisioning workflow based on the provided options.
@@ -64,6 +52,7 @@ class UnderpostBaremetal {
      * @param {string} [options.mac=''] - MAC address of the baremetal machine.
      * @param {boolean} [options.ipxe=false] - Flag to use iPXE for booting.
      * @param {boolean} [options.ipxeRebuild=false] - Flag to rebuild the iPXE binary with embedded script.
+     * @param {string} [options.ipxeBuildIso=''] - Builds a standalone iPXE ISO with embedded script for the specified workflow ID.
      * @param {boolean} [options.installPacker=false] - Flag to install Packer CLI.
      * @param {string} [options.packerMaasImageTemplate] - Template path from canonical/packer-maas to extract (requires workflow-id).
      * @param {string} [options.packerWorkflowId] - Workflow ID for Packer MAAS image operations (used with --packer-maas-image-build or --packer-maas-image-upload).
@@ -111,6 +100,7 @@ class UnderpostBaremetal {
         mac: '',
         ipxe: false,
         ipxeRebuild: false,
+        ipxeBuildIso: '',
         installPacker: false,
         packerMaasImageTemplate: false,
         packerWorkflowId: '',
@@ -194,6 +184,47 @@ class UnderpostBaremetal {
       // Define the TFTP root prefix path based
       const tftpRootPath = `${process.env.TFTP_ROOT}/${tftpPrefix}`;
 
+      if (options.ipxeBuildIso) {
+        let machine = null;
+
+        if (options.cloudInit) {
+          // Search for an existing machine by hostname to extract system_id for cloud-init
+          const [searchMachine] = Underpost.baremetal.maasCliExec(`machines read hostname=${hostname}`);
+
+          if (searchMachine) {
+            logger.info(`Found existing machine ${hostname} with system_id ${searchMachine.system_id}`);
+            machine = searchMachine;
+          } else {
+            // Machine does not exist, create it to obtain a system_id
+            logger.info(`Machine ${hostname} not found, creating new machine for cloud-init system_id...`);
+            machine = Underpost.baremetal.machineFactory({
+              hostname,
+              ipAddress,
+              macAddress,
+              architecture: workflowsConfig[workflowId].architecture,
+            }).machine;
+            logger.info(`✓ Machine created with system_id ${machine.system_id}`);
+          }
+        }
+
+        await Underpost.baremetal.ipxeBuildIso({
+          workflowId,
+          isoOutputPath: options.ipxeBuildIso,
+          tftpPrefix,
+          ipFileServer,
+          ipAddress,
+          ipConfig,
+          netmask,
+          dnsServer,
+          macAddress,
+          cloudInit: options.cloudInit,
+          machine,
+          dev: options.dev,
+          bootstrapHttpServerPort: options.bootstrapHttpServerPort,
+        });
+        return;
+      }
+
       // Define the iPXE cache directory to preserve builds across tftproot cleanups
       const ipxeCacheDir = `/tmp/ipxe-cache/${tftpPrefix}`;
 
@@ -218,12 +249,7 @@ class UnderpostBaremetal {
       // Create a new machine in MAAS if the option is set.
       let machine;
       if (options.createMachine === true) {
-        const [searhMachine] = JSON.parse(
-          shellExec(`maas maas machines read hostname=${hostname}`, {
-            stdout: true,
-            silent: true,
-          }),
-        );
+        const [searhMachine] = Underpost.baremetal.maasCliExec(`machines read hostname=${hostname}`);
 
         if (searhMachine) {
           // Check if existing machine's MAC matches the specified MAC
@@ -238,16 +264,14 @@ class UnderpostBaremetal {
             logger.info(`Deleting existing machine ${searhMachine.system_id} to recreate with correct MAC...`);
 
             // Delete the existing machine
-            shellExec(`maas maas machine delete ${searhMachine.system_id}`, {
-              silent: true,
-            });
+            Underpost.baremetal.maasCliExec(`machine delete ${searhMachine.system_id}`);
 
             // Create new machine with correct MAC
             machine = Underpost.baremetal.machineFactory({
               hostname,
               ipAddress,
               macAddress,
-              maas: workflowsConfig[workflowId].maas,
+              architecture: workflowsConfig[workflowId].architecture,
             }).machine;
 
             logger.info(`✓ Machine recreated with MAC ${macAddress}`);
@@ -266,7 +290,7 @@ class UnderpostBaremetal {
               hostname,
               ipAddress,
               macAddress,
-              maas: workflowsConfig[workflowId].maas,
+              architecture: workflowsConfig[workflowId].architecture,
             }).machine;
           }
         }
@@ -351,7 +375,7 @@ class UnderpostBaremetal {
 
         // Build phase (skip if upload-only mode)
         if (options.packerMaasImageBuild) {
-          if (shellExec('packer version', { silent: true }).code !== 0) {
+          if (shellExec('packer version').code !== 0) {
             throw new Error('Packer is not installed. Please install Packer to proceed.');
           }
 
@@ -735,12 +759,7 @@ rm -rf ${artifacts.join(' ')}`);
 
       // Fetch boot resources and machines if commissioning or listing.
 
-      let resources = JSON.parse(
-        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resources read`, {
-          silent: true,
-          stdout: true,
-        }),
-      ).map((o) => ({
+      let resources = Underpost.baremetal.maasCliExec(`boot-resources read`).map((o) => ({
         id: o.id,
         name: o.name,
         architecture: o.architecture,
@@ -748,12 +767,7 @@ rm -rf ${artifacts.join(' ')}`);
       if (options.ls === true) {
         console.table(resources);
       }
-      let machines = JSON.parse(
-        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machines read`, {
-          stdout: true,
-          silent: true,
-        }),
-      ).map((m) => ({
+      let machines = Underpost.baremetal.maasCliExec(`machines read`).map((m) => ({
         system_id: m.interface_set[0].system_id,
         mac_address: m.interface_set[0].mac_address,
         hostname: m.hostname,
@@ -875,10 +889,27 @@ rm -rf ${artifacts.join(' ')}`);
           });
       }
 
+      const authCredentials =
+        options.commission || options.cloudInit || options.cloudInitUpdate
+          ? Underpost.baremetal.maasAuthCredentialsFactory()
+          : { consumer_key: '', consumer_secret: '', token_key: '', token_secret: '' };
+
       if (options.cloudInit || options.cloudInitUpdate) {
         const { chronyc, networkInterfaceName } = workflowsConfig[workflowId];
         const { timezone, chronyConfPath } = chronyc;
-        const authCredentials = Underpost.cloudInit.authCredentialsFactory();
+
+        let write_files = [];
+        let runcmd = options.runcmd;
+
+        if (machine && options.commission) {
+          write_files = Underpost.baremetal.commissioningWriteFilesFactory({
+            machine,
+            authCredentials,
+            runnerHostIp: callbackMetaData.runnerHost.ip,
+          });
+          runcmd = '/usr/local/bin/underpost-enlist.sh';
+        }
+
         const { cloudConfigSrc } = Underpost.cloudInit.configFactory(
           {
             controlServerIp: callbackMetaData.runnerHost.ip,
@@ -891,15 +922,16 @@ rm -rf ${artifacts.join(' ')}`);
             networkInterfaceName,
             ubuntuToolsBuild: options.ubuntuToolsBuild,
             bootcmd: options.bootcmd,
-            runcmd: options.runcmd,
+            runcmd,
+            write_files,
           },
           authCredentials,
         );
-
         Underpost.baremetal.httpBootstrapServerStaticFactory({
           bootstrapHttpServerPath,
           hostname,
           cloudConfigSrc,
+          isoUrl: workflowsConfig[workflowId].isoUrl,
         });
       }
 
@@ -910,7 +942,7 @@ rm -rf ${artifacts.join(' ')}`);
           workflowsConfig[workflowId].type === 'chroot-debootstrap' ||
           workflowsConfig[workflowId].type === 'chroot-container')
       ) {
-        shellExec(`${underpostRoot}/scripts/nat-iptables.sh`, { silent: true });
+        shellExec(`${underpostRoot}/scripts/nat-iptables.sh`);
         Underpost.baremetal.rebuildNfsServer({
           nfsHostPath,
         });
@@ -1004,15 +1036,22 @@ rm -rf ${artifacts.join(' ')}`);
             hostname,
             dnsServer,
             networkInterfaceName,
-            fileSystemUrl: kernelFilesPaths.isoUrl,
-            bootstrapHttpServerPort:
-              options.bootstrapHttpServerPort || workflowsConfig[workflowId].bootstrapHttpServerPort || 8888,
+            fileSystemUrl:
+              type === 'iso-ram'
+                ? `http://${callbackMetaData.runnerHost.ip}:${Underpost.baremetal.bootstrapHttpServerPortFactory({ port: options.bootstrapHttpServerPort, workflowId, workflowsConfig })}/${hostname}/${kernelFilesPaths.isoUrl.split('/').pop()}`
+                : kernelFilesPaths.isoUrl,
+            bootstrapHttpServerPort: Underpost.baremetal.bootstrapHttpServerPortFactory({
+              port: options.bootstrapHttpServerPort,
+              workflowId,
+              workflowsConfig,
+            }),
             type,
             macAddress,
             cloudInit: options.cloudInit,
             machine,
             dev: options.dev,
             osIdLike: workflowsConfig[workflowId].osIdLike || '',
+            authCredentials,
           });
 
           // Check if iPXE mode is enabled AND the iPXE EFI binary exists
@@ -1086,8 +1125,11 @@ rm -rf ${artifacts.join(' ')}`);
         Underpost.baremetal.httpBootstrapServerRunnerFactory({
           hostname,
           bootstrapHttpServerPath,
-          bootstrapHttpServerPort:
-            options.bootstrapHttpServerPort || workflowsConfig[workflowId].bootstrapHttpServerPort,
+          bootstrapHttpServerPort: Underpost.baremetal.bootstrapHttpServerPortFactory({
+            port: options.bootstrapHttpServerPort,
+            workflowId,
+            workflowsConfig,
+          }),
         });
 
         if (type === 'chroot-debootstrap' || type === 'chroot-container')
@@ -1102,11 +1144,7 @@ rm -rf ${artifacts.join(' ')}`);
           macAddress,
           ipAddress,
           hostname,
-          architecture:
-            workflowsConfig[workflowId].maas?.commissioning?.architecture ||
-            workflowsConfig[workflowId].container?.architecture ||
-            workflowsConfig[workflowId].debootstrap?.image?.architecture ||
-            'arm64/generic',
+          architecture: Underpost.baremetal.fallbackArchitecture(workflowsConfig[workflowId]),
           machine,
         };
         logger.info('Waiting for commissioning...', {
@@ -1114,7 +1152,42 @@ rm -rf ${artifacts.join(' ')}`);
           machine: machine ? machine.system_id : null,
         });
 
-        const { discovery } = await Underpost.baremetal.commissionMonitor(commissionMonitorPayload);
+        const { discovery, machine: discoveredMachine } =
+          await Underpost.baremetal.commissionMonitor(commissionMonitorPayload);
+        if (discoveredMachine) machine = discoveredMachine;
+
+        if (machine) {
+          const write_files = Underpost.baremetal.commissioningWriteFilesFactory({
+            machine,
+            authCredentials,
+            runnerHostIp: callbackMetaData.runnerHost.ip,
+          });
+
+          const { cloudConfigSrc } = Underpost.cloudInit.configFactory(
+            {
+              controlServerIp: callbackMetaData.runnerHost.ip,
+              hostname,
+              commissioningDeviceIp: ipAddress,
+              gatewayip: callbackMetaData.runnerHost.ip,
+              mac: macAddress,
+              timezone: workflowsConfig[workflowId].chronyc.timezone,
+              chronyConfPath: workflowsConfig[workflowId].chronyc.chronyConfPath,
+              networkInterfaceName: workflowsConfig[workflowId].networkInterfaceName,
+              ubuntuToolsBuild: options.ubuntuToolsBuild,
+              bootcmd: options.bootcmd,
+              runcmd: '/usr/local/bin/underpost-enlist.sh',
+              write_files,
+            },
+            authCredentials,
+          );
+
+          Underpost.baremetal.httpBootstrapServerStaticFactory({
+            bootstrapHttpServerPath,
+            hostname,
+            cloudConfigSrc,
+            isoUrl: workflowsConfig[workflowId].isoUrl,
+          });
+        }
 
         if ((type === 'chroot-debootstrap' || type === 'chroot-container') && options.cloudInit === true) {
           openTerminal(`node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs cloud-init`);
@@ -1126,6 +1199,164 @@ rm -rf ${artifacts.join(' ')}`);
           );
         }
       }
+    },
+
+    /**
+     * @method installPacker
+     * @description Installs Packer CLI.
+     * @memberof UnderpostBaremetal
+     * @returns {Promise<void>}
+     */
+    async installPacker(underpostRoot) {
+      const scriptPath = `${underpostRoot}/scripts/packer-setup.sh`;
+      logger.info(`Installing Packer using script: ${scriptPath}`);
+      shellExec(`sudo chmod +x ${scriptPath}`);
+      shellExec(`sudo ${scriptPath}`);
+    },
+
+    /**
+     * @method ipxeBuildIso
+     * @description Builds a UEFI-bootable iPXE ISO with an embedded bridge script.
+     * @param {object} params
+     * @param {string} params.workflowId - The workflow identifier (e.g., 'hp-envy-iso-ram').
+     * @param {string} params.isoOutputPath - Output path for the generated ISO file.
+     * @param {string} params.tftpPrefix - TFTP prefix directory (e.g., 'envy').
+     * @param {string} params.ipFileServer - IP address of the TFTP/file server to chain to.
+     * @param {string} [params.ipAddress='192.168.1.191'] - The IP address of the client machine.
+     * @param {string} [params.ipConfig='none'] - IP configuration method (e.g., 'dhcp', 'none').
+     * @param {string} [params.netmask='255.255.255.0'] - The network mask.
+     * @param {string} [params.dnsServer='8.8.8.8'] - The DNS server address.
+     * @param {string} [params.macAddress=''] - The MAC address of the client machine.
+     * @param {boolean} [params.cloudInit=false] - Flag to enable cloud-init.
+     * @param {object} [params.machine=null] - The machine object containing system_id for cloud-init.
+     * @param {boolean} [params.dev=false] - Development mode flag to determine paths.
+     * @param {number} [params.bootstrapHttpServerPort=8888] - Port for the bootstrap HTTP server used in ISO RAM workflows.
+     * @memberof UnderpostBaremetal
+     * @returns {Promise<void>}
+     */
+    async ipxeBuildIso({
+      workflowId,
+      isoOutputPath,
+      tftpPrefix,
+      ipFileServer,
+      ipAddress,
+      ipConfig,
+      netmask,
+      dnsServer,
+      macAddress,
+      cloudInit,
+      machine,
+      dev,
+      bootstrapHttpServerPort,
+    }) {
+      const outputPath = !isoOutputPath || isoOutputPath === '.' ? `./ipxe-${workflowId}.iso` : isoOutputPath;
+      if (fs.existsSync(outputPath)) fs.removeSync(outputPath);
+      shellExec(`mkdir -p $(dirname ${outputPath})`);
+
+      const workflowsConfig = Underpost.baremetal.loadWorkflowsConfig();
+      if (!workflowsConfig[workflowId]) {
+        throw new Error(`Workflow configuration not found for ID: ${workflowId}`);
+      }
+
+      const authCredentials = cloudInit
+        ? Underpost.baremetal.maasAuthCredentialsFactory()
+        : { consumer_key: '', consumer_secret: '', token_key: '', token_secret: '' };
+
+      const { cmd } = Underpost.baremetal.kernelCmdBootParamsFactory({
+        ipClient: ipAddress,
+        ipDhcpServer: ipFileServer,
+        ipFileServer,
+        ipConfig,
+        netmask,
+        hostname: workflowId,
+        dnsServer,
+        fileSystemUrl:
+          dev && workflowsConfig[workflowId].type === 'iso-ram'
+            ? `http://${ipFileServer}:${Underpost.baremetal.bootstrapHttpServerPortFactory({ port: bootstrapHttpServerPort, workflowId, workflowsConfig })}/${workflowId}/${workflowsConfig[workflowId].isoUrl.split('/').pop()}`
+            : workflowsConfig[workflowId].isoUrl,
+        type: workflowsConfig[workflowId].type,
+        macAddress,
+        cloudInit,
+        machine,
+        osIdLike: workflowsConfig[workflowId].osIdLike,
+        networkInterfaceName: workflowsConfig[workflowId].networkInterfaceName,
+        authCredentials,
+        bootstrapHttpServerPort: Underpost.baremetal.bootstrapHttpServerPortFactory({
+          port: bootstrapHttpServerPort,
+          workflowId,
+          workflowsConfig,
+        }),
+        dev,
+      });
+
+      const ipxeSrcDir = '/home/dd/ipxe/src';
+      const embedScriptName = `embed_${workflowId}.ipxe`;
+      const embedScriptPath = path.join(ipxeSrcDir, embedScriptName);
+
+      const embedScriptContent = `#!ipxe
+dhcp
+set server_ip ${ipFileServer}
+set tftp_prefix ${tftpPrefix}
+kernel tftp://\${server_ip}/\${tftp_prefix}/pxe/vmlinuz-efi ${cmd}
+initrd tftp://\${server_ip}/\${tftp_prefix}/pxe/initrd.img
+boot || shell
+`;
+
+      fs.writeFileSync(embedScriptPath, embedScriptContent);
+      logger.info(`Created embedded script at ${embedScriptPath}`);
+
+      // Determine target architecture
+      let targetArch = 'x86_64'; // Default to x86_64
+      if (
+        workflowsConfig[workflowId].architecture === 'arm64' ||
+        workflowsConfig[workflowId].architecture === 'aarch64'
+      ) {
+        targetArch = 'arm64';
+      }
+
+      // Determine host architecture
+      const hostArch = process.arch === 'arm64' ? 'arm64' : 'x86_64';
+
+      let crossCompile = '';
+      if (hostArch === 'x86_64' && targetArch === 'arm64') {
+        crossCompile = 'CROSS_COMPILE=aarch64-linux-gnu-';
+      } else if (hostArch === 'arm64' && targetArch === 'x86_64') {
+        crossCompile = 'CROSS_COMPILE=x86_64-linux-gnu-';
+      }
+
+      const platformDir = targetArch === 'arm64' ? 'bin-arm64-efi' : 'bin-x86_64-efi';
+      const makeTarget = `${platformDir}/ipxe.iso`;
+
+      logger.info(
+        `Building iPXE ISO for ${targetArch} on ${hostArch}: make ${makeTarget} ${crossCompile} EMBED=${embedScriptName}`,
+      );
+
+      const buildCmd = `cd ${ipxeSrcDir} && make ${makeTarget} ${crossCompile} EMBED=${embedScriptName}`;
+      shellExec(buildCmd);
+
+      const builtIsoPath = path.join(ipxeSrcDir, makeTarget);
+      if (fs.existsSync(builtIsoPath)) {
+        fs.copySync(builtIsoPath, outputPath);
+        logger.info(`ISO successfully built and copied to ${outputPath}`);
+      } else {
+        logger.error(`Failed to build ISO at ${builtIsoPath}`);
+      }
+    },
+
+    /**
+     * @method fallbackArchitecture
+     * @description Determines the architecture to use for boot resources, with a fallback mechanism.
+     * @param {object} workflowsConfig - The configuration object for the current workflow.
+     * @returns {string} The architecture string (e.g., 'arm64', 'amd64') to use for boot resources.
+     * @memberof UnderpostBaremetal
+     */
+    fallbackArchitecture(workflowsConfig) {
+      return (
+        workflowsConfig.architecture ||
+        workflowsConfig.maas?.commissioning?.architecture ||
+        workflowsConfig.container?.architecture ||
+        workflowsConfig.debootstrap?.image?.architecture
+      );
     },
 
     /**
@@ -1211,7 +1442,7 @@ rm -rf ${artifacts.join(' ')}`);
       shellExec(`mkdir -p ${mountPoint}`);
 
       // Ensure mount point is not already mounted
-      shellExec(`sudo umount ${mountPoint} 2>/dev/null`, { silent: true });
+      shellExec(`sudo umount ${mountPoint} 2>/dev/null`);
 
       try {
         // Mount the ISO
@@ -1233,10 +1464,10 @@ rm -rf ${artifacts.join(' ')}`);
 
         shellExec(`sudo chown -R $(whoami):$(whoami) ${extractDir}`);
         // Unmount ISO
-        shellExec(`sudo umount ${mountPoint}`, { silent: true });
+        shellExec(`sudo umount ${mountPoint}`);
         logger.info(`Unmounted ISO`);
         // Clean up temporary mount point
-        shellExec(`rmdir ${mountPoint}`, { silent: true });
+        shellExec(`rmdir ${mountPoint}`);
       }
 
       return {
@@ -1253,8 +1484,8 @@ rm -rf ${artifacts.join(' ')}`);
      * @param {string} options.macAddress - The MAC address of the machine.
      * @param {string} options.hostname - The hostname for the machine.
      * @param {string} options.ipAddress - The IP address for the machine.
+     * @param {string} options.architecture - The architecture for the machine (default is 'arm64').
      * @param {string} options.powerType - The power type for the machine (default is 'manual').
-     * @param {object} options.maas - Additional MAAS-specific options.
      * @returns {object} An object containing the created machine details.
      * @memberof UnderpostBaremetal
      */
@@ -1263,13 +1494,13 @@ rm -rf ${artifacts.join(' ')}`);
         macAddress: '',
         hostname: '',
         ipAddress: '',
+        architecture: 'arm64',
         powerType: 'manual',
-        architecture: 'arm64/generic',
       },
     ) {
       if (!options.powerType) options.powerType = 'manual';
       const payload = {
-        architecture: (options.architecture || 'arm64/generic').match('arm') ? 'arm64/generic' : 'amd64/generic',
+        architecture: options.architecture.match('arm') ? 'arm64/generic' : 'amd64/generic',
         mac_address: options.macAddress,
         mac_addresses: options.macAddress,
         hostname: options.hostname,
@@ -1277,18 +1508,13 @@ rm -rf ${artifacts.join(' ')}`);
         ip: options.ipAddress,
       };
       logger.info('Creating MAAS machine', payload);
-      const machine = shellExec(
-        `maas ${process.env.MAAS_ADMIN_USERNAME} machines create ${Object.keys(payload)
+      const machine = Underpost.baremetal.maasCliExec(
+        `machines create ${Object.keys(payload)
           .map((k) => `${k}="${payload[k]}"`)
           .join(' ')}`,
-        {
-          silent: true,
-          stdout: true,
-        },
       );
-      // console.log(machine);
       try {
-        return { machine: JSON.parse(machine) };
+        return { machine };
       } catch (error) {
         console.log(error);
         logger.error(error);
@@ -1325,13 +1551,7 @@ rm -rf ${artifacts.join(' ')}`);
         return { kernelFilesPaths, resourcesPath };
       }
 
-      const resourceData = JSON.parse(
-        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} boot-resource read ${resource.id}`, {
-          stdout: true,
-          silent: true,
-          disableLog: true,
-        }),
-      );
+      const resourceData = Underpost.baremetal.maasCliExec(`boot-resource read ${resource.id}`);
       let kernelFilesPaths = {};
       const bootFiles = resourceData.sets[Object.keys(resourceData.sets)[0]].files;
       const arch = resource.architecture.split('/')[0];
@@ -1392,7 +1612,7 @@ rm -rf ${artifacts.join(' ')}`);
           shellExec(`mkdir -p ${tempExtractDir}`);
 
           // List files in archive to find kernel and initrd
-          const tarList = shellExec(`tar -tf ${rootArchivePath}`, { silent: true }).stdout.split('\n');
+          const tarList = shellExec(`tar -tf ${rootArchivePath}`).stdout.split('\n');
 
           // Look for boot/vmlinuz* and boot/initrd* (handling potential leading ./)
           // Skip rescue, kdump, and other special images
@@ -1524,7 +1744,7 @@ rm -rf ${artifacts.join(' ')}`);
      */
     removeDiscoveredMachines() {
       logger.info('Removing all discovered machines from MAAS...');
-      shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} discoveries clear all=true`);
+      Underpost.baremetal.maasCliExec(`discoveries clear all=true`);
     },
 
     /**
@@ -1857,6 +2077,73 @@ shell
     },
 
     /**
+     * @method bootstrapHttpServerPortFactory
+     * @description Determines the bootstrap HTTP server port.
+     * @param {object} params - Parameters for determining the port.
+     * @param {number} [params.port] - The port passed via options.
+     * @param {string} params.workflowId - The workflow identifier.
+     * @param {object} params.workflowsConfig - The loaded workflows configuration.
+     * @returns {number} The determined port number.
+     * @memberof UnderpostBaremetal
+     */
+    bootstrapHttpServerPortFactory({ port, workflowId, workflowsConfig }) {
+      return port || workflowsConfig[workflowId]?.bootstrapHttpServerPort || 8888;
+    },
+
+    /**
+     * @method commissioningWriteFilesFactory
+     * @description Generates the write_files configuration for the commissioning script.
+     * @param {object} params
+     * @param {object} params.machine - The machine object.
+     * @param {object} params.authCredentials - MAAS authentication credentials.
+     * @param {string} params.runnerHostIp - The IP address of the runner host.
+     * @memberof UnderpostBaremetal
+     * @returns {Array} The write_files array.
+     */
+    commissioningWriteFilesFactory({ machine, authCredentials, runnerHostIp }) {
+      const { consumer_key, token_key, token_secret } = authCredentials;
+      return [
+        {
+          path: '/usr/local/bin/underpost-enlist.sh',
+          permissions: '0755',
+          owner: 'root:root',
+          content: `#!/bin/bash
+# set -euo pipefail
+CONSUMER_KEY="${consumer_key}"
+TOKEN_KEY="${token_key}"
+TOKEN_SECRET="${token_secret}"
+LOG_FILE="/var/log/underpost-enlistment.log"
+RESPONSE_FILE="/tmp/maas_response.txt"
+STATUS_FILE="/tmp/maas_status.txt"
+
+echo "Starting MAAS Commissioning Request..." | tee -a "$LOG_FILE"
+
+curl -X POST \\
+  --location --verbose \\
+  --header "Authorization: OAuth oauth_version=\\"1.0\\", oauth_signature_method=\\"PLAINTEXT\\", oauth_consumer_key=\\"$CONSUMER_KEY\\", oauth_token=\\"$TOKEN_KEY\\", oauth_signature=\\"&$TOKEN_SECRET\\", oauth_nonce=\\"$(uuidgen)\\", oauth_timestamp=\\"$(date +%s)\\"" \\
+  -F "enable_ssh=1" \\
+  http://${runnerHostIp}:5240/MAAS/api/2.0/machines/${machine.system_id}/op-commission \\
+  --output "$RESPONSE_FILE" --write-out "%{http_code}" > "$STATUS_FILE" 2>> "$LOG_FILE"
+
+HTTP_STATUS=$(cat "$STATUS_FILE")
+
+echo "HTTP Status: $HTTP_STATUS" | tee -a "$LOG_FILE"
+echo "Response Body:" | tee -a "$LOG_FILE"
+cat "$RESPONSE_FILE" | tee -a "$LOG_FILE"
+
+if [ "$HTTP_STATUS" -eq 200 ]; then
+  echo "Commissioning requested successfully. Rebooting to start commissioning..." | tee -a "$LOG_FILE"
+  reboot
+else
+  echo "ERROR: MAAS commissioning failed with status $HTTP_STATUS" | tee -a "$LOG_FILE"
+  exit 0
+fi
+`,
+        },
+      ];
+    },
+
+    /**
      * @method httpBootstrapServerStaticFactory
      * @description Creates static files for the bootstrap HTTP server including cloud-init configuration.
      * @param {object} params - Parameters for creating static files.
@@ -1865,6 +2152,7 @@ shell
      * @param {string} params.cloudConfigSrc - The cloud-init configuration YAML source.
      * @param {object} [params.metadata] - Optional metadata to include in meta-data file.
      * @param {string} [params.vendorData] - Optional vendor-data content (default: empty string).
+     * @param {string} [params.isoUrl] - Optional ISO URL to cache and serve.
      * @memberof UnderpostBaremetal
      * @returns {void}
      */
@@ -1874,16 +2162,13 @@ shell
       cloudConfigSrc,
       metadata = {},
       vendorData = '',
+      isoUrl = '',
     }) {
       // Create directory structure
       shellExec(`mkdir -p ${bootstrapHttpServerPath}/${hostname}/cloud-init`);
 
       // Write user-data file
-      fs.writeFileSync(
-        `${bootstrapHttpServerPath}/${hostname}/cloud-init/user-data`,
-        `#cloud-config\n${cloudConfigSrc}`,
-        'utf8',
-      );
+      fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/user-data`, cloudConfigSrc, 'utf8');
 
       // Write meta-data file
       const metaDataContent = `instance-id: ${metadata.instanceId || hostname}\nlocal-hostname: ${metadata.localHostname || hostname}`;
@@ -1893,6 +2178,22 @@ shell
       fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/vendor-data`, vendorData, 'utf8');
 
       logger.info(`Cloud-init files written to ${bootstrapHttpServerPath}/${hostname}/cloud-init`);
+
+      if (isoUrl) {
+        const isoFilename = isoUrl.split('/').pop();
+        const isoCacheDir = `/var/tmp/live-iso`;
+        const isoCachePath = `${isoCacheDir}/${isoFilename}`;
+        const isoDestPath = `${bootstrapHttpServerPath}/${hostname}/${isoFilename}`;
+
+        if (!fs.existsSync(isoCachePath)) {
+          logger.info(`Downloading ISO to cache: ${isoUrl}`);
+          shellExec(`mkdir -p ${isoCacheDir}`);
+          shellExec(`wget --progress=bar:force -O ${isoCachePath} "${isoUrl}"`);
+        }
+
+        logger.info(`Copying ISO to bootstrap server: ${isoDestPath}`);
+        shellExec(`cp ${isoCachePath} ${isoDestPath}`);
+      }
     },
 
     /**
@@ -1913,14 +2214,17 @@ shell
       const hostname = options.hostname || 'localhost';
 
       shellExec(`mkdir -p ${bootstrapHttpServerPath}/${hostname}/cloud-init`);
+      shellExec(`node bin run kill ${port}`);
 
-      // Kill any existing HTTP server
-      shellExec(`sudo pkill -f 'python3 -m http.server ${port}'`, { silent: true });
+      const app = express();
 
-      shellExec(
-        `cd ${bootstrapHttpServerPath} && nohup python3 -m http.server ${port} --bind 0.0.0.0 > /tmp/http-boot-server.log 2>&1 &`,
-        { silent: true, async: true },
-      );
+      app.use(loggerMiddleware(import.meta, 'debug', () => false));
+
+      app.use('/', express.static(bootstrapHttpServerPath));
+
+      app.listen(port, () => {
+        logger.info(`Static file server running on port ${port}`);
+      });
 
       // Configure iptables to allow incoming LAN connections
       shellExec(
@@ -1963,7 +2267,7 @@ shell
         // GRUB on ARM64 often crashes with synchronous exception (0x200) if handling large compressed kernels directly.
         if (file === 'vmlinuz-efi') {
           const kernelDest = `${tftpRootPath}/pxe/${file}`;
-          const fileType = shellExec(`file ${kernelDest}`, { silent: true }).stdout;
+          const fileType = shellExec(`file ${kernelDest}`).stdout;
 
           // Handle gzip compressed kernels
           if (fileType.includes('gzip compressed data')) {
@@ -2001,8 +2305,14 @@ shell
      * @param {string} options.macAddress - The MAC address of the client.
      * @param {boolean} options.cloudInit - Whether to include cloud-init parameters.
      * @param {object} options.machine - The machine object containing system_id.
+     * @param {string} options.machine.system_id - The system ID of the machine (for MAAS metadata).
      * @param {boolean} [options.dev=false] - Whether to enable dev mode with dracut debugging parameters.
      * @param {string} [options.osIdLike=''] - OS family identifier (e.g., 'rhel centos fedora' or 'debian ubuntu').
+     * @param {object} options.authCredentials - Authentication credentials for fetching files (if needed).
+     * @param {string} options.authCredentials.consumer_key - Consumer key for authentication.
+     * @param {string} options.authCredentials.consumer_secret - Consumer secret for authentication.
+     * @param {string} options.authCredentials.token_key - Token key for authentication.
+     * @param {string} options.authCredentials.token_secret - Token secret for authentication.
      * @returns {object} An object containing the constructed command line string.
      * @memberof UnderpostBaremetal
      */
@@ -2024,6 +2334,7 @@ shell
         machine: { system_id: '' },
         dev: false,
         osIdLike: '',
+        authCredentials: { consumer_key: '', consumer_secret: '', token_key: '', token_secret: '' },
       },
     ) {
       // Construct kernel command line arguments for NFS boot.
@@ -2044,10 +2355,9 @@ shell
         osIdLike,
       } = options;
 
-      const ipParam = true
-        ? `ip=${ipClient}:${ipFileServer}:${ipDhcpServer}:${netmask}:${hostname}` +
-          `:${networkInterfaceName ? networkInterfaceName : 'eth0'}:${ipConfig}:${dnsServer}`
-        : 'ip=dhcp';
+      const ipParam =
+        `ip=${ipClient}:${ipFileServer}:${ipDhcpServer}:${netmask}:${hostname}` +
+        `:${networkInterfaceName ? networkInterfaceName : 'eth0'}:${ipConfig}:${dnsServer}`;
 
       const nfsOptions = `${
         type === 'chroot-debootstrap' || type === 'chroot-container'
@@ -2094,7 +2404,7 @@ shell
         // `toram`,
         'nomodeset',
         `editable_rootfs=tmpfs`,
-        `ramdisk_size=3550000`,
+        // `ramdisk_size=3550000`,
         // `root=/dev/sda1`, // rpi4 usb port unit
         'apparmor=0', // Disable AppArmor security
         ...(networkInterfaceName === 'eth0'
@@ -2138,49 +2448,32 @@ shell
       if (type === 'iso-ram') {
         const netBootParams = [`netboot=url`];
         if (fileSystemUrl) netBootParams.push(`url=${fileSystemUrl.replace('https', 'http')}`);
-        cmd = [ipParam, `boot=casper`, ...netBootParams, ...kernelParams];
+        cmd = [ipParam, `boot=casper`, 'toram', ...netBootParams, ...kernelParams, ...performanceParams];
       } else if (type === 'chroot-debootstrap' || type === 'chroot-container') {
         let qemuNfsRootParams = [`root=/dev/nfs`, `rootfstype=nfs`];
-
-        // Determine OS family from osIdLike configuration
-        const isRhelBased = osIdLike && osIdLike.match(/rhel|centos|fedora|alma|rocky/i);
-        const isDebianBased = osIdLike && osIdLike.match(/debian|ubuntu/i);
-
-        // Add RHEL/Rocky/Fedora based images specific parameters
-        if (isRhelBased) {
-          qemuNfsRootParams = qemuNfsRootParams.concat([`rd.neednet=1`, `rd.timeout=180`, `selinux=0`, `enforcing=0`]);
-        }
-        // Add Debian/Ubuntu based images specific parameters
-        else if (isDebianBased) {
-          qemuNfsRootParams = qemuNfsRootParams.concat([`initrd=initrd.img`, `init=/sbin/init`]);
-        }
-
-        // Add debugging parameters in dev mode for dracut troubleshooting
-        if (options.dev) {
-          // qemuNfsRootParams = qemuNfsRootParams.concat([`rd.shell`, `rd.debug`]);
-        }
-
         cmd = [ipParam, ...qemuNfsRootParams, nfsRootParam, ...kernelParams];
       } else {
         // 'iso-nfs'
         cmd = [ipParam, `netboot=nfs`, nfsRootParam, ...kernelParams, ...performanceParams];
-
-        cmd.push(`ifname=${networkInterfaceName}:${macAddress}`);
-
-        if (cloudInit) {
-          const cloudInitPreseedUrl = `http://${ipDhcpServer}:5248/MAAS/metadata/by-id/${options.machine?.system_id ? options.machine.system_id : 'system-id'}/?op=get_preseed`;
-          cmd = cmd.concat([
-            `cloud-init=enabled`,
-            'autoinstall',
-            `cloud-config-url=${cloudInitPreseedUrl}`,
-            `ds=nocloud-net;s=${cloudInitPreseedUrl}`,
-            `log_host=${ipDhcpServer}`,
-            `log_port=5247`,
-            // `BOOTIF=${macAddress}`,
-            // `cc:{'datasource_list': ['MAAS']}end_cc`,
-          ]);
-        }
+        // cmd.push(`ifname=${networkInterfaceName}:${macAddress}`);
       }
+
+      // Determine OS family from osIdLike configuration
+      const isRhelBased = osIdLike && osIdLike.match(/rhel|centos|fedora|alma|rocky/i);
+      const isDebianBased = osIdLike && osIdLike.match(/debian|ubuntu/i);
+
+      // Add RHEL/Rocky/Fedora based images specific parameters
+      if (isRhelBased) {
+        cmd = cmd.concat([`rd.neednet=1`, `rd.timeout=180`, `selinux=0`, `enforcing=0`]);
+        if (options.dev) cmd = cmd.concat([`rd.shell`, `rd.debug`]);
+      }
+      // Add Debian/Ubuntu based images specific parameters
+      else if (isDebianBased) {
+        cmd = cmd.concat([`initrd=initrd.img`, `init=/sbin/init`]);
+        if (options.dev) cmd = cmd.concat([`debug`, `ignore_loglevel`]);
+      }
+
+      if (cloudInit) cmd = Underpost.cloudInit.kernelParamsFactory(macAddress, cmd, options);
       // cmd.push('---');
       const cmdStr = cmd.join(' ');
       logger.info('Constructed kernel command line');
@@ -2204,12 +2497,7 @@ shell
     async commissionMonitor({ macAddress, ipAddress, hostname, architecture, machine }) {
       {
         // Query observed discoveries from MAAS.
-        const discoveries = JSON.parse(
-          shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} discoveries read`, {
-            silent: true,
-            stdout: true,
-          }),
-        );
+        const discoveries = Underpost.baremetal.maasCliExec(`discoveries read`);
 
         for (const discovery of discoveries) {
           const discoverHostname = discovery.hostname
@@ -2227,6 +2515,20 @@ shell
           if (discovery.ip === ipAddress) {
             logger.info('Machine discovered!', discovery);
             if (!machine) {
+              // Check if a machine with the discovered MAC already exists to avoid conflicts
+              const [existingMachine] =
+                Underpost.baremetal.maasCliExec(`machines read mac_address=${discovery.mac_address}`) || [];
+
+              if (existingMachine) {
+                logger.warn(
+                  `Machine ${existingMachine.hostname} (${existingMachine.system_id}) already exists with MAC ${discovery.mac_address}`,
+                );
+                logger.info(
+                  `Deleting existing machine ${existingMachine.system_id} to create new machine ${hostname}...`,
+                );
+                Underpost.baremetal.maasCliExec(`machine delete ${existingMachine.system_id}`);
+              }
+
               logger.info('Creating new machine with discovered hardware MAC...', {
                 discoveredMAC: discovery.mac_address,
                 ipAddress,
@@ -2238,12 +2540,18 @@ shell
                 hostname,
                 architecture,
               }).machine;
-              console.log('New machine system id:', machine.system_id.bgYellow.bold.black);
-              Underpost.baremetal.writeGrubConfigToFile({
-                grubCfgSrc: Underpost.baremetal
-                  .getGrubConfigFromFile()
-                  .grubCfgSrc.replaceAll('system-id', machine.system_id),
-              });
+
+              if (machine && machine.system_id) {
+                console.log('New machine system id:', machine.system_id.bgYellow.bold.black);
+                Underpost.baremetal.writeGrubConfigToFile({
+                  grubCfgSrc: Underpost.baremetal
+                    .getGrubConfigFromFile()
+                    .grubCfgSrc.replaceAll('system-id', machine.system_id),
+                });
+              } else {
+                logger.error('Failed to create machine or obtain system_id', machine);
+                throw new Error('Machine creation failed');
+              }
             } else {
               const systemId = machine.system_id;
               console.log('Using pre-registered machine system_id:', systemId.bgYellow.bold.black);
@@ -2256,22 +2564,45 @@ shell
                   discoveredMAC: discovery.mac_address,
                 });
 
-                shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine mark-broken ${systemId}`, {
-                  silent: true,
-                });
+                // Check current machine status before attempting state transitions
+                const currentMachine = Underpost.baremetal.maasCliExec(`machine read ${systemId}`);
+                const currentStatus = currentMachine ? currentMachine.status_name : 'Unknown';
+                logger.info('Current machine status before interface update:', { systemId, status: currentStatus });
 
-                shellExec(
-                  // name=${networkInterfaceName}
-                  `maas ${process.env.MAAS_ADMIN_USERNAME} interface update ${systemId} ${machine.boot_interface.id}` +
-                    ` mac_address=${discovery.mac_address}`,
-                  {
-                    silent: true,
-                  },
+                // Only mark-broken if the machine is in a state that supports it (e.g. Ready, New, Allocated)
+                // Machines already in Broken state don't need to be marked broken again
+                if (currentStatus !== 'Broken') {
+                  try {
+                    Underpost.baremetal.maasCliExec(`machine mark-broken ${systemId}`);
+                    logger.info('Machine marked as broken successfully');
+                  } catch (markBrokenError) {
+                    logger.warn('Failed to mark machine as broken, attempting interface update anyway...', {
+                      error: markBrokenError.message,
+                      currentStatus,
+                    });
+                  }
+                } else {
+                  logger.info('Machine is already in Broken state, skipping mark-broken');
+                }
+
+                Underpost.baremetal.maasCliExec(
+                  `interface update ${systemId} ${machine.boot_interface.id}` + ` mac_address=${discovery.mac_address}`,
                 );
 
-                shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine mark-fixed ${systemId}`, {
-                  silent: true,
-                });
+                // Re-check status before mark-fixed — only attempt if actually Broken
+                const updatedMachine = Underpost.baremetal.maasCliExec(`machine read ${systemId}`);
+                const updatedStatus = updatedMachine ? updatedMachine.status_name : 'Unknown';
+
+                if (updatedStatus === 'Broken') {
+                  try {
+                    Underpost.baremetal.maasCliExec(`machine mark-fixed ${systemId}`);
+                    logger.info('Machine marked as fixed successfully');
+                  } catch (markFixedError) {
+                    logger.warn('Failed to mark machine as fixed:', { error: markFixedError.message });
+                  }
+                } else {
+                  logger.info('Machine is not in Broken state, skipping mark-fixed', { status: updatedStatus });
+                }
 
                 logger.info('✓ Machine interface MAC address updated successfully');
 
@@ -2298,6 +2629,73 @@ shell
           machine,
         });
       }
+    },
+
+    /**
+     * @method maasCliExec
+     * @description Executes a MAAS CLI command and returns the parsed JSON output.
+     * This method abstracts the execution of MAAS CLI commands, ensuring that the output is captured and parsed correctly.
+     * @param {string} cmd - The MAAS CLI command to execute (e.g., 'machines read').
+     * @returns {object|null} The parsed JSON output from the MAAS CLI command, or null if there is no output.
+     * @memberof UnderpostBaremetal
+     */
+    maasCliExec(cmd) {
+      const output = shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} ${cmd}`, {
+        stdout: true,
+        silent: true,
+      }).trim();
+      try {
+        return output ? JSON.parse(output) : null;
+      } catch (error) {
+        console.log('output', output);
+        logger.error(error);
+        throw error;
+      }
+    },
+
+    /**
+     * @method maasAuthCredentialsFactory
+     * @description Retrieves MAAS API key credentials from the MAAS CLI.
+     * This method parses the output of `maas apikey` to extract the consumer key,
+     * consumer secret, token key, and token secret.
+     * @returns {object} An object containing the MAAS authentication credentials.
+     * @memberof UnderpostBaremetal
+     * @throws {Error} If the MAAS API key format is invalid.
+     */
+    maasAuthCredentialsFactory() {
+      // Expected formats:
+      // <consumer_key>:<consumer_token>:<secret> (older format)
+      // <consumer_key>:<consumer_secret>:<token_key>:<token_secret> (newer format)
+      // Commands used to generate API keys:
+      // maas apikey --with-names --username ${process.env.MAAS_ADMIN_USERNAME}
+      // maas ${process.env.MAAS_ADMIN_USERNAME} account create-authorisation-token
+      // maas apikey --generate --username ${process.env.MAAS_ADMIN_USERNAME}
+      // Reference: https://github.com/CanonicalLtd/maas-docs/issues/647
+
+      const parts = shellExec(`maas apikey --with-names --username ${process.env.MAAS_ADMIN_USERNAME}`, {
+        stdout: true,
+      })
+        .trim()
+        .split(`\n`)[0] // Take only the first line of output.
+        .split(':'); // Split by colon to get individual parts.
+
+      let consumer_key, consumer_secret, token_key, token_secret;
+
+      // Determine the format of the API key and assign parts accordingly.
+      if (parts.length === 4) {
+        [consumer_key, consumer_secret, token_key, token_secret] = parts;
+      } else if (parts.length === 3) {
+        // Handle older 3-part format, setting consumer_secret as empty.
+        [consumer_key, token_key, token_secret] = parts;
+        consumer_secret = '';
+        token_secret = token_secret.split(' MAAS consumer')[0].trim(); // Clean up token secret.
+      } else {
+        // Throw an error if the format is not recognized.
+        throw new Error('Invalid token format');
+      }
+
+      logger.info('Maas api token generated', { consumer_key, consumer_secret, token_key, token_secret });
+      return { consumer_key, consumer_secret, token_key, token_secret };
     },
 
     /**
@@ -2335,7 +2733,7 @@ shell
         const systemId = typeof machine === 'string' ? machine : machine.system_id;
         if (ignore && ignore.find((mId) => mId === systemId)) continue;
         logger.info(`Removing machine: ${systemId}`);
-        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} machine delete ${systemId}`);
+        Underpost.baremetal.maasCliExec(`machine delete ${systemId}`);
       }
       return [];
     },
@@ -2349,9 +2747,9 @@ shell
      * @returns {void}
      */
     clearDiscoveries({ force }) {
-      shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} discoveries clear all=true`);
+      Underpost.baremetal.maasCliExec(`discoveries clear all=true`);
       if (force === true) {
-        shellExec(`maas ${process.env.MAAS_ADMIN_USERNAME} discoveries scan force=true`);
+        Underpost.baremetal.maasCliExec(`discoveries scan force=true`);
       }
     },
 
@@ -2967,10 +3365,10 @@ udp-port = 32766
         // Check both /usr/local/bin (compiled) and system paths
         let qemuAarch64Path = null;
 
-        if (shellExec('test -x /usr/local/bin/qemu-system-aarch64', { silent: true }).code === 0) {
+        if (shellExec('test -x /usr/local/bin/qemu-system-aarch64').code === 0) {
           qemuAarch64Path = '/usr/local/bin/qemu-system-aarch64';
-        } else if (shellExec('which qemu-system-aarch64', { silent: true }).code === 0) {
-          qemuAarch64Path = shellExec('which qemu-system-aarch64', { silent: true }).stdout.trim();
+        } else if (shellExec('which qemu-system-aarch64').code === 0) {
+          qemuAarch64Path = shellExec('which qemu-system-aarch64').stdout.trim();
         }
 
         if (!qemuAarch64Path) {
@@ -2983,7 +3381,7 @@ udp-port = 32766
         logger.info(`Found qemu-system-aarch64 at: ${qemuAarch64Path}`);
 
         // Verify that the installed qemu supports the 'virt' machine type (required for arm64)
-        const machineHelp = shellExec(`${qemuAarch64Path} -machine help`, { silent: true }).stdout;
+        const machineHelp = shellExec(`${qemuAarch64Path} -machine help`).stdout;
         if (!machineHelp.includes('virt')) {
           throw new Error(
             'The installed qemu-system-aarch64 does not support the "virt" machine type.\n' +
@@ -2996,10 +3394,10 @@ udp-port = 32766
         // Check both /usr/local/bin (compiled) and system paths
         let qemuX86Path = null;
 
-        if (shellExec('test -x /usr/local/bin/qemu-system-x86_64', { silent: true }).code === 0) {
+        if (shellExec('test -x /usr/local/bin/qemu-system-x86_64').code === 0) {
           qemuX86Path = '/usr/local/bin/qemu-system-x86_64';
-        } else if (shellExec('which qemu-system-x86_64', { silent: true }).code === 0) {
-          qemuX86Path = shellExec('which qemu-system-x86_64', { silent: true }).stdout.trim();
+        } else if (shellExec('which qemu-system-x86_64').code === 0) {
+          qemuX86Path = shellExec('which qemu-system-x86_64').stdout.trim();
         }
 
         if (!qemuX86Path) {
@@ -3012,7 +3410,7 @@ udp-port = 32766
         logger.info(`Found qemu-system-x86_64 at: ${qemuX86Path}`);
 
         // Verify that the installed qemu supports the 'pc' or 'q35' machine type (required for x86_64)
-        const machineHelp = shellExec(`${qemuX86Path} -machine help`, { silent: true }).stdout;
+        const machineHelp = shellExec(`${qemuX86Path} -machine help`).stdout;
         if (!machineHelp.includes('pc') && !machineHelp.includes('q35')) {
           throw new Error(
             'The installed qemu-system-x86_64 does not support the "pc" or "q35" machine type.\n' +

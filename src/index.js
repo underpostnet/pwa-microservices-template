@@ -25,7 +25,7 @@ import UnderpostDns from './server/dns.js';
 import UnderpostBackup from './server/backup.js';
 import UnderpostCron from './server/cron.js';
 import UnderpostStartUp from './server/start.js';
-import UnderpostTls from './server/tls.js';
+import UnderpostTLS from './server/tls.js';
 
 /**
  * Underpost main module methods
@@ -39,7 +39,16 @@ class Underpost {
    * @type {String}
    * @memberof Underpost
    */
-  static version = 'v2.99.4';
+  static version = 'v2.99.5';
+
+  /**
+   * Required Node.js major version
+   * @static
+   * @type {String}
+   * @memberof Underpost
+   */
+  static majorNodejsVersion = 'v24';
+
   /**
    * Repository cli API
    * @static
@@ -233,13 +242,18 @@ class Underpost {
   /**
    * TLS/SSL server utilities API
    * @static
-   * @type {UnderpostTls.API}
+   * @type {UnderpostTLS.API}
    * @memberof Underpost
    */
   static get tls() {
-    return UnderpostTls.API;
+    return UnderpostTLS.API;
   }
 }
+
+if (!process.version || !process.version.startsWith(`${Underpost.majorNodejsVersion}.`))
+  console.warn(
+    `${`Underpost Warning: Required Node.js version is `.red}${`${Underpost.majorNodejsVersion}.x`.bgBlue.bold.white}${`, you are using `.red}${process.version.bgRed.bold.white}`,
+  );
 
 const up = Underpost;
 
@@ -269,7 +283,7 @@ export {
   UnderpostBackup,
   UnderpostCron,
   UnderpostStartUp,
-  UnderpostTls,
+  UnderpostTLS,
 };
 
 export default Underpost;
