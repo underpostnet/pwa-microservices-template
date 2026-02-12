@@ -6,7 +6,7 @@
 
 import { fileURLToPath } from 'url';
 import { getNpmRootPath, getUnderpostRootPath } from '../server/conf.js';
-import { openTerminal, pbcopy, shellExec } from '../server/process.js';
+import { pbcopy, shellExec } from '../server/process.js';
 import dotenv from 'dotenv';
 import { loggerFactory, loggerMiddleware } from '../server/logger.js';
 import fs from 'fs-extra';
@@ -65,6 +65,7 @@ class UnderpostBaremetal {
      * @param {boolean} [options.commission=false] - Flag to commission the baremetal machine.
      * @param {number} [options.bootstrapHttpServerPort=8888] - Port for the bootstrap HTTP server.
      * @param {string} [options.bootstrapHttpServerPath='./public/localhost'] - Path for the bootstrap HTTP server files.
+     * @param {boolean} [options.bootstrapHttpServerRun=false] - Flag to start the bootstrap HTTP server.
      * @param {string} [options.isoUrl=''] - Uses a custom ISO URL for baremetal machine commissioning.
      * @param {boolean} [options.ubuntuToolsBuild=false] - Builds ubuntu tools for chroot environment.
      * @param {boolean} [options.ubuntuToolsTest=false] - Tests ubuntu tools in chroot environment.
@@ -75,6 +76,7 @@ class UnderpostBaremetal {
      * @param {boolean} [options.nfsBuild=false] - Flag to build the NFS root filesystem.
      * @param {boolean} [options.nfsBuildServer=false] - Flag to build the NFS server components.
      * @param {boolean} [options.nfsMount=false] - Flag to mount the NFS root filesystem.
+     * @param {boolean} [options.nfsReset=false] - Flag to reset the NFS environment by unmounting and cleaning the host path.
      * @param {boolean} [options.nfsUnmount=false] - Flag to unmount the NFS root filesystem.
      * @param {boolean} [options.nfsSh=false] - Flag to chroot into the NFS environment for shell access.
      * @param {string} [options.logs=''] - Specifies which logs to display ('dhcp', 'cloud', 'machine', 'cloud-config').
@@ -114,6 +116,7 @@ class UnderpostBaremetal {
         commission: false,
         bootstrapHttpServerPort: 8888,
         bootstrapHttpServerPath: './public/localhost',
+        bootstrapHttpServerRun: false,
         isoUrl: '',
         ubuntuToolsBuild: false,
         ubuntuToolsTest: false,
@@ -124,6 +127,7 @@ class UnderpostBaremetal {
         nfsBuild: false,
         nfsBuildServer: false,
         nfsMount: false,
+        nfsReset: false,
         nfsUnmount: false,
         nfsSh: false,
         logs: '',
@@ -183,47 +187,6 @@ class UnderpostBaremetal {
 
       // Define the TFTP root prefix path based
       const tftpRootPath = `${process.env.TFTP_ROOT}/${tftpPrefix}`;
-
-      if (options.ipxeBuildIso) {
-        let machine = null;
-
-        if (options.cloudInit) {
-          // Search for an existing machine by hostname to extract system_id for cloud-init
-          const [searchMachine] = Underpost.baremetal.maasCliExec(`machines read hostname=${hostname}`);
-
-          if (searchMachine) {
-            logger.info(`Found existing machine ${hostname} with system_id ${searchMachine.system_id}`);
-            machine = searchMachine;
-          } else {
-            // Machine does not exist, create it to obtain a system_id
-            logger.info(`Machine ${hostname} not found, creating new machine for cloud-init system_id...`);
-            machine = Underpost.baremetal.machineFactory({
-              hostname,
-              ipAddress,
-              macAddress,
-              architecture: workflowsConfig[workflowId].architecture,
-            }).machine;
-            logger.info(`✓ Machine created with system_id ${machine.system_id}`);
-          }
-        }
-
-        await Underpost.baremetal.ipxeBuildIso({
-          workflowId,
-          isoOutputPath: options.ipxeBuildIso,
-          tftpPrefix,
-          ipFileServer,
-          ipAddress,
-          ipConfig,
-          netmask,
-          dnsServer,
-          macAddress,
-          cloudInit: options.cloudInit,
-          machine,
-          dev: options.dev,
-          bootstrapHttpServerPort: options.bootstrapHttpServerPort,
-        });
-        return;
-      }
 
       // Define the iPXE cache directory to preserve builds across tftproot cleanups
       const ipxeCacheDir = `/tmp/ipxe-cache/${tftpPrefix}`;
@@ -295,6 +258,26 @@ class UnderpostBaremetal {
           }
         }
       }
+
+      if (options.ipxeBuildIso)
+        return await Underpost.baremetal.ipxeBuildIso({
+          workflowId,
+          isoOutputPath: options.ipxeBuildIso,
+          tftpPrefix,
+          ipFileServer,
+          ipAddress,
+          ipConfig,
+          netmask,
+          dnsServer,
+          macAddress,
+          cloudInit: options.cloudInit,
+          dev: options.dev,
+          bootstrapHttpServerPort: Underpost.baremetal.bootstrapHttpServerPortFactory({
+            port: options.bootstrapHttpServerPort,
+            workflowId,
+            workflowsConfig,
+          }),
+        });
 
       if (options.installPacker) {
         await Underpost.baremetal.installPacker(underpostRoot);
@@ -438,29 +421,9 @@ rm -rf ${artifacts.join(' ')}`);
 
         logger.info(`Uploading image to MAAS...`);
 
-        // Detect MAAS profile from 'maas list' output
-        let maasProfile = process.env.MAAS_ADMIN_USERNAME;
-        if (!maasProfile) {
-          const profileList = shellExec('maas list', { silent: true, stdout: true });
-          if (profileList) {
-            const firstLine = profileList.trim().split('\n')[0];
-            const match = firstLine.match(/^(\S+)\s+http/);
-            if (match) {
-              maasProfile = match[1];
-              logger.info(`Detected MAAS profile: ${maasProfile}`);
-            }
-          }
-        }
-
-        if (!maasProfile) {
-          throw new Error(
-            'MAAS profile not found. Please run "maas login" first or set MAAS_ADMIN_USERNAME environment variable.',
-          );
-        }
-
         // Use the upload script to avoid MAAS CLI bugs
         const uploadScript = `${underpostRoot}/scripts/maas-upload-boot-resource.sh`;
-        const uploadCmd = `${uploadScript} ${maasProfile} "${workflow.maas.name}" "${workflow.maas.title}" "${workflow.maas.architecture}" "${workflow.maas.base_image}" "${workflow.maas.filetype}" "${tarballPath}"`;
+        const uploadCmd = `${uploadScript} ${process.env.MAAS_ADMIN_USERNAME} "${workflow.maas.name}" "${workflow.maas.title}" "${workflow.maas.architecture}" "${workflow.maas.base_image}" "${workflow.maas.filetype}" "${tarballPath}"`;
 
         logger.info(`Uploading to MAAS using: ${uploadScript}`);
         const uploadResult = shellExec(uploadCmd);
@@ -833,7 +796,6 @@ rm -rf ${artifacts.join(' ')}`);
               `chmod +x /underpost/shutdown.sh`,
               `chmod +x /underpost/device_scan.sh`,
               `chmod +x /underpost/mac.sh`,
-              `chmod +x /underpost/enlistment.sh`,
               `sudo chmod 700 ~/.ssh/`, // Set secure permissions for .ssh directory.
               `sudo chmod 600 ~/.ssh/authorized_keys`, // Set secure permissions for authorized_keys.
               `sudo chmod 644 ~/.ssh/known_hosts`, // Set permissions for known_hosts.
@@ -889,11 +851,14 @@ rm -rf ${artifacts.join(' ')}`);
           });
       }
 
+      // Generate MAAS authentication credentials
       const authCredentials =
         options.commission || options.cloudInit || options.cloudInitUpdate
           ? Underpost.baremetal.maasAuthCredentialsFactory()
           : { consumer_key: '', consumer_secret: '', token_key: '', token_secret: '' };
 
+      // Generate cloud-init configuration if needed for commissioning or cloud-init update workflows.
+      let cloudConfigSrc = '';
       if (options.cloudInit || options.cloudInitUpdate) {
         const { chronyc, networkInterfaceName } = workflowsConfig[workflowId];
         const { timezone, chronyConfPath } = chronyc;
@@ -910,7 +875,7 @@ rm -rf ${artifacts.join(' ')}`);
           runcmd = '/usr/local/bin/underpost-enlist.sh';
         }
 
-        const { cloudConfigSrc } = Underpost.cloudInit.configFactory(
+        cloudConfigSrc = Underpost.cloudInit.configFactory(
           {
             controlServerIp: callbackMetaData.runnerHost.ip,
             hostname,
@@ -926,12 +891,28 @@ rm -rf ${artifacts.join(' ')}`);
             write_files,
           },
           authCredentials,
-        );
+        ).cloudConfigSrc;
+      }
+
+      // Start HTTP bootstrap server if cloud-init config or ISO URL is used (for ISO-based workflows).
+      if (cloudConfigSrc || workflowsConfig[workflowId].isoUrl)
         Underpost.baremetal.httpBootstrapServerStaticFactory({
           bootstrapHttpServerPath,
           hostname,
           cloudConfigSrc,
           isoUrl: workflowsConfig[workflowId].isoUrl,
+        });
+
+      // Start HTTP bootstrap server if commissioning or if ISO URL is used (for ISO-based workflows).
+      if (options.bootstrapHttpServerRun || options.commission) {
+        Underpost.baremetal.httpBootstrapServerRunnerFactory({
+          hostname,
+          bootstrapHttpServerPath,
+          bootstrapHttpServerPort: Underpost.baremetal.bootstrapHttpServerPortFactory({
+            port: options.bootstrapHttpServerPort,
+            workflowId,
+            workflowsConfig,
+          }),
         });
       }
 
@@ -945,8 +926,10 @@ rm -rf ${artifacts.join(' ')}`);
         shellExec(`${underpostRoot}/scripts/nat-iptables.sh`);
         Underpost.baremetal.rebuildNfsServer({
           nfsHostPath,
+          nfsReset: options.nfsReset,
         });
       }
+
       // Handle commissioning tasks
       if (options.commission === true) {
         let { firmwares, networkInterfaceName, maas, menuentryStr, type } = workflowsConfig[workflowId];
@@ -1048,7 +1031,6 @@ rm -rf ${artifacts.join(' ')}`);
             type,
             macAddress,
             cloudInit: options.cloudInit,
-            machine,
             dev: options.dev,
             osIdLike: workflowsConfig[workflowId].osIdLike || '',
             authCredentials,
@@ -1122,16 +1104,6 @@ rm -rf ${artifacts.join(' ')}`);
         shellExec(`sudo chown -R $(whoami):$(whoami) ${process.env.TFTP_ROOT}`);
         shellExec(`sudo sudo chmod 755 ${process.env.TFTP_ROOT}`);
 
-        Underpost.baremetal.httpBootstrapServerRunnerFactory({
-          hostname,
-          bootstrapHttpServerPath,
-          bootstrapHttpServerPort: Underpost.baremetal.bootstrapHttpServerPortFactory({
-            port: options.bootstrapHttpServerPort,
-            workflowId,
-            workflowsConfig,
-          }),
-        });
-
         if (type === 'chroot-debootstrap' || type === 'chroot-container')
           await Underpost.baremetal.nfsMountCallback({
             hostname,
@@ -1155,49 +1127,6 @@ rm -rf ${artifacts.join(' ')}`);
         const { discovery, machine: discoveredMachine } =
           await Underpost.baremetal.commissionMonitor(commissionMonitorPayload);
         if (discoveredMachine) machine = discoveredMachine;
-
-        if (machine) {
-          const write_files = Underpost.baremetal.commissioningWriteFilesFactory({
-            machine,
-            authCredentials,
-            runnerHostIp: callbackMetaData.runnerHost.ip,
-          });
-
-          const { cloudConfigSrc } = Underpost.cloudInit.configFactory(
-            {
-              controlServerIp: callbackMetaData.runnerHost.ip,
-              hostname,
-              commissioningDeviceIp: ipAddress,
-              gatewayip: callbackMetaData.runnerHost.ip,
-              mac: macAddress,
-              timezone: workflowsConfig[workflowId].chronyc.timezone,
-              chronyConfPath: workflowsConfig[workflowId].chronyc.chronyConfPath,
-              networkInterfaceName: workflowsConfig[workflowId].networkInterfaceName,
-              ubuntuToolsBuild: options.ubuntuToolsBuild,
-              bootcmd: options.bootcmd,
-              runcmd: '/usr/local/bin/underpost-enlist.sh',
-              write_files,
-            },
-            authCredentials,
-          );
-
-          Underpost.baremetal.httpBootstrapServerStaticFactory({
-            bootstrapHttpServerPath,
-            hostname,
-            cloudConfigSrc,
-            isoUrl: workflowsConfig[workflowId].isoUrl,
-          });
-        }
-
-        if ((type === 'chroot-debootstrap' || type === 'chroot-container') && options.cloudInit === true) {
-          openTerminal(`node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs cloud-init`);
-          openTerminal(
-            `node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs cloud-init-machine`,
-          );
-          shellExec(
-            `node ${underpostRoot}/bin baremetal ${workflowId} ${ipAddress} ${hostname} --logs cloud-init-config`,
-          );
-        }
       }
     },
 
@@ -1228,7 +1157,6 @@ rm -rf ${artifacts.join(' ')}`);
      * @param {string} [params.dnsServer='8.8.8.8'] - The DNS server address.
      * @param {string} [params.macAddress=''] - The MAC address of the client machine.
      * @param {boolean} [params.cloudInit=false] - Flag to enable cloud-init.
-     * @param {object} [params.machine=null] - The machine object containing system_id for cloud-init.
      * @param {boolean} [params.dev=false] - Development mode flag to determine paths.
      * @param {number} [params.bootstrapHttpServerPort=8888] - Port for the bootstrap HTTP server used in ISO RAM workflows.
      * @memberof UnderpostBaremetal
@@ -1245,7 +1173,6 @@ rm -rf ${artifacts.join(' ')}`);
       dnsServer,
       macAddress,
       cloudInit,
-      machine,
       dev,
       bootstrapHttpServerPort,
     }) {
@@ -1277,7 +1204,6 @@ rm -rf ${artifacts.join(' ')}`);
         type: workflowsConfig[workflowId].type,
         macAddress,
         cloudInit,
-        machine,
         osIdLike: workflowsConfig[workflowId].osIdLike,
         networkInterfaceName: workflowsConfig[workflowId].networkInterfaceName,
         authCredentials,
@@ -2132,8 +2058,7 @@ echo "Response Body:" | tee -a "$LOG_FILE"
 cat "$RESPONSE_FILE" | tee -a "$LOG_FILE"
 
 if [ "$HTTP_STATUS" -eq 200 ]; then
-  echo "Commissioning requested successfully. Rebooting to start commissioning..." | tee -a "$LOG_FILE"
-  reboot
+  echo "Commissioning requested successfully." | tee -a "$LOG_FILE"
 else
   echo "ERROR: MAAS commissioning failed with status $HTTP_STATUS" | tee -a "$LOG_FILE"
   exit 0
@@ -2150,34 +2075,34 @@ fi
      * @param {string} params.bootstrapHttpServerPath - The path where static files will be created.
      * @param {string} params.hostname - The hostname of the client machine.
      * @param {string} params.cloudConfigSrc - The cloud-init configuration YAML source.
-     * @param {object} [params.metadata] - Optional metadata to include in meta-data file.
-     * @param {string} [params.vendorData] - Optional vendor-data content (default: empty string).
-     * @param {string} [params.isoUrl] - Optional ISO URL to cache and serve.
+     * @param {string} params.vendorData - The cloud-init vendor-data content.
+     * @param {string} params.isoUrl - Optional ISO URL to cache and serve.
      * @memberof UnderpostBaremetal
      * @returns {void}
      */
     httpBootstrapServerStaticFactory({
-      bootstrapHttpServerPath,
-      hostname,
-      cloudConfigSrc,
-      metadata = {},
+      bootstrapHttpServerPath = '',
+      hostname = '',
+      cloudConfigSrc = '',
       vendorData = '',
       isoUrl = '',
     }) {
-      // Create directory structure
-      shellExec(`mkdir -p ${bootstrapHttpServerPath}/${hostname}/cloud-init`);
+      if (cloudConfigSrc) {
+        // Create directory structure
+        shellExec(`mkdir -p ${bootstrapHttpServerPath}/${hostname}/cloud-init`);
 
-      // Write user-data file
-      fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/user-data`, cloudConfigSrc, 'utf8');
+        // Write user-data file
+        fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/user-data`, cloudConfigSrc, 'utf8');
 
-      // Write meta-data file
-      const metaDataContent = `instance-id: ${metadata.instanceId || hostname}\nlocal-hostname: ${metadata.localHostname || hostname}`;
-      fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/meta-data`, metaDataContent, 'utf8');
+        // Write meta-data file
+        const metaDataContent = `instance-id: ${hostname}\nlocal-hostname: ${hostname}`;
+        fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/meta-data`, metaDataContent, 'utf8');
 
-      // Write vendor-data file
-      fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/vendor-data`, vendorData, 'utf8');
+        // Write vendor-data file
+        fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/vendor-data`, vendorData, 'utf8');
 
-      logger.info(`Cloud-init files written to ${bootstrapHttpServerPath}/${hostname}/cloud-init`);
+        logger.info(`Cloud-init files written to ${bootstrapHttpServerPath}/${hostname}/cloud-init`);
+      }
 
       if (isoUrl) {
         const isoFilename = isoUrl.split('/').pop();
@@ -2214,7 +2139,7 @@ fi
       const hostname = options.hostname || 'localhost';
 
       shellExec(`mkdir -p ${bootstrapHttpServerPath}/${hostname}/cloud-init`);
-      shellExec(`node bin run kill ${port}`);
+      shellExec(`node bin run kill ${port}`, { silent: true });
 
       const app = express();
 
@@ -2305,7 +2230,6 @@ fi
      * @param {string} options.macAddress - The MAC address of the client.
      * @param {boolean} options.cloudInit - Whether to include cloud-init parameters.
      * @param {object} options.machine - The machine object containing system_id.
-     * @param {string} options.machine.system_id - The system ID of the machine (for MAAS metadata).
      * @param {boolean} [options.dev=false] - Whether to enable dev mode with dracut debugging parameters.
      * @param {string} [options.osIdLike=''] - OS family identifier (e.g., 'rhel centos fedora' or 'debian ubuntu').
      * @param {object} options.authCredentials - Authentication credentials for fetching files (if needed).
@@ -2331,7 +2255,6 @@ fi
         type: '',
         macAddress: '',
         cloudInit: false,
-        machine: { system_id: '' },
         dev: false,
         osIdLike: '',
         authCredentials: { consumer_key: '', consumer_secret: '', token_key: '', token_secret: '' },
@@ -3290,9 +3213,10 @@ logdir /var/log/chrony
      * @param {string} params.nfsHostPath - The path to the NFS server export.
      * @memberof UnderpostBaremetal
      * @param {string} [params.subnet='192.168.1.0/24'] - The subnet allowed to access the NFS export.
+     * @param {boolean} [params.nfsReset=false] - Flag to completely reset the NFS server (restart service).
      * @returns {void}
      */
-    rebuildNfsServer({ nfsHostPath, subnet }) {
+    rebuildNfsServer({ nfsHostPath, subnet, nfsReset }) {
       if (!subnet) subnet = '192.168.1.0/24'; // Default subnet if not provided.
       // Write the NFS exports configuration to /etc/exports.
       fs.writeFileSync(
@@ -3341,9 +3265,11 @@ udp-port = 32766
 
       // Restart the nfs-server service to apply all configuration changes,
       // including port settings from /etc/nfs.conf and export changes.
-      logger.info('Restarting nfs-server service...');
-      shellExec(`sudo systemctl restart nfs-server`);
-      logger.info('NFS server restarted.');
+      if (nfsReset) {
+        logger.info('Restarting nfs-server service...');
+        shellExec(`sudo systemctl restart nfs-server`);
+        logger.info('NFS server restarted.');
+      }
     },
 
     /**

@@ -651,6 +651,10 @@ program
   .option('--clear-discovered', 'Clears all discovered baremetal machines from the database.')
   .option('--commission', 'Init workflow for commissioning a physical machine.')
   .option(
+    '--bootstrap-http-server-run',
+    'Runs a temporary bootstrap HTTP server for generic purposes such as serving iPXE scripts or ISO images during commissioning.',
+  )
+  .option(
     '--bootstrap-http-server-path <path>',
     'Sets a custom bootstrap HTTP server path for baremetal commissioning.',
   )
@@ -661,6 +665,7 @@ program
   .option('--iso-url <url>', 'Uses a custom ISO URL for baremetal machine commissioning.')
   .option('--nfs-build', 'Builds an NFS root filesystem for a workflow id config architecture using QEMU emulation.')
   .option('--nfs-mount', 'Mounts the NFS root filesystem for a workflow id config architecture.')
+  .option('--nfs-reset', 'Resets the NFS server completely, closing all connections before reloading exports.')
   .option('--nfs-unmount', 'Unmounts the NFS root filesystem for a workflow id config architecture.')
   .option('--nfs-build-server', 'Builds the NFS server for a workflow id config architecture.')
   .option('--nfs-sh', 'Copies QEMU emulation root entrypoint shell command to the clipboard.')
