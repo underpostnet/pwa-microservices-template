@@ -272,6 +272,7 @@ class UnderpostBaremetal {
           macAddress,
           cloudInit: options.cloudInit,
           dev: options.dev,
+          forceRebuild: options.ipxeRebuild,
           bootstrapHttpServerPort: Underpost.baremetal.bootstrapHttpServerPortFactory({
             port: options.bootstrapHttpServerPort,
             workflowId,
@@ -666,7 +667,11 @@ rm -rf ${artifacts.join(' ')}`);
             bootstrapArch,
             callbackMetaData,
             steps: [
-              `dnf install -y --allowerasing ${allPackages.join(' ')} 2>/dev/null || yum install -y --allowerasing ${allPackages.join(' ')} 2>/dev/null || echo "Package install completed"`,
+              `dnf install -y --allowerasing ${allPackages.join(
+                ' ',
+              )} 2>/dev/null || yum install -y --allowerasing ${allPackages.join(
+                ' ',
+              )} 2>/dev/null || echo "Package install completed"`,
               `dnf clean all`,
               `echo "=== Installed packages verification ==="`,
               `rpm -qa | grep -E "dracut|kernel|nfs" | sort`,
@@ -894,14 +899,30 @@ rm -rf ${artifacts.join(' ')}`);
         ).cloudConfigSrc;
       }
 
-      // Start HTTP bootstrap server if cloud-init config or ISO URL is used (for ISO-based workflows).
-      if (cloudConfigSrc || workflowsConfig[workflowId].isoUrl)
+      // Rocky/RHEL Kickstart generation
+      let kickstartSrc = '';
+      if (Underpost.baremetal.getFamilyBaseOs(workflowsConfig[workflowId].osIdLike).isRhelBased) {
+        kickstartSrc = Underpost.kickstart.kickstartFactory({
+          lang: 'en_US.UTF-8',
+          keyboard: workflowsConfig[workflowId].keyboard?.layout,
+          timezone: workflowsConfig[workflowId].chronyc?.timezone,
+          rootPassword: process.env.MAAS_ADMIN_PASS,
+          authorizedKeys: fs.readFileSync('/home/dd/engine/engine-private/deploy/id_rsa.pub', 'utf8').trim(),
+        });
+      }
+
+      // Build and optionally run the HTTP bootstrap server to serve cloud-init, kickstart, and ISO resources for commissioning and provisioning.
+      if (cloudConfigSrc || kickstartSrc || workflowsConfig[workflowId].isoUrl)
         Underpost.baremetal.httpBootstrapServerStaticFactory({
           bootstrapHttpServerPath,
           hostname,
           cloudConfigSrc,
+          kickstartSrc,
           isoUrl: workflowsConfig[workflowId].isoUrl,
         });
+
+      // Set up iptables rules for NAT and port forwarding to enable network connectivity for the baremetal machines.
+      shellExec(`${underpostRoot}/scripts/nat-iptables.sh`, { silent: true });
 
       // Start HTTP bootstrap server if commissioning or if ISO URL is used (for ISO-based workflows).
       if (options.bootstrapHttpServerRun || options.commission) {
@@ -922,13 +943,11 @@ rm -rf ${artifacts.join(' ')}`);
         (workflowsConfig[workflowId].type === 'iso-nfs' ||
           workflowsConfig[workflowId].type === 'chroot-debootstrap' ||
           workflowsConfig[workflowId].type === 'chroot-container')
-      ) {
-        shellExec(`${underpostRoot}/scripts/nat-iptables.sh`);
+      )
         Underpost.baremetal.rebuildNfsServer({
           nfsHostPath,
           nfsReset: options.nfsReset,
         });
-      }
 
       // Handle commissioning tasks
       if (options.commission === true) {
@@ -944,9 +963,11 @@ rm -rf ${artifacts.join(' ')}`);
         );
         logger.info('Commissioning resource', resource);
 
-        if (type === 'iso-nfs') {
+        if (
+          Underpost.baremetal.getFamilyBaseOs(workflowsConfig[workflowId].osIdLike).isDebianBased &&
+          (type === 'iso-nfs' || type === 'chroot-debootstrap' || type === 'chroot-container')
+        ) {
           // Prepare NFS casper path if using NFS boot.
-          shellExec(`sudo rm -rf ${nfsHostPath}`);
           shellExec(`mkdir -p ${nfsHostPath}/casper`);
         }
 
@@ -1021,7 +1042,11 @@ rm -rf ${artifacts.join(' ')}`);
             networkInterfaceName,
             fileSystemUrl:
               type === 'iso-ram'
-                ? `http://${callbackMetaData.runnerHost.ip}:${Underpost.baremetal.bootstrapHttpServerPortFactory({ port: options.bootstrapHttpServerPort, workflowId, workflowsConfig })}/${hostname}/${kernelFilesPaths.isoUrl.split('/').pop()}`
+                ? `http://${callbackMetaData.runnerHost.ip}:${Underpost.baremetal.bootstrapHttpServerPortFactory({
+                    port: options.bootstrapHttpServerPort,
+                    workflowId,
+                    workflowsConfig,
+                  })}/${hostname}/${kernelFilesPaths.isoUrl.split('/').pop()}`
                 : kernelFilesPaths.isoUrl,
             bootstrapHttpServerPort: Underpost.baremetal.bootstrapHttpServerPortFactory({
               port: options.bootstrapHttpServerPort,
@@ -1034,6 +1059,7 @@ rm -rf ${artifacts.join(' ')}`);
             dev: options.dev,
             osIdLike: workflowsConfig[workflowId].osIdLike || '',
             authCredentials,
+            architecture: workflowsConfig[workflowId].architecture,
           });
 
           // Check if iPXE mode is enabled AND the iPXE EFI binary exists
@@ -1158,6 +1184,7 @@ rm -rf ${artifacts.join(' ')}`);
      * @param {string} [params.macAddress=''] - The MAC address of the client machine.
      * @param {boolean} [params.cloudInit=false] - Flag to enable cloud-init.
      * @param {boolean} [params.dev=false] - Development mode flag to determine paths.
+     * @param {boolean} [params.forceRebuild=false] - Force a complete iPXE rebuild. Without this, reuses existing ISO.
      * @param {number} [params.bootstrapHttpServerPort=8888] - Port for the bootstrap HTTP server used in ISO RAM workflows.
      * @memberof UnderpostBaremetal
      * @returns {Promise<void>}
@@ -1174,10 +1201,10 @@ rm -rf ${artifacts.join(' ')}`);
       macAddress,
       cloudInit,
       dev,
+      forceRebuild = false,
       bootstrapHttpServerPort,
     }) {
       const outputPath = !isoOutputPath || isoOutputPath === '.' ? `./ipxe-${workflowId}.iso` : isoOutputPath;
-      if (fs.existsSync(outputPath)) fs.removeSync(outputPath);
       shellExec(`mkdir -p $(dirname ${outputPath})`);
 
       const workflowsConfig = Underpost.baremetal.loadWorkflowsConfig();
@@ -1199,9 +1226,14 @@ rm -rf ${artifacts.join(' ')}`);
         dnsServer,
         fileSystemUrl:
           dev && workflowsConfig[workflowId].type === 'iso-ram'
-            ? `http://${ipFileServer}:${Underpost.baremetal.bootstrapHttpServerPortFactory({ port: bootstrapHttpServerPort, workflowId, workflowsConfig })}/${workflowId}/${workflowsConfig[workflowId].isoUrl.split('/').pop()}`
+            ? `http://${ipFileServer}:${Underpost.baremetal.bootstrapHttpServerPortFactory({
+                port: bootstrapHttpServerPort,
+                workflowId,
+                workflowsConfig,
+              })}/${workflowId}/${workflowsConfig[workflowId].isoUrl.split('/').pop()}`
             : workflowsConfig[workflowId].isoUrl,
         type: workflowsConfig[workflowId].type,
+        architecture: workflowsConfig[workflowId].architecture,
         macAddress,
         cloudInit,
         osIdLike: workflowsConfig[workflowId].osIdLike,
@@ -1219,20 +1251,18 @@ rm -rf ${artifacts.join(' ')}`);
       const embedScriptName = `embed_${workflowId}.ipxe`;
       const embedScriptPath = path.join(ipxeSrcDir, embedScriptName);
 
-      const embedScriptContent = `#!ipxe
-dhcp
-set server_ip ${ipFileServer}
-set tftp_prefix ${tftpPrefix}
-kernel tftp://\${server_ip}/\${tftp_prefix}/pxe/vmlinuz-efi ${cmd}
-initrd tftp://\${server_ip}/\${tftp_prefix}/pxe/initrd.img
-boot || shell
-`;
+      const embedScriptContent = Underpost.baremetal.ipxeScriptFactory({
+        maasIp: ipFileServer,
+        tftpPrefix,
+        kernelCmd: cmd,
+        minimal: true,
+      });
 
       fs.writeFileSync(embedScriptPath, embedScriptContent);
       logger.info(`Created embedded script at ${embedScriptPath}`);
 
       // Determine target architecture
-      let targetArch = 'x86_64'; // Default to x86_64
+      let targetArch = 'x86_64';
       if (
         workflowsConfig[workflowId].architecture === 'arm64' ||
         workflowsConfig[workflowId].architecture === 'aarch64'
@@ -1240,32 +1270,38 @@ boot || shell
         targetArch = 'arm64';
       }
 
-      // Determine host architecture
-      const hostArch = process.arch === 'arm64' ? 'arm64' : 'x86_64';
-
-      let crossCompile = '';
-      if (hostArch === 'x86_64' && targetArch === 'arm64') {
-        crossCompile = 'CROSS_COMPILE=aarch64-linux-gnu-';
-      } else if (hostArch === 'arm64' && targetArch === 'x86_64') {
-        crossCompile = 'CROSS_COMPILE=x86_64-linux-gnu-';
-      }
-
       const platformDir = targetArch === 'arm64' ? 'bin-arm64-efi' : 'bin-x86_64-efi';
       const makeTarget = `${platformDir}/ipxe.iso`;
-
-      logger.info(
-        `Building iPXE ISO for ${targetArch} on ${hostArch}: make ${makeTarget} ${crossCompile} EMBED=${embedScriptName}`,
-      );
-
-      const buildCmd = `cd ${ipxeSrcDir} && make ${makeTarget} ${crossCompile} EMBED=${embedScriptName}`;
-      shellExec(buildCmd);
-
       const builtIsoPath = path.join(ipxeSrcDir, makeTarget);
-      if (fs.existsSync(builtIsoPath)) {
+
+      if (!forceRebuild && fs.existsSync(builtIsoPath)) {
         fs.copySync(builtIsoPath, outputPath);
-        logger.info(`ISO successfully built and copied to ${outputPath}`);
+        logger.info(`Reusing existing iPXE ISO: ${builtIsoPath} -> ${outputPath}`);
       } else {
-        logger.error(`Failed to build ISO at ${builtIsoPath}`);
+        logger.info(`Rebuild: cleaning iPXE build artifacts...`);
+        shellExec(`cd ${ipxeSrcDir} && make clean`);
+
+        const hostArch = process.arch === 'arm64' ? 'arm64' : 'x86_64';
+        let crossCompile = '';
+        if (hostArch === 'x86_64' && targetArch === 'arm64') {
+          crossCompile = 'CROSS_COMPILE=aarch64-linux-gnu-';
+        } else if (hostArch === 'arm64' && targetArch === 'x86_64') {
+          crossCompile = 'CROSS_COMPILE=x86_64-linux-gnu-';
+        }
+
+        logger.info(
+          `Building iPXE ISO for ${targetArch} on ${hostArch}: make ${makeTarget} ${crossCompile} EMBED=${embedScriptName}`,
+        );
+
+        const buildCmd = `cd ${ipxeSrcDir} && make ${makeTarget} ${crossCompile} EMBED=${embedScriptName}`;
+        shellExec(buildCmd);
+
+        if (fs.existsSync(builtIsoPath)) {
+          fs.copySync(builtIsoPath, outputPath);
+          logger.info(`ISO successfully built and copied to ${outputPath}`);
+        } else {
+          logger.error(`Failed to build ISO at ${builtIsoPath}`);
+        }
       }
     },
 
@@ -1336,8 +1372,7 @@ boot || shell
       const isoFilename = isoUrl.split('/').pop();
 
       // Determine OS family from osIdLike
-      const isDebianBased = osIdLike && osIdLike.match(/debian|ubuntu/i);
-      const isRhelBased = osIdLike && osIdLike.match(/rhel|centos|fedora|alma|rocky/i);
+      const { isDebianBased, isRhelBased } = Underpost.baremetal.getFamilyBaseOs(osIdLike);
 
       // Set extraction directory based on OS family
       const extractDirName = isDebianBased ? 'casper' : 'iso-extract';
@@ -1363,7 +1398,7 @@ boot || shell
         logger.info(`Downloaded ISO to ${isoPath} (${(stats.size / 1024 / 1024 / 1024).toFixed(2)} GB)`);
       }
 
-      // Mount ISO and extract boot files
+      // ISO Logic
       const mountPoint = `${nfsHostPath}/mnt-iso-${arch}`;
       shellExec(`mkdir -p ${mountPoint}`);
 
@@ -1372,7 +1407,7 @@ boot || shell
 
       try {
         // Mount the ISO
-        shellExec(`sudo mount -o loop,ro ${isoPath} ${mountPoint}`, { silent: false });
+        shellExec(`sudo mount -o loop,ro ${isoPath} ${mountPoint}`);
         logger.info(`Mounted ISO at ${mountPoint}`);
 
         // Distribution-specific extraction logic
@@ -1384,6 +1419,15 @@ boot || shell
           logger.info(`Checking casper directory contents...`);
           shellExec(`ls -la ${mountPoint}/casper/ 2>/dev/null || echo "casper directory not found"`);
           shellExec(`sudo cp -a ${mountPoint}/casper/* ${extractDir}/`);
+        } else if (isRhelBased) {
+          // RHEL/Rocky: Extract from images/pxeboot directory
+          const pxebootDir = `${mountPoint}/images/pxeboot`;
+          if (!fs.existsSync(pxebootDir)) {
+            throw new Error(`Failed to mount ISO or images/pxeboot directory not found: ${isoPath}`);
+          }
+          logger.info(`Extracting kernel and initrd from ${pxebootDir}...`);
+          shellExec(`sudo cp -a ${pxebootDir}/vmlinuz ${extractDir}/vmlinuz`);
+          shellExec(`sudo cp -a ${pxebootDir}/initrd.img ${extractDir}/initrd`);
         }
       } finally {
         shellExec(`ls -la ${mountPoint}/`);
@@ -1449,6 +1493,20 @@ boot || shell
     },
 
     /**
+     * @method getFamilyBaseOs
+     * @description Determines if the OS belongs to Debian-based or RHEL-based family based on osIdLike string.
+     * @param {string} osIdLike - The os_id_like string from MAAS boot resource or workflow configuration.
+     * @returns {object} An object with boolean properties isDebianBased and isRhelBased indicating the OS family.
+     * @memberof UnderpostBaremetal
+     */
+    getFamilyBaseOs(osIdLike = '') {
+      return {
+        isDebianBased: osIdLike.match(/debian|ubuntu/i),
+        isRhelBased: osIdLike.match(/rhel|centos|fedora|alma|rocky/i),
+      };
+    },
+
+    /**
      * @method kernelFactory
      * @description Retrieves kernel, initrd, and root filesystem paths from a MAAS boot resource.
      * @param {object} params - Parameters for the method.
@@ -1464,8 +1522,10 @@ boot || shell
       // For disk-based commissioning (casper/iso), use live ISO files
       if (type === 'iso-ram' || type === 'iso-nfs') {
         logger.info('Using live ISO for boot (disk-based commissioning)');
-        const arch = resource.architecture.split('/')[0];
         const workflowsConfig = Underpost.baremetal.loadWorkflowsConfig();
+        const arch = resource?.architecture
+          ? resource.architecture.split('/')[0]
+          : workflowsConfig[workflowId].architecture;
         const kernelFilesPaths = Underpost.baremetal.downloadISO({
           resource,
           architecture: arch,
@@ -1803,16 +1863,28 @@ shell
      * @method ipxeScriptFactory
      * @description Generates the iPXE script content for stable identity.
      * This iPXE script uses directly boots kernel/initrd via TFTP.
+     * When minimal mode is enabled, generates a simple dhcp+kernel+initrd+boot script.
      * @param {object} params - The parameters for generating the script.
-     * @param {string} params.maasIp - The IP address of the MAAS server.
+     * @param {string} params.maasIp - The IP address of the MAAS/file server.
      * @param {string} [params.macAddress] - The MAC address registered in MAAS (for display only).
-     * @param {string} params.architecture - The architecture (arm64/amd64).
+     * @param {string} [params.architecture] - The architecture (arm64/amd64).
      * @param {string} params.tftpPrefix - The TFTP prefix path (e.g., 'rpi4mb').
      * @param {string} params.kernelCmd - The kernel command line parameters.
+     * @param {boolean} [params.minimal=false] - Generate a minimal embedded script for ISO builds.
      * @returns {string} The iPXE script content.
      * @memberof UnderpostBaremetal
      */
-    ipxeScriptFactory({ maasIp, macAddress, architecture, tftpPrefix, kernelCmd }) {
+    ipxeScriptFactory({ maasIp, macAddress, architecture, tftpPrefix, kernelCmd, minimal = false }) {
+      if (minimal) {
+        return `#!ipxe
+dhcp
+set server_ip ${maasIp}
+set tftp_prefix ${tftpPrefix}
+kernel tftp://\${server_ip}/\${tftp_prefix}/pxe/vmlinuz-efi ${kernelCmd}
+initrd tftp://\${server_ip}/\${tftp_prefix}/pxe/initrd.img
+boot || shell
+`;
+      }
       const macInfo =
         macAddress && macAddress !== '00:00:00:00:00:00'
           ? `echo Registered MAC: ${macAddress}`
@@ -1850,7 +1922,11 @@ echo ========================================
 echo Loading kernel and initrd via TFTP...
 echo Kernel: tftp://${maasIp}/${kernelPath}
 echo Initrd: tftp://${maasIp}/${initrdPath}
-${macAddress && macAddress !== '00:00:00:00:00:00' ? `echo Kernel will use MAC: ${macAddress} (via ifname parameter)` : 'echo Kernel will use hardware MAC'}
+${
+  macAddress && macAddress !== '00:00:00:00:00:00'
+    ? `echo Kernel will use MAC: ${macAddress} (via ifname parameter)`
+    : 'echo Kernel will use hardware MAC'
+}
 echo ========================================
 
 # Load kernel via TFTP
@@ -1881,7 +1957,9 @@ echo ========================================
 # Fallback: Try MAAS HTTP bootloader (may have certificate issues)
 set boot-url http://${maasIp}:5248/images/bootloader
 echo Boot URL: \${boot-url}
-chain \${boot-url}/uefi/${architecture}/${grubBootloader === 'grubaa64.efi' ? 'bootaa64.efi' : 'bootx64.efi'} || goto error
+chain \${boot-url}/uefi/${architecture}/${
+        grubBootloader === 'grubaa64.efi' ? 'bootaa64.efi' : 'bootx64.efi'
+      } || goto error
 
 :error
 echo ========================================
@@ -1917,22 +1995,12 @@ shell
      * @memberof UnderpostBaremetal
      */
     ipxeEfiFactory({ tftpRootPath, ipxeCacheDir, arch, underpostRoot, embeddedScriptPath, forceRebuild = false }) {
-      const shouldRebuild =
-        forceRebuild || (!fs.existsSync(`${tftpRootPath}/ipxe.efi`) && !fs.existsSync(`${ipxeCacheDir}/ipxe.efi`));
+      const embedArg =
+        embeddedScriptPath && fs.existsSync(embeddedScriptPath) ? ` --embed-script ${embeddedScriptPath}` : '';
+      const rebuildArg = forceRebuild ? ' --rebuild' : '';
 
-      if (!shouldRebuild) return;
-
-      if (embeddedScriptPath && fs.existsSync(embeddedScriptPath)) {
-        logger.info('Rebuilding iPXE with embedded boot script...', {
-          embeddedScriptPath,
-          forced: forceRebuild,
-        });
-        shellExec(
-          `${underpostRoot}/scripts/ipxe-setup.sh ${tftpRootPath} --target-arch ${arch} --embed-script ${embeddedScriptPath} --rebuild`,
-        );
-      } else if (shouldRebuild) {
-        shellExec(`${underpostRoot}/scripts/ipxe-setup.sh ${tftpRootPath} --target-arch ${arch}`);
-      }
+      logger.info('Building iPXE EFI binary...', { embeddedScriptPath, forced: forceRebuild });
+      shellExec(`${underpostRoot}/scripts/ipxe-setup.sh ${tftpRootPath} --target-arch ${arch}${embedArg}${rebuildArg}`);
 
       shellExec(`mkdir -p ${ipxeCacheDir}`);
       shellExec(`cp ${tftpRootPath}/ipxe.efi ${ipxeCacheDir}/ipxe.efi`);
@@ -1986,7 +2054,11 @@ shell
       echo "${menuentryStr}"
       echo " ${Underpost.version}"
       echo "Date: ${new Date().toISOString()}"
-      ${cmd.match('/MAAS/metadata/by-id/') ? `echo "System ID: ${cmd.split('/MAAS/metadata/by-id/')[1].split('/')[0]}"` : ''}
+      ${
+        cmd.match('/MAAS/metadata/by-id/')
+          ? `echo "System ID: ${cmd.split('/MAAS/metadata/by-id/')[1].split('/')[0]}"`
+          : ''
+      }
       echo "TFTP server: ${tftpIp}"
       echo "Kernel path: ${kernelPath}"
       echo "Initrd path: ${initrdPath}"
@@ -2075,6 +2147,7 @@ fi
      * @param {string} params.bootstrapHttpServerPath - The path where static files will be created.
      * @param {string} params.hostname - The hostname of the client machine.
      * @param {string} params.cloudConfigSrc - The cloud-init configuration YAML source.
+     * @param {string} params.kickstartSrc - The kickstart configuration content.
      * @param {string} params.vendorData - The cloud-init vendor-data content.
      * @param {string} params.isoUrl - Optional ISO URL to cache and serve.
      * @memberof UnderpostBaremetal
@@ -2084,25 +2157,14 @@ fi
       bootstrapHttpServerPath = '',
       hostname = '',
       cloudConfigSrc = '',
+      kickstartSrc = '',
       vendorData = '',
       isoUrl = '',
     }) {
-      if (cloudConfigSrc) {
-        // Create directory structure
-        shellExec(`mkdir -p ${bootstrapHttpServerPath}/${hostname}/cloud-init`);
+      shellExec(`mkdir -p ${bootstrapHttpServerPath}/${hostname}`);
 
-        // Write user-data file
-        fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/user-data`, cloudConfigSrc, 'utf8');
-
-        // Write meta-data file
-        const metaDataContent = `instance-id: ${hostname}\nlocal-hostname: ${hostname}`;
-        fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/meta-data`, metaDataContent, 'utf8');
-
-        // Write vendor-data file
-        fs.writeFileSync(`${bootstrapHttpServerPath}/${hostname}/cloud-init/vendor-data`, vendorData, 'utf8');
-
-        logger.info(`Cloud-init files written to ${bootstrapHttpServerPath}/${hostname}/cloud-init`);
-      }
+      Underpost.cloudInit.httpServerStaticFactory({ bootstrapHttpServerPath, hostname, cloudConfigSrc, vendorData });
+      Underpost.kickstart.httpServerStaticFactory({ bootstrapHttpServerPath, hostname, kickstartSrc });
 
       if (isoUrl) {
         const isoFilename = isoUrl.split('/').pop();
@@ -2138,7 +2200,6 @@ fi
       const bootstrapHttpServerPath = options.bootstrapHttpServerPath || './public/localhost';
       const hostname = options.hostname || 'localhost';
 
-      shellExec(`mkdir -p ${bootstrapHttpServerPath}/${hostname}/cloud-init`);
       shellExec(`node bin run kill ${port}`, { silent: true });
 
       const app = express();
@@ -2178,9 +2239,10 @@ fi
      */
     updateKernelFiles({ commissioningImage, resourcesPath, tftpRootPath, kernelFilesPaths }) {
       // Copy EFI bootloaders to TFTP path.
-      const efiFiles = commissioningImage.architecture.match('arm64')
-        ? ['bootaa64.efi', 'grubaa64.efi']
-        : ['bootx64.efi', 'grubx64.efi'];
+      const arch = resourcesPath.split('/').pop();
+      const efiFiles =
+        arch === 'arm64' || arch === 'aarch64' ? ['bootaa64.efi', 'grubaa64.efi'] : ['bootx64.efi', 'grubx64.efi'];
+
       for (const file of efiFiles) {
         shellExec(`sudo cp -a ${resourcesPath}/${file} ${tftpRootPath}/pxe/${file}`);
       }
@@ -2237,6 +2299,7 @@ fi
      * @param {string} options.authCredentials.consumer_secret - Consumer secret for authentication.
      * @param {string} options.authCredentials.token_key - Token key for authentication.
      * @param {string} options.authCredentials.token_secret - Token secret for authentication.
+     * @param {string} options.architecture - The architecture of the machine (e.g., 'amd64', 'arm64').
      * @returns {object} An object containing the constructed command line string.
      * @memberof UnderpostBaremetal
      */
@@ -2258,6 +2321,7 @@ fi
         dev: false,
         osIdLike: '',
         authCredentials: { consumer_key: '', consumer_secret: '', token_key: '', token_secret: '' },
+        architecture,
       },
     ) {
       // Construct kernel command line arguments for NFS boot.
@@ -2276,7 +2340,11 @@ fi
         macAddress,
         cloudInit,
         osIdLike,
+        architecture,
       } = options;
+
+      // Determine OS family from osIdLike
+      const { isDebianBased, isRhelBased } = Underpost.baremetal.getFamilyBaseOs(options.osIdLike);
 
       const ipParam =
         `ip=${ipClient}:${ipFileServer}:${ipDhcpServer}:${netmask}:${hostname}` +
@@ -2307,7 +2375,9 @@ fi
           : []
       }`;
 
-      const nfsRootParam = `nfsroot=${ipFileServer}:${process.env.NFS_EXPORT_PATH}/${hostname}${nfsOptions ? `,${nfsOptions}` : ''}`;
+      const nfsRootParam = `nfsroot=${ipFileServer}:${process.env.NFS_EXPORT_PATH}/${hostname}${
+        nfsOptions ? `,${nfsOptions}` : ''
+      }`;
 
       const permissionsParams = [
         `rw`,
@@ -2325,8 +2395,8 @@ fi
         // `layerfs-path=filesystem.squashfs`,
         // `root=/dev/ram0`,
         // `toram`,
-        'nomodeset',
-        `editable_rootfs=tmpfs`,
+        // 'nomodeset',
+        // `editable_rootfs=tmpfs`, // all writes to rootfs go to RAM, keeping underlying storage pristine
         // `ramdisk_size=3550000`,
         // `root=/dev/sda1`, // rpi4 usb port unit
         'apparmor=0', // Disable AppArmor security
@@ -2369,21 +2439,21 @@ fi
 
       let cmd = [];
       if (type === 'iso-ram') {
-        const netBootParams = [`netboot=url`];
-        if (fileSystemUrl) netBootParams.push(`url=${fileSystemUrl.replace('https', 'http')}`);
-        cmd = [ipParam, `boot=casper`, 'toram', ...netBootParams, ...kernelParams, ...performanceParams];
+        if (isRhelBased) {
+          cmd = Underpost.kickstart.kernelParamsFactory(macAddress, [ipParam, ...kernelParams], options);
+        } else {
+          // ISO-RAM (Debian/Ubuntu): full live ISO downloaded into RAM via casper toram.
+          const netBootParams = [`netboot=url`];
+          if (fileSystemUrl) netBootParams.push(`url=${fileSystemUrl.replace('https', 'http')}`);
+          cmd = [ipParam, `boot=casper`, 'toram', ...netBootParams, ...kernelParams, ...performanceParams];
+        }
       } else if (type === 'chroot-debootstrap' || type === 'chroot-container') {
         let qemuNfsRootParams = [`root=/dev/nfs`, `rootfstype=nfs`];
         cmd = [ipParam, ...qemuNfsRootParams, nfsRootParam, ...kernelParams];
       } else {
-        // 'iso-nfs'
+        // 'iso-nfs' — Debian/Ubuntu NFS root boot: kernel/initrd from ISO, root filesystem served via NFS.
         cmd = [ipParam, `netboot=nfs`, nfsRootParam, ...kernelParams, ...performanceParams];
-        // cmd.push(`ifname=${networkInterfaceName}:${macAddress}`);
       }
-
-      // Determine OS family from osIdLike configuration
-      const isRhelBased = osIdLike && osIdLike.match(/rhel|centos|fedora|alma|rocky/i);
-      const isDebianBased = osIdLike && osIdLike.match(/debian|ubuntu/i);
 
       // Add RHEL/Rocky/Fedora based images specific parameters
       if (isRhelBased) {
