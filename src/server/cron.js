@@ -33,6 +33,7 @@ const underpostContainerEnvPath = '/usr/lib/node_modules/underpost/.env';
  * @param {string} [params.cmd] - Optional pre-script commands to run before cron execution
  * @param {boolean} [params.suspend=false] - Whether the CronJob is suspended
  * @param {boolean} [params.dryRun=false] - Pass --dry-run flag to the cron command inside the container
+ * @param {boolean} [params.ssh=false] - Execute backup commands via SSH on the remote node
  * @returns {string} Kubernetes CronJob YAML manifest
  * @memberof UnderpostCron
  */
@@ -48,6 +49,7 @@ const cronJobYamlFactory = ({
   cmd,
   suspend = false,
   dryRun = false,
+  ssh = false,
 }) => {
   const containerImage = image || `underpost/underpost-engine:${Underpost.version}`;
 
@@ -60,7 +62,7 @@ const cronJobYamlFactory = ({
 
   const cmdPart = cmd ? `${cmd} && ` : '';
   const cronBin = dev ? 'node bin' : 'underpost';
-  const flags = `${git ? '--git ' : ''}${dev ? '--dev ' : ''}${dryRun ? '--dry-run ' : ''}`;
+  const flags = `${git ? '--git ' : ''}${dev ? '--dev ' : ''}${dryRun ? '--dry-run ' : ''}${ssh ? '--ssh ' : ''}`;
   const cronCommand = `${cmdPart}${cronBin} cron ${flags}${deployList} ${jobList}`;
 
   return `apiVersion: batch/v1
@@ -106,8 +108,8 @@ spec:
                 type: Directory
               name: ${cronVolumeName}
             - hostPath:
-                path: ${getUnderpostRootPath()}/.env
-                type: FileOrCreate
+                path: ${getUnderpostRootPath()}
+                type: DirectoryOrCreate
               name: ${shareEnvVolumeName}
           restartPolicy: OnFailure
 `;
@@ -181,6 +183,7 @@ class UnderpostCron {
      * @param {boolean} [options.kubeadm] - Use kubeadm cluster context (apply directly on host)
      * @param {boolean} [options.dryRun] - Preview cron jobs without executing them
      * @param {boolean} [options.createJobNow] - After applying, immediately create a Job from each CronJob (requires --apply)
+     * @param {boolean} [options.ssh] - Execute backup commands via SSH on the remote node
      * @memberof UnderpostCron
      */
     callback: async function (
@@ -188,15 +191,9 @@ class UnderpostCron {
       jobList = Object.keys(Underpost.cron.JOB).join(','),
       options = {},
     ) {
-      if (options.setupStart) {
-        await Underpost.cron.setupDeployStart(options.setupStart, options);
-        return;
-      }
+      if (options.setupStart) return await Underpost.cron.setupDeployStart(options.setupStart, options);
 
-      if (options.generateK8sCronjobs) {
-        await Underpost.cron.generateK8sCronJobs(options);
-        return;
-      }
+      if (options.generateK8sCronjobs) return await Underpost.cron.generateK8sCronJobs(options);
 
       for (const _jobId of jobList.split(',')) {
         const jobId = _jobId.trim();
@@ -229,6 +226,7 @@ class UnderpostCron {
      * @param {boolean} [options.k3s] - k3s cluster context (apply directly on host)
      * @param {boolean} [options.kind] - kind cluster context (apply via kind-worker container)
      * @param {boolean} [options.kubeadm] - kubeadm cluster context (apply directly on host)
+     * @param {boolean} [options.ssh] - Execute backup commands via SSH on the remote node
      * @memberof UnderpostCron
      */
     setupDeployStart: async function (deployId, options = {}) {
@@ -273,17 +271,18 @@ class UnderpostCron {
       // Generate and apply cron job manifests for this deploy-id
       await Underpost.cron.generateK8sCronJobs({
         deployId,
-        apply: options.apply,
-        git: !!options.git,
-        dev: !!options.dev,
-        cmd: options.cmd,
         namespace: options.namespace,
         image: options.image,
-        k3s: !!options.k3s,
-        kind: !!options.kind,
-        kubeadm: !!options.kubeadm,
-        createJobNow: !!options.createJobNow,
-        dryRun: !!options.dryRun,
+        apply: options.apply,
+        createJobNow: options.createJobNow,
+        git: true,
+        dev: true,
+        kubeadm: true,
+        ssh: true,
+        cmd: ` cd ${enginePath} && node bin env ${deployId} production`,
+        k3s: false,
+        kind: false,
+        dryRun: false,
       });
     },
 
@@ -305,6 +304,7 @@ class UnderpostCron {
      * @param {boolean} [options.kubeadm=false] - kubeadm cluster context (apply directly on host)
      * @param {boolean} [options.createJobNow=false] - After applying, create a Job from each CronJob immediately
      * @param {boolean} [options.dryRun=false] - Pass --dry-run=client to kubectl commands
+     * @param {boolean} [options.ssh=false] - Execute backup commands via SSH on the remote node
      * @memberof UnderpostCron
      */
     generateK8sCronJobs: async function (options = {}) {
@@ -361,6 +361,7 @@ class UnderpostCron {
           cmd: options.cmd,
           suspend: false,
           dryRun: !!options.dryRun,
+          ssh: !!options.ssh,
         });
 
         const yamlFilePath = `${outputDir}/${cronJobName}.yaml`;
@@ -399,28 +400,27 @@ class UnderpostCron {
           shellExec(`kubectl apply -f ${yamlFile}`);
         }
         logger.info('All CronJob manifests applied');
-
-        // Create an immediate Job from each CronJob if requested
-        if (options.createJobNow) {
-          for (const job of Object.keys(confCronConfig.jobs)) {
-            const jobConfig = confCronConfig.jobs[job];
-            if (jobConfig.enabled === false) continue;
-
-            const cronJobName = `${jobDeployId}-${job}`
-              .toLowerCase()
-              .replace(/[^a-z0-9-]/g, '-')
-              .replace(/--+/g, '-')
-              .replace(/^-|-$/g, '')
-              .substring(0, 52);
-
-            const immediateJobName = `${cronJobName}-now-${Date.now()}`.substring(0, 63);
-            logger.info(`Creating immediate Job from CronJob: ${cronJobName}`, { jobName: immediateJobName });
-            shellExec(`kubectl create job ${immediateJobName} --from=cronjob/${cronJobName} -n ${namespace}`);
-          }
-          logger.info('All immediate Jobs created');
-        }
       } else {
         logger.info(`Manifests generated in ${outputDir}. Use --apply to deploy to the cluster.`);
+      }
+      // Create an immediate Job from each CronJob if requested
+      if (options.createJobNow) {
+        for (const job of Object.keys(confCronConfig.jobs)) {
+          const jobConfig = confCronConfig.jobs[job];
+          if (jobConfig.enabled === false) continue;
+
+          const cronJobName = `${jobDeployId}-${job}`
+            .toLowerCase()
+            .replace(/[^a-z0-9-]/g, '-')
+            .replace(/--+/g, '-')
+            .replace(/^-|-$/g, '')
+            .substring(0, 52);
+
+          const immediateJobName = `${cronJobName}-now-${Date.now()}`.substring(0, 63);
+          logger.info(`Creating immediate Job from CronJob: ${cronJobName}`, { jobName: immediateJobName });
+          shellExec(`kubectl create job ${immediateJobName} --from=cronjob/${cronJobName} -n ${namespace}`);
+        }
+        logger.info('All immediate Jobs created');
       }
     },
 
