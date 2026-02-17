@@ -472,6 +472,7 @@ try {
         `node bin cron --cmd 'cd /home/dd/engine && node bin run secret && node bin env dd-cron production' --git --kubeadm --dev --setup-start`,
       );
       shellExec(`node bin/deploy build-envs`);
+      shellExec(`node bin cmt --changelog-build`);
       break;
     }
 
@@ -1121,6 +1122,17 @@ nvidia/gpu-operator \
         env = buildEnv(`./engine-private/conf/dd-cron/${envPath}`, originEnv, env);
         env = buildEnv(`./engine-private/conf/dd-core/${envPath}`, originEnv, env);
         writeEnv(envPath, env);
+      }
+      break;
+    }
+
+    case 'sync-start': {
+      const originPackageJson = JSON.parse(fs.readFileSync(`./package.json`, 'utf8'));
+      for (const deployId of fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8').split(',')) {
+        const packageJsonPath = `./engine-private/conf/${deployId}/package.json`;
+        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+        packageJson.scripts.start = `${originPackageJson.scripts.start} ${deployId}`;
+        fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 4), 'utf8');
       }
       break;
     }

@@ -32,20 +32,15 @@ jobs:
           curl -fsSL https://rpm.nodesource.com/setup_24.x | bash -
           dnf install nodejs -y
 
-        # - name: Get npm root
-        #   run: sudo npm root -g
-
-        # - run: npm ci
-
-        # - name: Install underpost cli
-        #   run: sudo npm install -g underpost
-
-        # usage: git remote set-url [--push] <name> <newurl> [<oldurl>]
-        #    or: git remote set-url --add <name> <newurl>
-        #    or: git remote set-url --delete <name> <url>
-        #     --[no-]push           manipulate push URLs
-        #     --[no-]add            add URL
-        #     --[no-]delete         delete URLs
+      - name: Capture commit message
+        run: |
+          FULL_MSG="${{ github.event.head_commit.message }}"
+          LAST_COMMIT_MESSAGE=$(echo "$FULL_MSG" | sed 's/^[^)]*) *//')
+          echo "LAST_COMMIT_MESSAGE<<EOF" >> $GITHUB_ENV
+          echo "$LAST_COMMIT_MESSAGE" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+          echo "[INFO] Full commit message: $FULL_MSG"
+          echo "[INFO] Extracted payload: $LAST_COMMIT_MESSAGE"
 
       - name: Install dependencies and set repo configuration
         run: |
@@ -57,6 +52,7 @@ jobs:
 
       - name: Set git global credentials
         run: |
+          git config --global --add safe.directory '*'
           git config --global credential.helper ""
           git config --global user.name 'underpostnet'
           git config --global user.email 'fcoverdugoa@underpost.net'
@@ -67,21 +63,11 @@ jobs:
           rm -rf ./.git
           mv ./pwa-microservices-template-ghpkg.git ./.git
           pwd
-          git config --global --add safe.directory /__w/pwa-microservices-template/pwa-microservices-template
           git remote set-url origin git@github.com:underpostnet/pwa-microservices-template-ghpkg.git
           git init
           git config user.name 'underpostnet'
           git config user.email 'fcoverdugoa@underpost.net'
           git add .
           git status
-          underpost cmt . ci package-pwa-microservices-template-ghpkg 'Update github repo package'
+          git commit -m "$LAST_COMMIT_MESSAGE"
           underpost push . underpostnet/pwa-microservices-template-ghpkg
-
-# git clone --bare https://github.com/underpostnet/engine.git
-# mkdir engine
-# mv ./engine.git ./engine/.git
-# cd engine
-# git init
-
-# git push -u origin https://${{ secrets.GIT_AUTH_TOKEN }}@github.com/underpostnet/pwa-microservices-template-ghpkg.git
-# git push -u origin master
