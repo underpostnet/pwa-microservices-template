@@ -1,4 +1,4 @@
-import mariadb from 'mariadb';
+import { createPool } from 'mariadb';
 
 import { loggerFactory } from '../../server/logger.js';
 
