@@ -214,6 +214,7 @@ program
   .option('--postgresql', 'Initializes the cluster with a PostgreSQL statefulset.')
   .option('--mongodb4', 'Initializes the cluster with a MongoDB 4.4 service.')
   .option('--valkey', 'Initializes the cluster with a Valkey service.')
+  .option('--ipfs', 'Initializes the cluster with an ipfs-cluster statefulset.')
   .option('--contour', 'Initializes the cluster with Project Contour base HTTPProxy and Envoy.')
   .option('--cert-manager', "Initializes the cluster with a Let's Encrypt production ClusterIssuer.")
   .option('--dedicated-gpu', 'Initializes the cluster with dedicated GPU base resources and environment settings.')
@@ -247,6 +248,7 @@ program
   .option('--hosts <hosts>', 'A comma-separated list of cluster hostnames or IP addresses.')
   .option('--remove-volume-host-paths', 'Removes specified volume host paths after execution.')
   .option('--namespace <namespace>', 'Kubernetes namespace for cluster operations (defaults to "default").')
+  .option('--replicas <replicas>', 'Sets a custom number of replicas for statefulset deployments.')
   .action(Underpost.cluster.init)
   .description('Manages Kubernetes clusters, defaulting to Kind cluster initialization.');
 
@@ -294,6 +296,10 @@ program
   .option('--namespace <namespace>', 'Kubernetes namespace for deployment operations (defaults to "default").')
   .option('--kind-type <kind-type>', 'Specifies the Kind cluster type for deployment operations.')
   .option('--port <port>', 'Sets up port forwarding from local to remote ports.')
+  .option(
+    '--expose-port <port>',
+    'Sets the local:remote port to expose when --expose is active (overrides auto-detected service port).',
+  )
   .option('--cmd <cmd>', 'Custom initialization command for deployment (comma-separated commands).')
   .description('Manages application deployments, defaulting to deploying development pods.')
   .action(Underpost.deploy.callback);

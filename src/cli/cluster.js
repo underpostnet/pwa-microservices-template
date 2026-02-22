@@ -36,6 +36,7 @@ class UnderpostCluster {
      * @param {boolean} [options.mysql=false] - Deploy MySQL.
      * @param {boolean} [options.postgresql=false] - Deploy PostgreSQL.
      * @param {boolean} [options.valkey=false] - Deploy Valkey.
+     * @param {boolean} [options.ipfs=false] - Deploy ipfs-cluster statefulset.
      * @param {boolean} [options.full=false] - Deploy a full set of common components.
      * @param {boolean} [options.info=false] - Display extensive Kubernetes cluster information.
      * @param {boolean} [options.certManager=false] - Deploy Cert-Manager for certificate management.
@@ -60,6 +61,7 @@ class UnderpostCluster {
      * @param {boolean} [options.chown=false] - Set up kubectl configuration for the current user.
      * @param {boolean} [options.removeVolumeHostPaths=false] - Remove data from host paths used by Persistent Volumes.
      * @param {string} [options.hosts] - Set custom hosts entries.
+     * @param {string} [options.replicas] - Set the number of replicas for certain deployments.
      * @memberof UnderpostCluster
      */
     async init(
@@ -72,6 +74,7 @@ class UnderpostCluster {
         mysql: false,
         postgresql: false,
         valkey: false,
+        ipfs: false,
         full: false,
         info: false,
         certManager: false,
@@ -96,6 +99,7 @@ class UnderpostCluster {
         chown: false,
         removeVolumeHostPaths: false,
         hosts: '',
+        replicas: '',
       },
     ) {
       // Handles initial host setup (installing docker, podman, kind, kubeadm, helm)
@@ -138,11 +142,14 @@ class UnderpostCluster {
       }
 
       // Reset Kubernetes cluster components (Kind/Kubeadm/K3s) and container runtimes
-      if (options.reset === true)
+      if (options.reset === true) {
+        const clusterType = options.k3s === true ? 'k3s' : options.kubeadm === true ? 'kubeadm' : 'kind';
         return await Underpost.cluster.safeReset({
           underpostRoot,
           removeVolumeHostPaths: options.removeVolumeHostPaths,
+          clusterType,
         });
+      }
 
       // Check if a cluster (Kind, Kubeadm, or K3s) is already initialized
       const alreadyKubeadmCluster = Underpost.deploy.get('calico-kube-controllers')[0];
@@ -251,19 +258,13 @@ EOF
       }
 
       if (options.full === true || options.valkey === true) {
-        if (options.pullImage === true) {
-          // shellExec(`sudo podman pull valkey/valkey:latest`);
-          if (!options.kubeadm && !options.k3s) {
-            // Only load if not kubeadm/k3s (Kind needs it)
-            shellExec(`docker pull valkey/valkey:latest`);
-            shellExec(`sudo kind load docker-image valkey/valkey:latest`);
-          } else if (options.kubeadm || options.k3s)
-            // For kubeadm/k3s, ensure it's available for containerd
-            shellExec(`sudo crictl pull valkey/valkey:latest`);
-        }
+        if (options.pullImage === true) Underpost.cluster.pullImage('valkey/valkey:latest', options);
         shellExec(`kubectl delete statefulset valkey-service -n ${options.namespace} --ignore-not-found`);
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/valkey -n ${options.namespace}`);
         await Underpost.test.statusMonitor('valkey-service', 'Running', 'pods', 1000, 60 * 10);
+      }
+      if (options.ipfs) {
+        await Underpost.ipfs.deploy(options, underpostRoot);
       }
       if (options.full === true || options.mariadb === true) {
         shellExec(
@@ -271,16 +272,7 @@ EOF
         );
         shellExec(`kubectl delete statefulset mariadb-statefulset -n ${options.namespace} --ignore-not-found`);
 
-        if (options.pullImage === true) {
-          // shellExec(`sudo podman pull mariadb:latest`);
-          if (!options.kubeadm && !options.k3s) {
-            // Only load if not kubeadm/k3s (Kind needs it)
-            shellExec(`docker pull mariadb:latest`);
-            shellExec(`sudo kind load docker-image mariadb:latest`);
-          } else if (options.kubeadm || options.k3s)
-            // For kubeadm/k3s, ensure it's available for containerd
-            shellExec(`sudo crictl pull mariadb:latest`);
-        }
+        if (options.pullImage === true) Underpost.cluster.pullImage('mariadb:latest', options);
         shellExec(`kubectl apply -f ${underpostRoot}/manifests/mariadb/storage-class.yaml -n ${options.namespace}`);
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/mariadb -n ${options.namespace}`);
       }
@@ -294,30 +286,14 @@ EOF
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/mysql -n ${options.namespace}`);
       }
       if (options.full === true || options.postgresql === true) {
-        if (options.pullImage === true) {
-          if (!options.kubeadm && !options.k3s) {
-            // Only load if not kubeadm/k3s (Kind needs it)
-            shellExec(`docker pull postgres:latest`);
-            shellExec(`sudo kind load docker-image postgres:latest`);
-          } else if (options.kubeadm || options.k3s)
-            // For kubeadm/k3s, ensure it's available for containerd
-            shellExec(`sudo crictl pull postgres:latest`);
-        }
+        if (options.pullImage === true) Underpost.cluster.pullImage('postgres:latest', options);
         shellExec(
           `sudo kubectl create secret generic postgres-secret --from-file=password=/home/dd/engine/engine-private/postgresql-password --dry-run=client -o yaml | kubectl apply -f - -n ${options.namespace}`,
         );
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/postgresql -n ${options.namespace}`);
       }
       if (options.mongodb4 === true) {
-        if (options.pullImage === true) {
-          if (!options.kubeadm && !options.k3s) {
-            // Only load if not kubeadm/k3s (Kind needs it)
-            shellExec(`docker pull mongo:4.4`);
-            shellExec(`sudo kind load docker-image mongo:4.4`);
-          } else if (options.kubeadm || options.k3s)
-            // For kubeadm/k3s, ensure it's available for containerd
-            shellExec(`sudo crictl pull mongo:4.4`);
-        }
+        if (options.pullImage === true) Underpost.cluster.pullImage('mongo:4.4', options);
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/mongodb-4.4 -n ${options.namespace}`);
 
         const deploymentName = 'mongodb-deployment';
@@ -339,15 +315,7 @@ EOF
           );
         }
       } else if (options.full === true || options.mongodb === true) {
-        if (options.pullImage === true) {
-          if (!options.kubeadm && !options.k3s) {
-            // Only load if not kubeadm/k3s (Kind needs it)
-            shellExec(`docker pull mongo:latest`);
-            shellExec(`sudo kind load docker-image mongo:latest`);
-          } else if (options.kubeadm || options.k3s)
-            // For kubeadm/k3s, ensure it's available for containerd
-            shellExec(`sudo crictl pull mongo:latest`);
-        }
+        if (options.pullImage === true) Underpost.cluster.pullImage('mongo:latest', options);
         shellExec(
           `sudo kubectl create secret generic mongodb-keyfile --from-file=/home/dd/engine/engine-private/mongodb-keyfile --dry-run=client -o yaml | kubectl apply -f - -n ${options.namespace}`,
         );
@@ -405,6 +373,32 @@ EOF
         const letsEncName = 'letsencrypt-prod';
         shellExec(`sudo kubectl delete ClusterIssuer ${letsEncName} --ignore-not-found`);
         shellExec(`sudo kubectl apply -f ${underpostRoot}/manifests/${letsEncName}.yaml -n ${options.namespace}`);
+      }
+    },
+
+    /**
+     * @method pullImage
+     * @description Pulls a container image using the appropriate runtime based on the cluster type.
+     * - For Kind clusters: pulls via Docker and loads the image into the Kind cluster.
+     * - For Kubeadm/K3s clusters: pulls via crictl (containerd).
+     * @param {string} image - The fully-qualified container image reference (e.g. 'mongo:latest').
+     * @param {object} options - The cluster options object from `init`.
+     * @param {boolean} [options.kubeadm=false] - Whether the cluster is Kubeadm-based.
+     * @param {boolean} [options.k3s=false] - Whether the cluster is K3s-based.
+     * @memberof UnderpostCluster
+     */
+    pullImage(image, options = { kubeadm: false, k3s: false }) {
+      if (!options.kubeadm && !options.k3s) {
+        const tarPath = `/tmp/kind-image-${image.replace(/[\/:]/g, '-')}.tar`;
+        shellExec(`docker pull ${image}`);
+        shellExec(`docker save ${image} -o ${tarPath}`);
+        shellExec(
+          `for node in $(kind get nodes); do cat ${tarPath} | docker exec -i $node ctr --namespace=k8s.io images import -; done`,
+        );
+        shellExec(`rm -f ${tarPath}`);
+      } else if (options.kubeadm || options.k3s) {
+        // Kubeadm / K3s: use crictl to pull directly into containerd
+        shellExec(`sudo crictl pull ${image}`);
       }
     },
 
@@ -514,12 +508,15 @@ net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`,
      * @description Performs a complete reset of the Kubernetes cluster and its container environments.
      * This version focuses on correcting persistent permission errors (such as 'permission denied'
      * in coredns) by restoring SELinux security contexts and safely cleaning up cluster artifacts.
+     * Only the uninstall/delete commands specific to the given clusterType are executed; all other
+     * cleanup steps (log truncation, filesystem, network) are always run as generic k8s resets.
      * @param {object} [options] - Configuration options for the reset.
      * @param {string} [options.underpostRoot] - The root path of the underpost project.
      * @param {boolean} [options.removeVolumeHostPaths=false] - Whether to remove data from host paths used by Persistent Volumes.
+     * @param {string} [options.clusterType='kind'] - The type of cluster to reset: 'kind', 'kubeadm', or 'k3s'.
      * @memberof UnderpostCluster
      */
-    async safeReset(options = { underpostRoot: '.', removeVolumeHostPaths: false }) {
+    async safeReset(options = { underpostRoot: '.', removeVolumeHostPaths: false, clusterType: 'kind' }) {
       logger.info('Starting a safe and comprehensive reset of Kubernetes and container environments...');
 
       try {
@@ -589,14 +586,22 @@ net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`,
         // Safely unmount pod filesystems to avoid errors.
         shellExec('sudo umount -f /var/lib/kubelet/pods/*/*');
 
-        // Phase 3: Execute official uninstallation commands
-        logger.info('Phase 3/7: Executing official reset and uninstallation commands...');
-        logger.info('  -> Executing kubeadm reset...');
-        shellExec('sudo kubeadm reset --force');
-        logger.info('  -> Executing K3s uninstallation script if it exists...');
-        shellExec('sudo /usr/local/bin/k3s-uninstall.sh');
-        logger.info('  -> Deleting Kind clusters...');
-        shellExec('kind get clusters | xargs -r -t -n1 kind delete cluster');
+        // Phase 3: Execute official uninstallation commands (type-specific)
+        const clusterType = options.clusterType || 'kind';
+        logger.info(
+          `Phase 3/7: Executing official reset/uninstallation commands for cluster type: '${clusterType}'...`,
+        );
+        if (clusterType === 'kubeadm') {
+          logger.info('  -> Executing kubeadm reset...');
+          shellExec('sudo kubeadm reset --force');
+        } else if (clusterType === 'k3s') {
+          logger.info('  -> Executing K3s uninstallation script if it exists...');
+          shellExec('sudo /usr/local/bin/k3s-uninstall.sh');
+        } else {
+          // Default: kind
+          logger.info('  -> Deleting Kind clusters...');
+          shellExec('kind get clusters | xargs -r -t -n1 kind delete cluster');
+        }
 
         // Phase 4: File system cleanup
         logger.info('Phase 4/7: Cleaning up remaining file system artifacts...');
@@ -616,9 +621,6 @@ net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`,
         // Remove iptables rules and CNI network interfaces.
         shellExec('sudo iptables -F');
         shellExec('sudo iptables -t nat -F');
-        // Restore iptables rules
-        shellExec(`chmod +x ${options.underpostRoot}/scripts/nat-iptables.sh`);
-        shellExec(`${options.underpostRoot}/scripts/nat-iptables.sh`, { silent: true });
         shellExec('sudo ip link del cni0');
         shellExec('sudo ip link del flannel.1');
 
@@ -716,6 +718,11 @@ EOF`);
       shellExec(`chmod +x /usr/local/bin/helm`);
       shellExec(`sudo mv /usr/local/bin/helm /bin/helm`);
       shellExec(`sudo rm -rf get_helm.sh`);
+
+      // Install snap
+      shellExec(`sudo yum install -y snapd`);
+      shellExec(`sudo systemctl enable --now snapd.socket`);
+
       console.log('Host prerequisites installed successfully.');
     },
 
