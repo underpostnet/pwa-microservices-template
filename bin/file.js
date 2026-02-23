@@ -138,7 +138,24 @@ try {
           JSON.stringify(templatePackageJson, null, 4),
           'utf8',
         );
+        const originPackageLockJson = JSON.parse(fs.readFileSync('./package-lock.json', 'utf8'));
 
+        const templatePackageLockJson = JSON.parse(
+          fs.readFileSync('../pwa-microservices-template/package-lock.json', 'utf8'),
+        );
+
+        const originBasePackageLock = newInstance(templatePackageLockJson.packages['']);
+        templatePackageLockJson.version = originPackageLockJson.version;
+        templatePackageLockJson.packages = originPackageLockJson.packages;
+        templatePackageLockJson.packages[''].name = originBasePackageLock.name;
+        templatePackageLockJson.packages[''].version = originPackageLockJson.version;
+        templatePackageLockJson.packages[''].hasInstallScript = originBasePackageLock.hasInstallScript;
+        templatePackageLockJson.packages[''].license = originBasePackageLock.license;
+        fs.writeFileSync(
+          '../pwa-microservices-template/package-lock.json',
+          JSON.stringify(templatePackageLockJson, null, 4),
+          'utf8',
+        );
         // Regenerate package-lock.json to match the modified package.json
         // shellExec(`cd ../pwa-microservices-template && npm install --package-lock-only --ignore-scripts`);
         fs.writeFileSync(
