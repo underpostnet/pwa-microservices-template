@@ -16,5 +16,5 @@ jobs:
           git lfs install
           git lfs fetch --all
           git lfs push --all gitlab
-          git push gitlab HEAD:${{ github.ref_name }} --force
+          git push gitlab HEAD:main --force
           git push gitlab --force --tags

@@ -153,7 +153,7 @@ try {
         const originBasePackageLock = newInstance(templatePackageLockJson.packages['']);
         templatePackageLockJson.version = originPackageLockJson.version;
         templatePackageLockJson.packages = originPackageLockJson.packages;
-        templatePackageLockJson.packages[''].name = originBasePackageLock.name;
+        templatePackageLockJson.packages[''].name = name;
         templatePackageLockJson.packages[''].version = originPackageLockJson.version;
         templatePackageLockJson.packages[''].hasInstallScript = originBasePackageLock.hasInstallScript;
         templatePackageLockJson.packages[''].license = originBasePackageLock.license;
