@@ -151,6 +151,7 @@ try {
         );
 
         const originBasePackageLock = newInstance(templatePackageLockJson.packages['']);
+        templatePackageLockJson.name = name;
         templatePackageLockJson.version = originPackageLockJson.version;
         templatePackageLockJson.packages = originPackageLockJson.packages;
         templatePackageLockJson.packages[''].name = name;
