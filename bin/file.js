@@ -97,6 +97,9 @@ try {
           './manifests/deployment/dd-template-development',
           './src/server/object-layer.js',
           './src/server/atlas-sprite-sheet-generator.js',
+          './src/server/shape-generator.js',
+          './src/server/semantic-layer-generator.js',
+          './test/shape-generator.test.js',
           'bin/cyberia.js',
         ]) {
           if (fs.existsSync(deletePath)) fs.removeSync('../pwa-microservices-template/' + deletePath);
