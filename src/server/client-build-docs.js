@@ -59,6 +59,10 @@ const buildApiDocs = async ({
         name: 'user',
         description: 'User API operations',
       },
+      {
+        name: 'object-layer',
+        description: 'Object Layer API operations',
+      },
     ],
     components: {
       schemas: {
@@ -150,6 +154,70 @@ const buildApiDocs = async ({
           },
         },
       },
+      objectLayerResponse: {
+        type: 'object',
+        properties: {
+          status: { type: 'string', example: 'success' },
+          data: {
+            type: 'object',
+            properties: {
+              _id: { type: 'string', example: '66c377f57f99e5969b81de89' },
+              data: {
+                type: 'object',
+                properties: {
+                  stats: {
+                    type: 'object',
+                    properties: {
+                      effect: { type: 'number', example: 0 },
+                      resistance: { type: 'number', example: 0 },
+                      agility: { type: 'number', example: 0 },
+                      range: { type: 'number', example: 0 },
+                      intelligence: { type: 'number', example: 0 },
+                      utility: { type: 'number', example: 0 },
+                    },
+                  },
+                  item: {
+                    type: 'object',
+                    properties: {
+                      id: { type: 'string', example: 'skin-default' },
+                      type: { type: 'string', example: 'skin' },
+                      description: { type: 'string', example: 'Default skin layer' },
+                      activable: { type: 'boolean', example: false },
+                    },
+                  },
+                  ledger: {
+                    type: 'object',
+                    properties: {
+                      type: { type: 'string', example: 'semi-fungible' },
+                      address: { type: 'string', example: '0x0000000000000000000000000000000000000000' },
+                      tokenId: { type: 'string', example: '' },
+                    },
+                  },
+                  render: {
+                    type: 'object',
+                    properties: {
+                      cid: { type: 'string', example: '' },
+                      metadataCid: { type: 'string', example: '' },
+                    },
+                  },
+                },
+              },
+              cid: { type: 'string', example: '' },
+              sha256: { type: 'string', example: 'abc123def456...' },
+            },
+          },
+        },
+      },
+      objectLayerBadRequestResponse: {
+        type: 'object',
+        properties: {
+          status: { type: 'string', example: 'error' },
+          message: {
+            type: 'string',
+            example: 'Bad request. Please check your inputs, and try again',
+          },
+        },
+      },
       securitySchemes: {
         bearerAuth: {
           type: 'http',
@@ -221,7 +289,7 @@ const buildApiDocs = async ({
     const outputFile = `./public/${host}${path === '/' ? path : `${path}/`}swagger-output.json`;
     const routes = [];
     for (const api of apis) {
-      if (['user'].includes(api)) routes.push(`./src/api/${api}/${api}.router.js`);
+      if (['user', 'object-layer'].includes(api)) routes.push(`./src/api/${api}/${api}.router.js`);
     }
 
     await swaggerAutoGen({ openapi: '3.0.0' })(outputFile, routes, doc);
@@ -267,14 +335,82 @@ const buildApiDocs = async ({
  */
 const buildJsDocs = async ({ host, path, metadata = {}, publicClientId }) => {
   const logger = loggerFactory(import.meta);
-  const jsDocsConfig = JSON.parse(fs.readFileSync(`./jsdoc.json`, 'utf8'));
+
+  // Detect custom jsdoc.<deployId>.json by matching host against deploy server configs
+  let customJsDocPath = '';
+  const privateConfBase = `./engine-private/conf`;
+  if (fs.existsSync(privateConfBase)) {
+    for (const deployId of fs.readdirSync(privateConfBase)) {
+      const candidatePath = `./jsdoc.${deployId}.json`;
+      if (!fs.existsSync(candidatePath)) continue;
+
+      // Check if this deployId's server config contains the current host
+      const serverConfPath = `${privateConfBase}/${deployId}/conf.server.json`;
+      if (fs.existsSync(serverConfPath)) {
+        try {
+          const serverConf = JSON.parse(fs.readFileSync(serverConfPath, 'utf8'));
+          if (serverConf[host]) {
+            customJsDocPath = candidatePath;
+            logger.info('detected custom jsdoc config', { deployId, host, path: candidatePath });
+            break;
+          }
+        } catch (e) {
+          // skip invalid JSON
+        }
+      }
+
+      // Fallback: also check dev server configs
+      if (!customJsDocPath) {
+        const devConfFiles = fs
+          .readdirSync(`${privateConfBase}/${deployId}`)
+          .filter((f) => f.match(/^conf\.server\.dev\..*\.json$/));
+        for (const devFile of devConfFiles) {
+          try {
+            const devConf = JSON.parse(fs.readFileSync(`${privateConfBase}/${deployId}/${devFile}`, 'utf8'));
+            if (devConf[host]) {
+              customJsDocPath = candidatePath;
+              logger.info('detected custom jsdoc config (dev)', { deployId, host, path: candidatePath });
+              break;
+            }
+          } catch (e) {
+            // skip invalid JSON
+          }
+        }
+      }
+      if (customJsDocPath) break;
+    }
+  }
+
+  const jsDocSourcePath = customJsDocPath || `./jsdoc.json`;
+  const jsDocsConfig = JSON.parse(fs.readFileSync(jsDocSourcePath, 'utf8'));
+  logger.info('using jsdoc config', jsDocSourcePath);
 
   jsDocsConfig.opts.destination = `./public/${host}${path === '/' ? path : `${path}/`}docs/`;
   jsDocsConfig.opts.theme_opts.title = metadata?.title ? metadata.title : undefined;
   jsDocsConfig.opts.theme_opts.favicon = `./public/${host}${path === '/' ? '/' : `${path}/`}favicon.ico`;
 
   const tutorialsPath = `./src/client/public/${publicClientId}/docs/references`;
-  if (fs.existsSync(tutorialsPath)) {
+
+  // Auto-prepare hardhat references when jsdoc config includes hardhat source files
+  const includesHardhat =
+    jsDocsConfig.source &&
+    Array.isArray(jsDocsConfig.source.include) &&
+    jsDocsConfig.source.include.some((p) => p.includes('hardhat/'));
+  if (includesHardhat && fs.existsSync(`./hardhat`)) {
+    fs.mkdirSync(tutorialsPath, { recursive: true });
+    const hardhatReadmePath = `./hardhat/README.md`;
+    const hardhatWhitePaperPath = `./hardhat/WHITE-PAPER.md`;
+    if (fs.existsSync(hardhatReadmePath)) {
+      fs.copySync(hardhatReadmePath, `${tutorialsPath}/Hardhat Module.md`);
+      logger.info('copied hardhat README.md to tutorials references');
+    }
+    if (fs.existsSync(hardhatWhitePaperPath)) {
+      fs.copySync(hardhatWhitePaperPath, `${tutorialsPath}/White Paper.md`);
+      logger.info('copied hardhat WHITE-PAPER.md to tutorials references');
+    }
+  }
+
+  if (fs.existsSync(tutorialsPath) && fs.readdirSync(tutorialsPath).length > 0) {
     jsDocsConfig.opts.tutorials = tutorialsPath;
     if (jsDocsConfig.opts.theme_opts.sections && !jsDocsConfig.opts.theme_opts.sections.includes('Tutorials')) {
       jsDocsConfig.opts.theme_opts.sections.push('Tutorials');
@@ -311,6 +447,45 @@ const buildCoverage = async ({ host, path }) => {
   fs.copySync(`./coverage`, coverageBuildPath);
 
   logger.warn('build coverage', coverageBuildPath);
+
+  // Include hardhat coverage for cyberia-related builds
+  const hardhatCoveragePath = `./hardhat/coverage`;
+  if (fs.existsSync(hardhatCoveragePath) && fs.readdirSync(hardhatCoveragePath).length > 0) {
+    const hardhatCoverageBuildPath = `${jsDocsConfig.opts.destination}hardhat-coverage`;
+    fs.mkdirSync(hardhatCoverageBuildPath, { recursive: true });
+    fs.copySync(hardhatCoveragePath, hardhatCoverageBuildPath);
+    logger.warn('build hardhat coverage', hardhatCoverageBuildPath);
+  } else if (fs.existsSync(`./hardhat/package.json`)) {
+    // Attempt to generate hardhat coverage if the hardhat project exists
+    try {
+      const hardhatPkg = JSON.parse(fs.readFileSync(`./hardhat/package.json`, 'utf8'));
+      if (hardhatPkg.scripts && hardhatPkg.scripts.coverage) {
+        logger.info('generating hardhat coverage report');
+        shellExec(`cd ./hardhat && npx hardhat coverage`, { silent: true });
+        if (fs.existsSync(hardhatCoveragePath) && fs.readdirSync(hardhatCoveragePath).length > 0) {
+          const hardhatCoverageBuildPath = `${jsDocsConfig.opts.destination}hardhat-coverage`;
+          fs.mkdirSync(hardhatCoverageBuildPath, { recursive: true });
+          fs.copySync(hardhatCoveragePath, hardhatCoverageBuildPath);
+          logger.warn('build hardhat coverage (generated)', hardhatCoverageBuildPath);
+        }
+      }
+    } catch (e) {
+      logger.warn('hardhat coverage generation skipped', e.message);
+    }
+  }
+
+  // Copy hardhat README and WHITE-PAPER as markdown docs
+  const docsDestBase = jsDocsConfig.opts.destination;
+  const hardhatReadmePath = `./hardhat/README.md`;
+  const hardhatWhitePaperPath = `./hardhat/WHITE-PAPER.md`;
+  if (fs.existsSync(hardhatReadmePath)) {
+    fs.copySync(hardhatReadmePath, `${docsDestBase}hardhat-README.md`);
+    logger.info('copied hardhat README.md to docs');
+  }
+  if (fs.existsSync(hardhatWhitePaperPath)) {
+    fs.copySync(hardhatWhitePaperPath, `${docsDestBase}hardhat-WHITE-PAPER.md`);
+    logger.info('copied hardhat WHITE-PAPER.md to docs');
+  }
 };
 
 /**
