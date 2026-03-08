@@ -33,7 +33,7 @@ jobs:
       image: quay.io/rockylinux/rockylinux:9
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         # with:
         #   lfs: true
       # - name: Checkout LFS objects
@@ -64,7 +64,7 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           # Upload entire repository
           path: './public/underpostnet.github.io/pwa-microservices-template-ghpkg/'

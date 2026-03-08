@@ -1036,7 +1036,8 @@ nvidia/gpu-operator \
         const ver = hardhatDeps[dep];
         shellExec(`npm install ${dep}@${ver}`);
       }
-      shellExec(`cd ./hardhat && npm install`);
+      shellExec(`cd ./hardhat && npm install --include=dev`);
+      break;
     }
 
     case 'cyberia-docs': {
@@ -1051,7 +1052,7 @@ nvidia/gpu-operator \
       if (fs.existsSync(`./hardhat/package.json`)) {
         logger.info('generating hardhat coverage report for cyberia docs');
         try {
-          shellExec(`cd ./hardhat && npx hardhat coverage`);
+          shellExec(`cd ./hardhat && NODE_ENV=development npx hardhat coverage`);
         } catch (e) {
           logger.warn('hardhat coverage generation failed, continuing', e.message);
         }
@@ -1114,6 +1115,40 @@ nvidia/gpu-operator \
   --from-file=script.js=${scriptPath} \
   --dry-run=client -o yaml | kubectl apply -f -
 `);
+      break;
+    }
+
+    case 'dependabot': {
+      shellExec(`git fetch origin`);
+
+      const { stdout: branchOutput } = shellExec(`git branch -r`, { silent: true });
+      const dependabotBranches = branchOutput
+        .split('\n')
+        .map((b) => b.trim())
+        .filter((b) => b.startsWith('remotes/origin/dependabot/') || b.startsWith('origin/dependabot/'))
+        .map((b) => b.replace(/^remotes\//, '').replace(/^origin\//, ''));
+
+      if (dependabotBranches.length === 0) {
+        logger.info('No remote dependabot branches found');
+        break;
+      }
+
+      logger.info('Found dependabot branches:', dependabotBranches);
+
+      for (const branch of dependabotBranches) {
+        logger.info(`Checking out branch: ${branch}`);
+        shellExec(`git checkout -B ${branch} origin/${branch}`);
+      }
+
+      logger.info('Checking out master');
+      shellExec(`git checkout master`);
+
+      for (const branch of dependabotBranches) {
+        logger.info(`Merging branch: ${branch}`);
+        shellExec(`git merge ${branch}`);
+      }
+
+      logger.info('All dependabot branches merged into master');
       break;
     }
   }
