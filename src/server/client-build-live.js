@@ -5,7 +5,7 @@
  */
 
 import fs from 'fs-extra';
-import { Config, loadConf } from './conf.js';
+import { Config, loadConf, readConfJson } from './conf.js';
 import { loggerFactory } from './logger.js';
 import { buildClient } from './client-build.js';
 
@@ -17,14 +17,14 @@ const logger = loggerFactory(import.meta);
  * @memberof clientLiveBuild
  */
 const clientLiveBuild = async () => {
-  if (fs.existsSync(`./tmp/client.build.json`)) {
+  if (fs.existsSync(`/tmp/client.build.json`)) {
     const deployId = process.argv[2];
     const subConf = process.argv[3];
     let clientId = 'default';
     let host = 'default.net';
     let path = '/';
     let baseHost = `${host}${path === '/' ? '' : path}`;
-    let views = Config.default.client[clientId].views;
+    let views;
     let apiBaseHost;
     let apiBaseProxyPath;
 
@@ -33,19 +33,8 @@ const clientLiveBuild = async () => {
       (fs.existsSync(`./engine-private/conf/${deployId}`) || fs.existsSync(`./engine-private/replica/${deployId}`))
     ) {
       loadConf(deployId, subConf);
-      const confClient = JSON.parse(
-        fs.readFileSync(
-          fs.existsSync(`./engine-private/replica/${deployId}`)
-            ? `./engine-private/replica/${deployId}/conf.client.json`
-            : fs.existsSync(`./engine-private/conf/${deployId}/conf.client.json`)
-            ? `./engine-private/conf/${deployId}/conf.client.json`
-            : `./conf/conf.client.json`,
-          'utf8',
-        ),
-      );
-      const confServer = JSON.parse(
-        fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.dev.${subConf}.json`, 'utf8'),
-      );
+      const confClient = readConfJson(deployId, 'client');
+      const confServer = readConfJson(deployId, 'server');
       host = process.argv[4];
       path = process.argv[5];
       clientId = confServer[host][path].client;
@@ -53,6 +42,8 @@ const clientLiveBuild = async () => {
       baseHost = `${host}${path === '/' ? '' : path}`;
       apiBaseHost = confServer[host][path].apiBaseHost;
       apiBaseProxyPath = confServer[host][path].apiBaseProxyPath;
+    } else {
+      views = Config.default.client[clientId].views;
     }
 
     logger.info('Live build config', {
@@ -67,7 +58,7 @@ const clientLiveBuild = async () => {
       apiBaseProxyPath,
     });
 
-    const updates = JSON.parse(fs.readFileSync(`./tmp/client.build.json`, 'utf8'));
+    const updates = JSON.parse(fs.readFileSync(`/tmp/client.build.json`, 'utf8'));
     const liveClientBuildPaths = [];
     for (let srcPath of updates) {
       srcPath = srcPath.replaceAll('/', `\\`);
@@ -102,7 +93,7 @@ const clientLiveBuild = async () => {
     }
     logger.info('liveClientBuildPaths', liveClientBuildPaths);
     await buildClient({ liveClientBuildPaths, instances: [{ host, path }] });
-    fs.removeSync(`./tmp/client.build.json`);
+    fs.removeSync(`/tmp/client.build.json`);
   }
 };
 

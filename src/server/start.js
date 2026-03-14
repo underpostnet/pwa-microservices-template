@@ -161,13 +161,13 @@ class UnderpostStartUp {
       shellExec(`cd ${buildBasePath}/engine && sudo mv ./${repoName}-private ./engine-private`);
       shellCd(`${buildBasePath}/engine`);
       shellExec(options?.underpostQuicklyInstall ? `underpost install` : `npm install`);
-      shellExec(`node bin/deploy conf ${deployId} ${env}`);
+      shellExec(`node bin env ${deployId} ${env}`);
       if (fs.existsSync('./engine-private/itc-scripts')) {
         const itcScripts = await fs.readdir('./engine-private/itc-scripts');
         for (const itcScript of itcScripts)
           if (itcScript.match(deployId)) shellExec(`node ./engine-private/itc-scripts/${itcScript}`);
       }
-      shellExec(`node bin/deploy build-full-client ${deployId}`);
+      await Underpost.repo.client(deployId);
     },
     /**
      * Runs a deployment.
@@ -177,17 +177,17 @@ class UnderpostStartUp {
      * @memberof UnderpostStartUp
      */
     async run(deployId = 'dd-default', env = 'development', options = {}) {
-      const runCmd = env === 'production' ? 'run prod-img' : 'run dev-img';
+      const runCmd = env === 'production' ? 'run prod:container' : 'run dev:container';
       if (fs.existsSync(`./engine-private/replica`)) {
         const replicas = await fs.readdir(`./engine-private/replica`);
         for (const replica of replicas) {
           if (!replica.match(deployId)) continue;
-          shellExec(`node bin/deploy conf ${replica} ${env}`);
+          shellExec(`node bin env ${replica} ${env}`);
           shellExec(`npm ${runCmd} ${replica}`, { async: true });
           await awaitDeployMonitor(true);
         }
       }
-      shellExec(`node bin/deploy conf ${deployId} ${env}`);
+      shellExec(`node bin env ${deployId} ${env}`);
       shellExec(`npm ${runCmd} ${deployId}`, { async: true });
       await awaitDeployMonitor(true);
       Underpost.env.set('container-status', `${deployId}-${env}-running-deployment`);

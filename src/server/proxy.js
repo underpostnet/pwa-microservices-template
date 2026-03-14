@@ -7,8 +7,6 @@
 'use strict';
 
 import express from 'express';
-import dotenv from 'dotenv';
-
 import { createProxyMiddleware } from 'http-proxy-middleware';
 import { loggerFactory, loggerMiddleware } from './logger.js';
 import { buildPortProxyRouter, buildProxyRouter, getTlsHosts, isDevProxyContext, isTlsDevProxy } from './conf.js';
@@ -16,8 +14,6 @@ import { buildPortProxyRouter, buildProxyRouter, getTlsHosts, isDevProxyContext,
 import { shellExec } from './process.js';
 import fs from 'fs-extra';
 import Underpost from '../index.js';
-
-dotenv.config();
 
 const logger = loggerFactory(import.meta);
 
@@ -56,11 +52,12 @@ class ProxyService {
       // Proxy middleware options
       /** @type {import('http-proxy-middleware/dist/types').Options} */
       const options = {
+        pathFilter: proxyPath, // Use '/' as the general filter (v3 API)
         ws: true, // Enable websocket proxying
         target: `http://localhost:${parseInt(process.env.PORT - 1)}`, // Default target (should be overridden by router)
         router: {},
         // changeOrigin: true,
-        logLevel: 'debug',
+        logger: logger,
         xfwd: true, // Adds x-forward headers (Host, Proto, etc.)
         onProxyReq: (proxyReq, req, res, options) => {},
         pathRewrite: {},
@@ -74,8 +71,7 @@ class ProxyService {
         devProxyContext: process.env.NODE_ENV !== 'production',
       });
 
-      const filter = proxyPath; // Use '/' as the general filter
-      app.use(proxyPath, createProxyMiddleware(filter, options));
+      app.use(proxyPath, createProxyMiddleware(options));
 
       // Determine which server to start (HTTP or HTTPS) based on port and environment
       switch (process.env.NODE_ENV) {
@@ -115,7 +111,7 @@ class ProxyService {
               break;
           }
       }
-      logger.info('Proxy running', { port, options });
+      logger.info('Proxy running', { port, router: options.router });
       if (process.env.NODE_ENV === 'development')
         logger.info(
           Underpost.deploy.etcHostFactory(Object.keys(options.router), {

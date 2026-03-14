@@ -4,13 +4,14 @@
  * @namespace UnderpostRun
  */
 
-import { daemonProcess, getTerminalPid, openTerminal, shellCd, shellExec } from '../server/process.js';
+import { daemonProcess, getTerminalPid, shellCd, shellExec } from '../server/process.js';
 import {
   awaitDeployMonitor,
   buildKindPorts,
   Config,
   getNpmRootPath,
   isDeployRunnerContext,
+  loadConfServerJson,
   writeEnv,
 } from '../server/conf.js';
 import { actionInitLog, loggerFactory } from '../server/logger.js';
@@ -55,7 +56,6 @@ const logger = loggerFactory(import.meta);
  * @property {string} apiVersion - The API version for the container.
  * @property {string} claimName - The claim name for the volume.
  * @property {string} kindType - The kind of resource to create.
- * @property {boolean} terminal - Whether to open a terminal.
  * @property {number} devProxyPortOffset - The port offset for the development proxy.
  * @property {boolean} hostNetwork - Whether to use host networking.
  * @property {string} requestsMemory - The memory request for the container.
@@ -120,7 +120,6 @@ const DEFAULT_OPTION = {
   apiVersion: '',
   claimName: '',
   kindType: '',
-  terminal: false,
   devProxyPortOffset: 0,
   hostNetwork: false,
   requestsMemory: '',
@@ -195,7 +194,7 @@ class UnderpostRun {
       }
 
       {
-        // Detect MongoDB primary pod using centralized method
+        // Detect MongoDB primary pod using method
         let primaryMongoHost = 'mongodb-0.mongodb-service';
         try {
           const primaryPodName = Underpost.db.getMongoPrimaryPodName({
@@ -488,15 +487,25 @@ class UnderpostRun {
      * @param {Object} options - The default underpost runner options for customizing workflow
      * @memberof UnderpostRun
      */
-    ide: (path, options = DEFAULT_OPTION) => {
-      const { underpostRoot } = options;
-      if (path === 'install') {
-        shellExec(`sudo curl -f https://zed.dev/install.sh | sh`);
-        shellExec(
-          `sudo dnf config-manager --add-repo https://download.sublimetext.com/rpm/stable/x86_64/sublime-text.repo`,
-        );
-        shellExec(`sudo dnf install -y sublime-text`);
-      } else shellExec(`node ${underpostRoot}/bin/zed ${path}`);
+    ide: (path = '', options = DEFAULT_OPTION) => {
+      const underpostRoot = options.dev ? '.' : options.underpostRoot;
+      const [projectPath, customIde] = path.split(',');
+      if (projectPath === 'install') {
+        if (customIde === 'zed') shellExec(`sudo curl -f https://zed.dev/install.sh | sh`);
+        else if (customIde === 'subl') {
+          shellExec(
+            `sudo dnf config-manager --add-repo https://download.sublimetext.com/rpm/stable/x86_64/sublime-text.repo`,
+          );
+          shellExec(`sudo dnf install -y sublime-text`);
+        } else {
+          shellExec(`sudo rpm --import https://packages.microsoft.com/keys/microsoft.asc &&
+echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com/yumrepos/vscode\nenabled=1\nautorefresh=1\ntype=rpm-md\ngpgcheck=1\ngpgkey=https://packages.microsoft.com/keys/microsoft.asc" | sudo tee /etc/yum.repos.d/vscode.repo > /dev/null`);
+          shellExec(`sudo dnf install -y code`);
+        }
+        return;
+      }
+      if (customIde === 'zed') shellExec(`node ${underpostRoot}/bin/zed ${projectPath}`);
+      else shellExec(`node ${underpostRoot}/bin/vs ${projectPath}`);
     },
     /**
      * @method crypto-policy
@@ -1008,9 +1017,7 @@ EOF
         volumeMountPath: volumeHostPath,
         ...(options.dev ? { volumeHostPath } : { claimName }),
         on: {
-          init: async () => {
-            // openTerminal(`kubectl logs -f ${podName}`);
-          },
+          init: async () => {},
         },
         args: [daemonProcess(path ? path : `cd /home/dd/engine && npm install && npm run test`)],
       };
@@ -1145,7 +1152,7 @@ EOF
       const deployList = fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8').split(',');
       let hosts = [];
       for (const deployId of deployList) {
-        const confServer = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8'));
+        const confServer = loadConfServerJson(`./engine-private/conf/${deployId}/conf.server.json`);
         hosts = hosts.concat(Object.keys(confServer));
       }
       shellExec(`node bin cluster --prom ${hosts.join(',')}`);
@@ -1318,34 +1325,31 @@ EOF
       if (!subConf) subConf = 'local';
       if (options.reset && fs.existsSync(`./engine-private/conf/${deployId}`))
         fs.removeSync(`./engine-private/conf/${deployId}`);
-      if (!fs.existsSync(`./engine-private/conf/${deployId}`)) Config.deployIdFactory(deployId, { subConf });
       if (options.devProxyPortOffset) {
         const envPath = `./engine-private/conf/${deployId}/.env.development`;
         const envObj = dotenv.parse(fs.readFileSync(envPath, 'utf8'));
         envObj.DEV_PROXY_PORT_OFFSET = options.devProxyPortOffset;
         writeEnv(envPath, envObj);
       }
+      dotenv.config({ path: `./engine-private/conf/${deployId}/.env.development`, override: true });
       shellExec(`node bin run dev-cluster --expose --namespace ${options.namespace}`, { async: true });
       {
-        const cmd = `npm run dev-api ${deployId} ${subConf} ${host} ${_path} ${clientHostPort}${
+        const cmd = `npm run dev:api ${deployId} ${subConf} ${host} ${_path} ${clientHostPort} proxy${
           options.tls ? ' tls' : ''
         }`;
-        options.terminal ? openTerminal(cmd) : shellExec(cmd, { async: true });
+        shellExec(cmd, { async: true });
       }
       await awaitDeployMonitor(true);
       {
-        const cmd = `npm run dev-client ${deployId} ${subConf} ${host} ${_path} proxy${options.tls ? ' tls' : ''}`;
-        options.terminal
-          ? openTerminal(cmd)
-          : shellExec(cmd, {
-              async: true,
-            });
+        const cmd = `npm run dev:client ${deployId} ${subConf} ${host} ${_path} proxy${options.tls ? ' tls' : ''}`;
+
+        shellExec(cmd, {
+          async: true,
+        });
       }
       await awaitDeployMonitor(true);
       shellExec(
-        `./node_modules/.bin/env-cmd -f .env.development node src/proxy proxy ${deployId} ${subConf} ${host} ${_path}${
-          options.tls ? ' tls' : ''
-        }`,
+        `NODE_ENV=development node src/proxy proxy ${deployId} ${subConf} ${host} ${_path}${options.tls ? ' tls' : ''}`,
       );
     },
 
@@ -1364,7 +1368,7 @@ EOF
       let [deployId, serviceId, host, _path, replicas, image, node] = path.split(',');
       if (!replicas) replicas = options.replicas;
       // const confClient = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.client.json`, 'utf8'));
-      const confServer = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8'));
+      const confServer = loadConfServerJson(`./engine-private/conf/${deployId}/conf.server.json`);
       // const confSSR = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.ssr.json`, 'utf8'));
       // const packageData = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/package.json`, 'utf8'));
       const services = fs.existsSync(`./engine-private/deploy/${deployId}/conf.services.json`)
@@ -1455,9 +1459,7 @@ EOF
     'etc-hosts': async (path = '', options = DEFAULT_OPTION) => {
       const hosts = path ? path.split(',') : [];
       if (options.deployId) {
-        const confServer = JSON.parse(
-          fs.readFileSync(`./engine-private/conf/${options.deployId}/conf.server.json`, 'utf8'),
-        );
+        const confServer = loadConfServerJson(`./engine-private/conf/${options.deployId}/conf.server.json`);
         hosts.push(...Object.keys(confServer));
       }
       const hostListenResult = Underpost.deploy.etcHostFactory(hosts);
@@ -1591,10 +1593,13 @@ EOF
       for (let deployId of fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8').split(',')) {
         deployId = deployId.trim();
         const _path = '/single-replica';
-        const confServer = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8'));
+        const confServer = loadConfServerJson(`./engine-private/conf/${deployId}/conf.server.json`);
         shellExec(`${baseCommand} env ${deployId} ${env}`);
         for (const host of Object.keys(confServer))
-          if (_path in confServer[host]) shellExec(`node bin/deploy build-single-replica ${deployId} ${host} ${_path}`);
+          if (_path in confServer[host])
+            await Underpost.repo.client(deployId, '', host, _path, {
+              singleReplica: true,
+            });
         const node = options.nodeName
           ? options.nodeName
           : !options.kubeadm && !options.k3s
@@ -1603,7 +1608,7 @@ EOF
         // deployId, replicas, versions, image, node
         let defaultPath = [deployId, 1, ``, ``, node];
         shellExec(`${baseCommand} run${options.dev === true ? ' --dev' : ''} --build sync ${defaultPath}`);
-        shellExec(`node bin/deploy build-full-client ${deployId}`);
+        await Underpost.repo.client(deployId);
       }
       if (isDeployRunnerContext(path, options)) shellExec(`${baseCommand} run promote ${path} production`);
     },
@@ -1680,7 +1685,7 @@ EOF
                   shellExec(`sudo kubectl cp ${nameSpace}/${podName}:${basePath}/docs${fromPath} ${toPath}`);
                 }
 
-                openTerminal(`firefox ${outsPaths.join(' ')}`, { single: true });
+                shellExec(`firefox ${outsPaths.join(' ')}`);
                 process.exit(0);
               }
             })();

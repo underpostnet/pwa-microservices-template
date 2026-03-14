@@ -6,14 +6,29 @@
  * Supports MariaDB and MongoDB with import/export capabilities, Git integration, and multi-pod operations.
  */
 
-import { mergeFile, splitFileFactory } from '../server/conf.js';
+import { mergeFile, splitFileFactory, loadConfServerJson, resolveConfSecrets } from '../server/conf.js';
 import { loggerFactory } from '../server/logger.js';
 import { shellExec } from '../server/process.js';
 import fs from 'fs-extra';
 import { DataBaseProvider } from '../db/DataBaseProvider.js';
-import { loadReplicas, pathPortAssignmentFactory } from '../server/conf.js';
+import { loadReplicas, pathPortAssignmentFactory, loadCronDeployEnv } from '../server/conf.js';
 import Underpost from '../index.js';
 const logger = loggerFactory(import.meta);
+
+/**
+ * Redacts credentials from shell command strings before logging.
+ * Masks passwords in `-p<password>`, `--password=<password>`, and `-P <password>` patterns.
+ * @param {string} cmd - The raw command string.
+ * @memberof UnderpostDB
+ * @returns {string} The command with credentials replaced by `***`.
+ */
+const sanitizeCommand = (cmd) => {
+  if (typeof cmd !== 'string') return cmd;
+  return cmd
+    .replace(/-p['"]?[^\s'"]+/g, '-p***')
+    .replace(/--password=['"]?[^\s'"]+/g, '--password=***')
+    .replace(/-P\s+['"]?[^\s'"]+/g, '-P ***');
+};
 
 /**
  * Constants for database operations
@@ -133,10 +148,10 @@ class UnderpostDB {
       const { context = '' } = options;
 
       try {
-        logger.info(`Executing kubectl command`, { command, context });
-        return shellExec(command, { stdout: true });
+        logger.info(`Executing kubectl command`, { command: sanitizeCommand(command), context });
+        return shellExec(command, { stdout: true, disableLog: true });
       } catch (error) {
-        logger.error(`kubectl command failed`, { command, error: error.message, context });
+        logger.error(`kubectl command failed`, { command: sanitizeCommand(command), error: error.message, context });
         throw error;
       }
     },
@@ -200,9 +215,28 @@ class UnderpostDB {
         const kubectlCmd = `sudo kubectl exec -n ${namespace} -i ${podName} -- sh -c "${command}"`;
         return Underpost.db._executeKubectl(kubectlCmd, { context: `exec in pod ${podName}` });
       } catch (error) {
-        logger.error('Failed to execute command in pod', { podName, command, error: error.message });
+        logger.error('Failed to execute command in pod', {
+          podName,
+          command: sanitizeCommand(command),
+          error: error.message,
+        });
         throw error;
       }
+    },
+
+    /**
+     * Helper: Resolves the latest backup timestamp from an existing backup directory.
+     * Scans the directory for numeric (epoch) sub-folders and returns the most recent one.
+     * @method _getLatestBackupTimestamp
+     * @memberof UnderpostDB
+     * @param {string} backupDir - Path to the host-folder backup directory.
+     * @return {string|null} The latest timestamp string, or null if none found.
+     */
+    _getLatestBackupTimestamp(backupDir) {
+      if (!fs.existsSync(backupDir)) return null;
+      const entries = fs.readdirSync(backupDir).filter((e) => /^\d+$/.test(e));
+      if (entries.length === 0) return null;
+      return entries.sort((a, b) => parseInt(b) - parseInt(a))[0];
     },
 
     /**
@@ -272,55 +306,6 @@ class UnderpostDB {
       } catch (error) {
         logger.error(`Git operation failed`, { repoName, operation, error: error.message });
         return false;
-      }
-    },
-
-    /**
-     * Helper: Manages backup timestamps and cleanup.
-     * @method _manageBackupTimestamps
-     * @memberof UnderpostDB
-     * @param {string} backupPath - Backup directory path.
-     * @param {number} newTimestamp - New backup timestamp.
-     * @param {boolean} shouldCleanup - Whether to cleanup old backups.
-     * @return {Object} Backup info with current and removed timestamps.
-     */
-    _manageBackupTimestamps(backupPath, newTimestamp, shouldCleanup) {
-      try {
-        if (!fs.existsSync(backupPath)) {
-          fs.mkdirSync(backupPath, { recursive: true });
-        }
-
-        // Delete empty folders
-        shellExec(`cd ${backupPath} && find . -type d -empty -delete`);
-
-        const times = fs.readdirSync(backupPath);
-        const validTimes = times.map((t) => parseInt(t)).filter((t) => !isNaN(t));
-
-        const currentBackupTimestamp = validTimes.length > 0 ? Math.max(...validTimes) : null;
-        const removeBackupTimestamp = validTimes.length > 0 ? Math.min(...validTimes) : null;
-
-        // Cleanup old backups if we have too many
-        if (shouldCleanup && validTimes.length >= MAX_BACKUP_RETENTION && removeBackupTimestamp) {
-          const removeDir = `${backupPath}/${removeBackupTimestamp}`;
-          logger.info('Removing old backup', { path: removeDir });
-          fs.removeSync(removeDir);
-        }
-
-        // Create new backup directory
-        if (shouldCleanup) {
-          const newBackupDir = `${backupPath}/${newTimestamp}`;
-          logger.info('Creating new backup directory', { path: newBackupDir });
-          fs.mkdirSync(newBackupDir, { recursive: true });
-        }
-
-        return {
-          current: currentBackupTimestamp,
-          removed: removeBackupTimestamp,
-          count: validTimes.length,
-        };
-      } catch (error) {
-        logger.error('Error managing backup timestamps', { backupPath, error: error.message });
-        return { current: null, removed: null, count: 0 };
       }
     },
 
@@ -624,7 +609,7 @@ class UnderpostDB {
         logger.info('Getting MariaDB table statistics', { podName, dbName });
 
         const command = `sudo kubectl exec -n ${namespace} -i ${podName} -- mariadb -u ${user} -p${password} ${dbName} -e "SELECT TABLE_NAME as 'table', TABLE_ROWS as 'count' FROM information_schema.TABLES WHERE TABLE_SCHEMA = '${dbName}' ORDER BY TABLE_NAME;" --skip-column-names --batch`;
-        const output = shellExec(command, { stdout: true, silent: true });
+        const output = shellExec(command, { stdout: true, silent: true, disableLog: true });
 
         if (!output || output.trim() === '') {
           logger.warn('No tables found or empty output');
@@ -788,6 +773,7 @@ class UnderpostDB {
         kind: false,
       },
     ) {
+      loadCronDeployEnv();
       const newBackupTimestamp = new Date().getTime();
       const namespace = options.ns && typeof options.ns === 'string' ? options.ns : 'default';
 
@@ -844,7 +830,7 @@ class UnderpostDB {
           continue;
         }
 
-        const confServer = JSON.parse(fs.readFileSync(confServerPath, 'utf8'));
+        const confServer = loadConfServerJson(confServerPath, { resolve: true });
 
         // Build database configuration map
         for (const host of Object.keys(confServer)) {
@@ -943,16 +929,11 @@ class UnderpostDB {
 
             logger.info('Processing database', { hostFolder, provider, dbName, deployId });
 
-            const backUpPath = `../${repoName}/${hostFolder}`;
-            const backupInfo = Underpost.db._manageBackupTimestamps(
-              backUpPath,
-              newBackupTimestamp,
-              options.export === true,
-            );
+            const latestBackupTimestamp = Underpost.db._getLatestBackupTimestamp(`../${repoName}/${hostFolder}`);
 
-            dbs[provider][dbName].currentBackupTimestamp = backupInfo.current;
+            dbs[provider][dbName].currentBackupTimestamp = latestBackupTimestamp;
 
-            const currentTimestamp = backupInfo.current || newBackupTimestamp;
+            const currentTimestamp = latestBackupTimestamp || newBackupTimestamp;
             const sqlContainerPath = `/home/${dbName}.sql`;
             const fromPartsPath = `../${repoName}/${hostFolder}/${currentTimestamp}/${dbName}-parths.json`;
             const toSqlPath = `../${repoName}/${hostFolder}/${currentTimestamp}/${dbName}.sql`;
@@ -1149,6 +1130,7 @@ class UnderpostDB {
       host = process.env.DEFAULT_DEPLOY_HOST,
       path = process.env.DEFAULT_DEPLOY_PATH,
     ) {
+      loadCronDeployEnv();
       deployId = deployId ? deployId : process.env.DEFAULT_DEPLOY_ID;
       host = host ? host : process.env.DEFAULT_DEPLOY_HOST;
       path = path ? path : process.env.DEFAULT_DEPLOY_PATH;
@@ -1171,7 +1153,7 @@ class UnderpostDB {
         throw new Error(`Server configuration not found: ${confServerPath}`);
       }
 
-      const { db } = JSON.parse(fs.readFileSync(confServerPath, 'utf8'))[host][path];
+      const { db } = loadConfServerJson(confServerPath, { resolve: true })[host][path];
 
       try {
         await DataBaseProvider.load({ apis: ['instance', 'cron'], host, path, db });
@@ -1194,7 +1176,7 @@ class UnderpostDB {
             continue;
           }
 
-          const confServer = loadReplicas(deployId, JSON.parse(fs.readFileSync(confServerPath, 'utf8')));
+          const confServer = loadReplicas(deployId, loadConfServerJson(confServerPath, { resolve: true }));
           const router = await Underpost.deploy.routerFactory(deployId, env);
           const pathPortAssignmentData = await pathPortAssignmentFactory(deployId, router, confServer);
 
@@ -1257,7 +1239,7 @@ class UnderpostDB {
           }
         }
       } catch (error) {
-        logger.error('Failed to create instance metadata', { error: error.message, stack: error.stack });
+        logger.error('Failed to create instance metadata', { error: error.message });
         throw error;
       }
 
@@ -1297,7 +1279,7 @@ class UnderpostDB {
           await new Cron(body).save();
         }
       } catch (error) {
-        logger.error('Failed to create cron metadata', { error: error.message, stack: error.stack });
+        logger.error('Failed to create cron metadata', { error: error.message });
       }
 
       await DataBaseProvider.instance[`${host}${path}`].mongoose.close();
@@ -1325,6 +1307,7 @@ class UnderpostDB {
         dryRun: false,
       },
     ) {
+      loadCronDeployEnv();
       if (deployList === 'dd') deployList = fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8');
 
       logger.info('Starting File collection cleanup', { deployList, options });
@@ -1359,7 +1342,7 @@ class UnderpostDB {
           continue;
         }
 
-        const confServer = JSON.parse(fs.readFileSync(confServerPath, 'utf8'));
+        const confServer = loadConfServerJson(confServerPath, { resolve: true });
 
         // Process each host+path combination
         for (const host of Object.keys(confServer)) {
@@ -1499,7 +1482,6 @@ class UnderpostDB {
                 host,
                 path,
                 error: error.message,
-                stack: error.stack,
               });
             }
           }
@@ -1553,6 +1535,7 @@ class UnderpostDB {
         crons: false,
       },
     ) {
+      loadCronDeployEnv();
       deployId = deployId ? deployId : process.env.DEFAULT_DEPLOY_ID;
       host = host ? host : process.env.DEFAULT_DEPLOY_HOST;
       path = path ? path : process.env.DEFAULT_DEPLOY_PATH;

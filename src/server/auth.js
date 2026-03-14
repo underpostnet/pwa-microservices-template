@@ -4,7 +4,6 @@
  * @namespace Auth
  */
 
-import dotenv from 'dotenv';
 import jwt from 'jsonwebtoken';
 import { loggerFactory } from './logger.js';
 import crypto from 'crypto';
@@ -19,7 +18,6 @@ import cookieParser from 'cookie-parser';
 import { DataBaseProvider } from '../db/DataBaseProvider.js';
 import { isDevProxyContext } from './conf.js';
 
-dotenv.config();
 const logger = loggerFactory(import.meta);
 
 // Promisified crypto functions
@@ -349,12 +347,7 @@ const cookieOptionsFactory = (req, host) => {
     secure,
     sameSite,
     path: '/',
-    domain:
-      process.env.NODE_ENV === 'production' ||
-      isDevProxyContext() ||
-      (req.headers.host && req.headers.host.toLocaleLowerCase().match(host))
-        ? host
-        : 'localhost',
+    domain: process.env.NODE_ENV === 'production' || isDevProxyContext() ? host : 'localhost',
     maxAge,
   };
 

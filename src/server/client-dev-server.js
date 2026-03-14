@@ -5,8 +5,10 @@
  */
 import fs from 'fs-extra';
 import nodemon from 'nodemon';
+import dotenv from 'dotenv';
 import { shellExec } from './process.js';
 import { loggerFactory } from './logger.js';
+import Underpost from '../index.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -21,22 +23,20 @@ const logger = loggerFactory(import.meta);
  * @returns {void}
  * @memberof clientDevServer
  */
-const createClientDevServer = (
+const createClientDevServer = async (
   deployId = process.argv[2] || 'dd-default',
   subConf = process.argv[3] || '',
   host = process.argv[4] || 'default.net',
   path = process.argv[5] || '/',
 ) => {
-  shellExec(
-    `env-cmd -f ./engine-private/conf/${deployId}/.env.${process.env.NODE_ENV}.${subConf}-dev-client node bin/deploy build-full-client ${deployId} ${subConf}-dev-client ${host} ${path}`.trim(),
-  );
+  const devClientEnvPath = `./engine-private/conf/${deployId}/.env.${process.env.NODE_ENV}.${subConf}-dev-client`;
+  if (fs.existsSync(devClientEnvPath)) dotenv.config({ path: devClientEnvPath, override: true });
 
-  shellExec(
-    `env-cmd -f ./engine-private/conf/${deployId}/.env.${process.env.NODE_ENV}.${subConf}-dev-client node src/server ${deployId} ${subConf}-dev-client`.trim(),
-    {
-      async: true,
-    },
-  );
+  await Underpost.repo.client(deployId, `${subConf}-dev-client`.trim(), host, path);
+
+  shellExec(`node src/server ${deployId} ${subConf}-dev-client`.trim(), {
+    async: true,
+  });
 
   // https://github.com/remy/nodemon/blob/main/doc/events.md
 
@@ -47,7 +47,7 @@ const createClientDevServer = (
   // restart([ array of files triggering the restart ]) - child process has restarted
   // config:update - nodemon's config has changed
 
-  if (fs.existsSync(`./tmp/client.build.json`)) fs.removeSync(`./tmp/client.build.json`);
+  if (fs.existsSync(`/tmp/client.build.json`)) fs.removeSync(`/tmp/client.build.json`);
 
   let buildPathScope = [];
 
@@ -77,10 +77,11 @@ const createClientDevServer = (
       }, 2500);
       const buildPathScopeBuild = buildPathScope.map((o) => o.path);
       logger.info('buildPathScopeBuild', buildPathScopeBuild);
-      fs.writeFileSync(`./tmp/client.build.json`, JSON.stringify(buildPathScopeBuild, null, 4));
+      fs.writeFileSync(`/tmp/client.build.json`, JSON.stringify(buildPathScopeBuild, null, 4));
     })
     .on('crash', function (error) {
-      logger.error(error, error.message);
+      if (error) logger.error(error, error.message || 'nodemon crash');
+      else logger.error('nodemon process crashed');
     });
 };
 

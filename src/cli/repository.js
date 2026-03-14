@@ -4,17 +4,26 @@
  * @namespace UnderpostRepository
  */
 
-import { commitData } from '../client/components/core/CommonJs.js';
 import dotenv from 'dotenv';
+import { commitData } from '../client/components/core/CommonJs.js';
 import { pbcopy, shellCd, shellExec } from '../server/process.js';
 import { actionInitLog, loggerFactory } from '../server/logger.js';
 import fs from 'fs-extra';
-import { getNpmRootPath } from '../server/conf.js';
-import { Config } from '../server/conf.js';
+import {
+  getNpmRootPath,
+  Config,
+  loadConf,
+  readConfJson,
+  getConfFilePath,
+  loadReplicas,
+  loadConfServerJson,
+  getDataDeploy,
+  buildReplicaId,
+  writeEnv,
+} from '../server/conf.js';
+import { buildClient } from '../server/client-build.js';
 import { DefaultConf } from '../../conf.js';
 import Underpost from '../index.js';
-
-dotenv.config();
 
 const logger = loggerFactory(import.meta);
 
@@ -118,9 +127,21 @@ class UnderpostRepository {
         changelogBuild: false,
         changelogMinVersion: '',
         changelogNoHash: false,
+        b: false,
       },
     ) {
       if (!repoPath) repoPath = '.';
+
+      if (options.b) {
+        const currentBranch = shellExec(`cd ${repoPath} && git branch --show-current`, {
+          stdout: true,
+          silent: true,
+          disableLog: true,
+        }).trim();
+        if (options.copy) pbcopy(currentBranch);
+        else console.log(currentBranch);
+        return;
+      }
 
       if (options.changelog !== undefined || options.changelogBuild) {
         const ciIntegrationPrefix = 'ci(package-pwa-microservices-';
@@ -403,6 +424,7 @@ class UnderpostRepository {
      * @param {boolean} [options.cleanTemplate=false] - If true, cleans the pwa-microservices-template build directory.
      * @param {boolean} [options.build=false] - If true, builds the deployment to pwa-microservices-template (requires deployId).
      * @param {boolean} [options.syncConf=false] - If true, syncs configuration to private repositories (requires deployId).
+     * @param {boolean} [options.syncStart=false] - If true, syncs start scripts in deploy ID package.json with root package.json.
      * @param {boolean} [options.defaultConf=false] - If true, updates the default configuration file (requires deployId).
      * @param {string} [options.confWorkflowId=''] - If provided, uses this configuration workflow ID.
      * @returns {Promise<boolean>} A promise that resolves when the initialization is complete.
@@ -420,6 +442,7 @@ class UnderpostRepository {
         cleanTemplate: false,
         build: false,
         syncConf: false,
+        syncStart: false,
         defaultConf: false,
         confWorkflowId: '',
       },
@@ -448,6 +471,13 @@ class UnderpostRepository {
 
           if (options.deployId) {
             let deployId = options.deployId;
+
+            // Handle sync-start operation (before dd- prefix normalization to support 'dd' special case)
+            if (options.syncStart) {
+              shellExec(`node bin/deploy sync-start ${deployId}`);
+              return resolve(true);
+            }
+
             if (!deployId.startsWith('dd-')) deployId = `dd-${deployId}`;
             // Handle purge operation
             if (options.purge) {
@@ -547,7 +577,6 @@ class UnderpostRepository {
             const npmRoot = getNpmRootPath();
             const underpostRoot = options?.dev === true ? '.' : `${npmRoot}/underpost`;
             const destFolder = `./${projectName}`;
-            logger.info('Note: This process may take several minutes to complete');
             logger.info('build app', { destFolder });
             if (fs.existsSync(destFolder)) fs.removeSync(destFolder);
             fs.mkdirSync(destFolder, { recursive: true });
@@ -564,6 +593,215 @@ class UnderpostRepository {
             shellExec(`cd ${destFolder} && npm run dev`);
           }
           return resolve(true);
+        } catch (error) {
+          console.log(error);
+          logger.error(error, error.stack);
+          return reject(false);
+        }
+      });
+    },
+
+    /**
+     * Builds client assets, single replicas, and/or syncs environment ports.
+     * @param {string} [deployId='dd-default'] - The deployment ID.
+     * @param {string} [subConf=''] - The sub-configuration for the build.
+     * @param {string} [host=''] - Comma-separated hosts to filter the build.
+     * @param {string} [path=''] - Comma-separated paths to filter the build.
+     * @param {object} [options] - Build options.
+     * @param {boolean} [options.syncEnvPort=false] - If true, syncs environment port assignments across all deploy IDs.
+     * @param {boolean} [options.singleReplica=false] - If true, builds single replica folders instead of full client.
+     * @returns {Promise<boolean>} A promise that resolves when the build is complete.
+     * @memberof UnderpostRepository
+     */
+    client(
+      deployId = 'dd-default',
+      subConf = '',
+      host = '',
+      path = '',
+      options = {
+        syncEnvPort: false,
+        singleReplica: false,
+      },
+    ) {
+      return new Promise(async (resolve, reject) => {
+        try {
+          // Handle syncEnvPort operation
+          if (options.syncEnvPort) {
+            const dataDeploy = await getDataDeploy({ disableSyncEnvPort: true });
+            const dataEnv = [
+              { env: 'production', port: 3000 },
+              { env: 'development', port: 4000 },
+              { env: 'test', port: 5000 },
+            ];
+            let portOffset = 0;
+            const singleReplicaPortOffsets = {};
+            for (const deployIdObj of dataDeploy) {
+              const { deployId } = deployIdObj;
+              const baseConfPath = fs.existsSync(`./engine-private/replica/${deployId}`)
+                ? `./engine-private/replica`
+                : `./engine-private/conf`;
+
+              const effectivePortOffset =
+                singleReplicaPortOffsets[deployId] !== undefined ? singleReplicaPortOffsets[deployId] : portOffset;
+
+              for (const envInstanceObj of dataEnv) {
+                const envPath = `${baseConfPath}/${deployId}/.env.${envInstanceObj.env}`;
+                const envObj = dotenv.parse(fs.readFileSync(envPath, 'utf8'));
+                envObj.PORT = `${envInstanceObj.port + effectivePortOffset}`;
+                writeEnv(envPath, envObj);
+              }
+
+              if (singleReplicaPortOffsets[deployId] !== undefined) continue;
+
+              const serverConf = loadReplicas(
+                deployId,
+                loadConfServerJson(`${baseConfPath}/${deployId}/conf.server.json`),
+              );
+              for (const host of Object.keys(serverConf)) {
+                let deferredSingleReplicaSlots = [];
+                for (const path of Object.keys(serverConf[host])) {
+                  if (serverConf[host][path].singleReplica && serverConf[host][path].replicas) {
+                    deferredSingleReplicaSlots.push({
+                      replicas: serverConf[host][path].replicas,
+                      peer: !!serverConf[host][path].peer,
+                    });
+                    continue;
+                  }
+                  portOffset++;
+                  if (serverConf[host][path].peer) portOffset++;
+                }
+                for (const slot of deferredSingleReplicaSlots) {
+                  for (const replica of slot.replicas) {
+                    const replicaDeployId = buildReplicaId({ deployId, replica });
+                    singleReplicaPortOffsets[replicaDeployId] = portOffset;
+                    portOffset++;
+                    if (slot.peer) portOffset++;
+                  }
+                }
+              }
+            }
+            return resolve(true);
+          }
+
+          // Handle singleReplica operation
+          if (options.singleReplica) {
+            const replicaPath = path;
+            if (!deployId || !host || !replicaPath) {
+              logger.error('client --single-replica requires deploy-id, host, and path arguments');
+              return reject(false);
+            }
+            const serverConf = loadReplicas(
+              deployId,
+              loadConfServerJson(`./engine-private/conf/${deployId}/conf.server.json`),
+            );
+
+            if (serverConf[host][replicaPath].replicas) {
+              {
+                let replicaIndex = -1;
+                for (const replica of serverConf[host][replicaPath].replicas) {
+                  replicaIndex++;
+                  const replicaDeployId = `${deployId}-${serverConf[host][replicaPath].replicas[replicaIndex].slice(1)}`;
+                  await fs.copy(`./engine-private/conf/${deployId}`, `./engine-private/replica/${replicaDeployId}`);
+                  fs.writeFileSync(
+                    `./engine-private/replica/${replicaDeployId}/package.json`,
+                    fs
+                      .readFileSync(`./engine-private/replica/${replicaDeployId}/package.json`, 'utf8')
+                      .replaceAll(`${deployId}`, `${replicaDeployId}`),
+                    'utf8',
+                  );
+                  const replicaFolder = `./engine-private/replica/${replicaDeployId}`;
+                  for (const envFile of ['.env.production', '.env.development', '.env.test']) {
+                    const envFilePath = `${replicaFolder}/${envFile}`;
+                    if (fs.existsSync(envFilePath)) {
+                      fs.writeFileSync(
+                        envFilePath,
+                        fs
+                          .readFileSync(envFilePath, 'utf8')
+                          .replaceAll(`DEPLOY_ID=${deployId}`, `DEPLOY_ID=${replicaDeployId}`),
+                        'utf8',
+                      );
+                    }
+                  }
+                }
+              }
+              {
+                let replicaIndex = -1;
+                for (const replica of serverConf[host][replicaPath].replicas) {
+                  replicaIndex++;
+                  const replicaDeployId = `${deployId}-${serverConf[host][replicaPath].replicas[replicaIndex].slice(1)}`;
+                  let replicaServerConf = JSON.parse(
+                    fs.readFileSync(`./engine-private/replica/${replicaDeployId}/conf.server.json`, 'utf8'),
+                  );
+
+                  const singleReplicaConf = replicaServerConf[host][replicaPath];
+                  singleReplicaConf.replicas = undefined;
+                  singleReplicaConf.singleReplica = undefined;
+
+                  replicaServerConf = {};
+                  replicaServerConf[host] = {};
+                  replicaServerConf[host][replica] = singleReplicaConf;
+
+                  fs.writeFileSync(
+                    `./engine-private/replica/${replicaDeployId}/conf.server.json`,
+                    JSON.stringify(replicaServerConf, null, 4),
+                    'utf8',
+                  );
+                }
+              }
+            }
+            return resolve(true);
+          }
+
+          // Handle buildFullClient operation (default)
+          {
+            const { deployId: resolvedDeployId } = loadConf(deployId, subConf ?? '');
+
+            let argHost = host ? host.split(',') : [];
+            let argPath = path ? path.split(',') : [];
+            let deployIdSingleReplicas = [];
+            let singleReplicaHosts = [];
+            const serverConf = resolvedDeployId
+              ? readConfJson(resolvedDeployId, 'server', { loadReplicas: true })
+              : Config.default.server;
+            const confFilePath = resolvedDeployId ? getConfFilePath(resolvedDeployId, 'server') : null;
+            const originalConfBackup = confFilePath ? fs.readFileSync(confFilePath, 'utf8') : null;
+            for (const host of Object.keys(serverConf)) {
+              for (const path of Object.keys(serverConf[host])) {
+                if (argHost.length && argPath.length && (!argHost.includes(host) || !argPath.includes(path))) {
+                  delete serverConf[host][path];
+                } else {
+                  serverConf[host][path].liteBuild = false;
+                  serverConf[host][path].minifyBuild = process.env.NODE_ENV === 'production' ? true : false;
+                  if (serverConf[host][path].singleReplica && serverConf[host][path].replicas) {
+                    singleReplicaHosts.push({ host, path });
+                    deployIdSingleReplicas = deployIdSingleReplicas.concat(
+                      serverConf[host][path].replicas.map((replica) =>
+                        buildReplicaId({ deployId: resolvedDeployId, replica }),
+                      ),
+                    );
+                  }
+                }
+              }
+            }
+            if (confFilePath) fs.writeFileSync(confFilePath, JSON.stringify(serverConf, null, 4), 'utf-8');
+            await buildClient();
+            if (confFilePath && originalConfBackup) fs.writeFileSync(confFilePath, originalConfBackup, 'utf-8');
+
+            if (singleReplicaHosts.length > 0) {
+              for (const { host, path } of singleReplicaHosts) {
+                await Underpost.repo.client(resolvedDeployId, '', host, path, {
+                  singleReplica: true,
+                });
+              }
+              shellExec(`node bin env ${resolvedDeployId} ${process.env.NODE_ENV}`);
+            }
+
+            for (const replicaDeployId of deployIdSingleReplicas) {
+              shellExec(`node bin env ${replicaDeployId} ${process.env.NODE_ENV}`);
+              await Underpost.repo.client(replicaDeployId);
+            }
+            return resolve(true);
+          }
         } catch (error) {
           console.log(error);
           logger.error(error, error.stack);
@@ -720,25 +958,14 @@ Prevent build private config repo.`,
         DefaultConf.client = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.client.json`, 'utf8'));
         DefaultConf.server = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8'));
         DefaultConf.ssr = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.ssr.json`, 'utf8'));
-        // DefaultConf.cron = JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.cron.json`, 'utf8'));
-
-        for (const host of Object.keys(DefaultConf.server)) {
-          for (const path of Object.keys(DefaultConf.server[host])) {
-            DefaultConf.server[host][path].db = defaultServer.db;
-            DefaultConf.server[host][path].mailer = defaultServer.mailer;
-
-            delete DefaultConf.server[host][path]._wp_client;
-            delete DefaultConf.server[host][path]._wp_git;
-            delete DefaultConf.server[host][path]._wp_directory;
-            delete DefaultConf.server[host][path].wp;
-            delete DefaultConf.server[host][path].git;
-            delete DefaultConf.server[host][path].directory;
-          }
-        }
       } else
         logger.warn(
           `Deploy ID configuration not found: ./engine-private/conf/${deployId}, using default configuration.`,
         );
+
+      // Serialize the configuration into the conf.*.js manifest file.
+      // env: references from JSON configs are preserved as 'env:KEY' strings.
+      // At runtime, resolveConfSecrets() in conf.js resolves them via process.env.
       const sepRender = '/**/';
       const confRawPaths = fs.readFileSync('./conf.js', 'utf8').split(sepRender);
       confRawPaths[1] = `${JSON.stringify(DefaultConf)};`;

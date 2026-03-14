@@ -135,9 +135,6 @@ class UnderpostBaremetal {
     ) {
       let { ipAddress, hostname, ipFileServer, ipConfig, netmask, dnsServer } = options;
 
-      // Load environment variables from .env file, overriding existing ones if present.
-      dotenv.config({ path: `${getUnderpostRootPath()}/.env`, override: true });
-
       // Determine the root path for npm and underpost.
       const npmRoot = getNpmRootPath();
       const underpostRoot = options?.dev === true ? '.' : `${npmRoot}/underpost`;
@@ -1147,9 +1144,8 @@ rm -rf ${artifacts.join(' ')}`);
           machine: machine ? machine.system_id : null,
         });
 
-        const { discovery, machine: discoveredMachine } = await Underpost.baremetal.commissionMonitor(
-          commissionMonitorPayload,
-        );
+        const { discovery, machine: discoveredMachine } =
+          await Underpost.baremetal.commissionMonitor(commissionMonitorPayload);
         if (discoveredMachine) machine = discoveredMachine;
       }
     },
@@ -2494,10 +2490,10 @@ fi
           const discoverHostname = discovery.hostname
             ? discovery.hostname
             : discovery.mac_organization
-            ? discovery.mac_organization
-            : discovery.domain
-            ? discovery.domain
-            : `generic-host-${s4()}${s4()}`;
+              ? discovery.mac_organization
+              : discovery.domain
+                ? discovery.domain
+                : `generic-host-${s4()}${s4()}`;
 
           console.log(discoverHostname.bgBlue.bold.white);
           console.log('ip target:'.green + ipAddress, 'ip discovered:'.green + discovery.ip);

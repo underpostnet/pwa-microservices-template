@@ -6,24 +6,17 @@ import dotenv from 'dotenv';
 import { pbcopy, shellCd, shellExec } from '../src/server/process.js';
 import { loggerFactory } from '../src/server/logger.js';
 import {
-  Config,
   addApiConf,
   addClientConf,
   buildApiSrc,
   buildClientSrc,
   cloneConf,
-  loadConf,
-  loadReplicas,
   addWsConf,
   buildWsSrc,
   cloneSrcComponents,
-  getDataDeploy,
-  buildReplicaId,
-  Cmd,
   writeEnv,
   buildCliDoc,
 } from '../src/server/conf.js';
-import { buildClient } from '../src/server/client-build.js';
 import colors from 'colors';
 import { program } from '../src/cli/index.js';
 import { timer } from '../src/client/components/core/CommonJs.js';
@@ -120,19 +113,6 @@ try {
         buildWsSrc({ toOptions, fromOptions });
       }
       break;
-    case 'conf': {
-      let subConf = process.argv[5] ?? '';
-
-      if (!['current', 'clean', 'root'].includes(process.argv[3])) {
-        const path = fs.existsSync(`./engine-private/replica/${process.argv[3]}`)
-          ? `./engine-private/replica/${process.argv[3]}/.env.${process.argv[4]}`
-          : `./engine-private/conf/${process.argv[3]}/.env.${process.argv[4]}`;
-        dotenv.config({ path, override: true });
-      }
-
-      loadConf(process.argv[3], subConf);
-      break;
-    }
 
     case 'new-nodejs-app':
       {
@@ -143,7 +123,7 @@ try {
 
         shellExec(`node bin/deploy build-nodejs-src-app ${deployId} ${clientId}`);
 
-        shellExec(`node bin/deploy build-full-client ${deployId}`);
+        await Underpost.repo.client(deployId);
 
         shellExec(`npm run dev ${deployId}`);
       }
@@ -180,8 +160,6 @@ try {
         shellExec(`node bin/deploy build-nodejs-conf-api ${apiId} ${deployId} ${clientId}`);
 
         shellExec(`node bin/deploy build-nodejs-src-api ${apiId} ${deployId} ${clientId}`);
-
-        // shellExec(`npm run dev ${deployId}`);
       }
       break;
     case 'new-nodejs-ws':
@@ -198,42 +176,6 @@ try {
         shellExec(`npm run dev ${deployId}`);
       }
       break;
-    case 'build-full-client':
-      {
-        dotenv.config({ override: true });
-        if (!process.argv[3]) process.argv[3] = 'dd-default';
-        const { deployId } = loadConf(process.argv[3], process.argv[4] ?? '');
-
-        let argHost = process.argv[5] ? process.argv[5].split(',') : [];
-        let argPath = process.argv[6] ? process.argv[6].split(',') : [];
-        let deployIdSingleReplicas = [];
-        const serverConf = deployId
-          ? JSON.parse(fs.readFileSync(`./conf/conf.server.json`, 'utf8'))
-          : Config.default.server;
-        for (const host of Object.keys(serverConf)) {
-          for (const path of Object.keys(serverConf[host])) {
-            if (argHost.length && argPath.length && (!argHost.includes(host) || !argPath.includes(path))) {
-              delete serverConf[host][path];
-            } else {
-              serverConf[host][path].liteBuild = false;
-              serverConf[host][path].minifyBuild = process.env.NODE_ENV === 'production' ? true : false;
-              if (serverConf[host][path].singleReplica && serverConf[host][path].replicas) {
-                deployIdSingleReplicas = deployIdSingleReplicas.concat(
-                  serverConf[host][path].replicas.map((replica) => buildReplicaId({ deployId, replica })),
-                );
-              }
-            }
-          }
-        }
-        fs.writeFileSync(`./conf/conf.server.json`, JSON.stringify(serverConf, null, 4), 'utf-8');
-        await buildClient();
-
-        for (const replicaDeployId of deployIdSingleReplicas) {
-          shellExec(Cmd.conf(replicaDeployId, process.env.NODE_ENV));
-          shellExec(Cmd.build(replicaDeployId));
-        }
-      }
-      break;
 
     case 'update-dependencies':
       const files = await fs.readdir(`./engine-private/conf`, { recursive: true });
@@ -248,97 +190,6 @@ try {
         }
       }
       break;
-
-    case 'sync-env-port':
-      const dataDeploy = getDataDeploy({ disableSyncEnvPort: true });
-      const dataEnv = [
-        { env: 'production', port: 3000 },
-        { env: 'development', port: 4000 },
-        { env: 'test', port: 5000 },
-      ];
-      let portOffset = 0;
-      for (const deployIdObj of dataDeploy) {
-        const { deployId } = deployIdObj;
-        const baseConfPath = fs.existsSync(`./engine-private/replica/${deployId}`)
-          ? `./engine-private/replica`
-          : `./engine-private/conf`;
-        for (const envInstanceObj of dataEnv) {
-          const envPath = `${baseConfPath}/${deployId}/.env.${envInstanceObj.env}`;
-          const envObj = dotenv.parse(fs.readFileSync(envPath, 'utf8'));
-          envObj.PORT = `${envInstanceObj.port + portOffset}`;
-
-          writeEnv(envPath, envObj);
-        }
-        const serverConf = loadReplicas(
-          deployId,
-          JSON.parse(fs.readFileSync(`${baseConfPath}/${deployId}/conf.server.json`, 'utf8')),
-        );
-        for (const host of Object.keys(serverConf)) {
-          for (const path of Object.keys(serverConf[host])) {
-            if (serverConf[host][path].singleReplica) {
-              portOffset--;
-              continue;
-            }
-            portOffset++;
-            if (serverConf[host][path].peer) portOffset++;
-          }
-        }
-      }
-      break;
-
-    case 'build-single-replica': {
-      const deployId = process.argv[3];
-      const host = process.argv[4];
-      const path = process.argv[5];
-      const serverConf = loadReplicas(
-        deployId,
-        JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.json`, 'utf8')),
-      );
-
-      if (serverConf[host][path].replicas) {
-        {
-          let replicaIndex = -1;
-          for (const replica of serverConf[host][path].replicas) {
-            replicaIndex++;
-            const replicaDeployId = `${deployId}-${serverConf[host][path].replicas[replicaIndex].slice(1)}`;
-            // fs.mkdirSync(`./engine-private/replica/${deployId}${replicaIndex}`, { recursive: true });
-            await fs.copy(`./engine-private/conf/${deployId}`, `./engine-private/replica/${replicaDeployId}`);
-            fs.writeFileSync(
-              `./engine-private/replica/${replicaDeployId}/package.json`,
-              fs
-                .readFileSync(`./engine-private/replica/${replicaDeployId}/package.json`, 'utf8')
-                .replaceAll(`${deployId}`, `${replicaDeployId}`),
-              'utf8',
-            );
-          }
-        }
-        {
-          let replicaIndex = -1;
-          for (const replica of serverConf[host][path].replicas) {
-            replicaIndex++;
-            const replicaDeployId = `${deployId}-${serverConf[host][path].replicas[replicaIndex].slice(1)}`;
-            let replicaServerConf = JSON.parse(
-              fs.readFileSync(`./engine-private/replica/${replicaDeployId}/conf.server.json`, 'utf8'),
-            );
-
-            const singleReplicaConf = replicaServerConf[host][path];
-            singleReplicaConf.replicas = undefined;
-            singleReplicaConf.singleReplica = undefined;
-
-            replicaServerConf = {};
-            replicaServerConf[host] = {};
-            replicaServerConf[host][replica] = singleReplicaConf;
-
-            fs.writeFileSync(
-              `./engine-private/replica/${replicaDeployId}/conf.server.json`,
-              JSON.stringify(replicaServerConf, null, 4),
-              'utf8',
-            );
-          }
-        }
-      }
-      break;
-    }
 
     case 'rename-package': {
       const name = process.argv[3];
@@ -373,11 +224,10 @@ try {
       shellExec(`node bin run kill 4001`);
       shellExec(`node bin run kill 4002`);
       shellExec(`node bin run kill 4003`);
-      shellExec(`npm run update-template`);
-      shellExec(
-        `cd ../pwa-microservices-template && npm install && echo "\nENABLE_FILE_LOGS=true" >> .env.development`,
-      );
-      shellExec(`cd ../pwa-microservices-template && npm run build && timeout 5s npm run dev`, {
+      shellExec(`npm run update:template`);
+      shellExec(`cd ../pwa-microservices-template && npm install && npm run build`);
+      console.log(fs.existsSync(`../pwa-microservices-template/engine-private/conf/dd-default`));
+      shellExec(`cd ../pwa-microservices-template && ENABLE_FILE_LOGS=true timeout 5s npm run dev`, {
         async: true,
       });
       await timer(5500);
@@ -392,7 +242,6 @@ try {
       Underpost.repo.clean({ paths: ['/home/dd/engine', '/home/dd/engine/engine-private '] });
       const originPackageJson = JSON.parse(fs.readFileSync(`package.json`, 'utf8'));
       const newVersion = process.argv[3] ?? originPackageJson.version;
-      const node = process.argv[4] ?? 'kind-control-plane';
       const { version } = originPackageJson;
       originPackageJson.version = newVersion;
       fs.writeFileSync(`package.json`, JSON.stringify(originPackageJson, null, 4), 'utf8');
@@ -449,30 +298,16 @@ try {
       shellExec(`node bin/deploy cli-docs ${version} ${newVersion}`);
       shellExec(`node bin/deploy update-dependencies`);
       shellExec(`node bin/build dd`);
-      shellExec(
-        `node bin deploy --kubeadm --build-manifest --sync --info-router --replicas 1 --node ${node} dd production`,
-      );
-      shellExec(
-        `node bin deploy --kubeadm --build-manifest --sync --info-router --replicas 1 --node ${node} dd development `,
-      );
-      for (const deployId of fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8').split(`,`)) {
-        fs.copySync(
-          `./engine-private/conf/${deployId}/build/development/deployment.yaml`,
-          `./manifests/deployment/${deployId}-development/deployment.yaml`,
-        );
-        fs.copySync(
-          `./engine-private/conf/${deployId}/build/development/proxy.yaml`,
-          `./manifests/deployment/${deployId}-development/proxy.yaml`,
-        );
-        shellExec(`node bin new --dev --default-conf --deploy-id ${deployId}`);
-      }
+      shellExec(`node bin deploy --build-manifest --sync --info-router --replicas 1 dd production`);
+      shellExec(`node bin deploy --build-manifest --sync --info-router --replicas 1 dd development`);
+      shellExec(`node bin/deploy build-default-confs`);
       shellExec(`sudo rm -rf ./engine-private/conf/dd-default`);
       shellExec(`node bin new --deploy-id dd-default`);
       console.log(fs.existsSync(`./engine-private/conf/dd-default`));
       shellExec(`sudo rm -rf ./engine-private/conf/dd-default`);
       shellExec(`node bin cron --dev --setup-start`);
-      shellExec(`node bin/deploy build-envs`);
       shellExec(`node bin cmt --changelog-build`);
+      process.exit(0);
       break;
     }
 
@@ -481,13 +316,37 @@ try {
       shellExec(
         `underpost secret underpost --create-from-file /home/dd/engine/engine-private/conf/dd-cron/.env.production`,
       );
-      shellExec(`node bin/deploy sync-envs`);
       shellExec(`node bin/build dd conf`);
       shellExec(`git add . && cd ./engine-private && git add .`);
       shellExec(`node bin cmt . ci package-pwa-microservices-template 'New release v:${process.argv[3]}'`);
       shellExec(`node bin cmt ./engine-private ci package-pwa-microservices-template`);
       shellExec(`node bin push . ${process.env.GITHUB_USERNAME}/engine`);
       shellExec(`cd ./engine-private && node ../bin push . ${process.env.GITHUB_USERNAME}/engine-private`);
+      break;
+    }
+
+    case 'build-default-confs': {
+      for (const deployId of fs
+        .readFileSync(`./engine-private/deploy/dd.router`, 'utf8')
+        .split(`,`)
+        .concat(['dd-cron'])) {
+        if (fs.existsSync(`./engine-private/conf/${deployId}/build/development/deployment.yaml`))
+          fs.copySync(
+            `./engine-private/conf/${deployId}/build/development/deployment.yaml`,
+            `./manifests/deployment/${deployId}-development/deployment.yaml`,
+          );
+        if (fs.existsSync(`./engine-private/conf/${deployId}/build/development/proxy.yaml`))
+          fs.copySync(
+            `./engine-private/conf/${deployId}/build/development/proxy.yaml`,
+            `./manifests/deployment/${deployId}-development/proxy.yaml`,
+          );
+        if (fs.existsSync(`./engine-private/conf/${deployId}/build/development/pv-pvc.yaml`))
+          fs.copySync(
+            `./engine-private/conf/${deployId}/build/development/pv-pvc.yaml`,
+            `./manifests/deployment/${deployId}-development/pv-pvc.yaml`,
+          );
+        shellExec(`node bin new --dev --default-conf --deploy-id ${deployId}`);
+      }
       break;
     }
 
@@ -503,31 +362,6 @@ ${shellExec(`git log | grep Author: | sort -u`, { stdout: true }).split(`\n`).jo
 #### Generated by [underpost.net](https://underpost.net)`,
         'utf8',
       );
-
-      break;
-    }
-
-    case 'heb': {
-      // https://besu.hyperledger.org/
-      // https://github.com/hyperledger/besu/archive/refs/tags/24.9.1.tar.gz
-
-      shellCd(`..`);
-
-      // Download the Linux binary
-      shellExec(`wget https://github.com/hyperledger/besu/releases/download/24.9.1/besu-24.9.1.tar.gz`);
-
-      // Unzip the file:
-      shellExec(`tar -xvzf besu-24.9.1.tar.gz`);
-
-      shellCd(`besu-24.9.1`);
-
-      shellExec(`bin/besu --help`);
-
-      // Set env path
-      // export PATH=$PATH:/home/dd/besu-24.9.1/bin
-
-      // Open src
-      // shellExec(`sudo code /home/dd/besu-24.9.1 --user-data-dir="/root/.vscode-root" --no-sandbox`);
 
       break;
     }
@@ -988,12 +822,18 @@ nvidia/gpu-operator \
     }
 
     case 'sync-start': {
+      const targetDeployId = process.argv[3] || 'dd';
+      const deployIds =
+        targetDeployId === 'dd'
+          ? fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8').split(',')
+          : [targetDeployId];
       const originPackageJson = JSON.parse(fs.readFileSync(`./package.json`, 'utf8'));
-      for (const deployId of fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8').split(',')) {
+      for (const deployId of deployIds) {
         const packageJsonPath = `./engine-private/conf/${deployId}/package.json`;
         const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
-        packageJson.scripts.start = `${originPackageJson.scripts.start} ${deployId}`;
+        packageJson.scripts = { start: `${originPackageJson.scripts.start} ${deployId}` };
         fs.writeFileSync(packageJsonPath, JSON.stringify(packageJson, null, 4), 'utf8');
+        logger.info(`sync-start`, { deployId, start: packageJson.scripts.start });
       }
       break;
     }
@@ -1010,12 +850,6 @@ nvidia/gpu-operator \
           writeEnv(`./engine-private/conf/${deployId}/.env.${env}`, _envObj);
         }
       }
-      break;
-    }
-
-    case 'envs': {
-      shellExec(`node bin/deploy sync-envs`);
-      shellExec(`node bin/deploy build-envs`);
       break;
     }
 

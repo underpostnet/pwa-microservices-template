@@ -7,11 +7,10 @@ import { commitData } from '../client/components/core/CommonJs.js';
 
 import Underpost from '../index.js';
 
-const underpostRootPath = getUnderpostRootPath();
+const underpostGlobalEnv = `${getUnderpostRootPath()}/.env`;
 
-fs.existsSync(`${underpostRootPath}/.env`)
-  ? dotenv.config({ path: `${underpostRootPath}/.env`, override: true })
-  : dotenv.config();
+if (fs.existsSync(underpostGlobalEnv)) dotenv.config({ path: underpostGlobalEnv, override: true });
+else dotenv.config();
 
 const program = new Command();
 
@@ -27,12 +26,27 @@ program
   .option('--build', 'Build the deployment to pwa-microservices-template (requires --deploy-id)')
   .option('--clean-template', 'Clean the build directory (pwa-microservices-template)')
   .option('--sync-conf', 'Sync configuration to private repositories (requires --deploy-id)')
+  .option(
+    '--sync-start',
+    "Sync start scripts in deploy ID package.json with root package.json (use 'dd' as --deploy-id to sync all dd.router)",
+  )
   .option('--purge', 'Remove deploy ID conf and all related repositories (requires --deploy-id)')
   .option('--dev', 'Sets the development cli context')
   .option('--default-conf', 'Create default deploy ID conf env files')
   .option('--conf-workflow-id <workflow-id>', 'Set custom configuration workflow ID for conf generation')
   .description('Initializes a new Underpost project, service, or configuration.')
   .action(Underpost.repo.new);
+
+program
+  .command('client')
+  .argument('[deploy-id]', 'The deployment ID to build.', 'dd-default')
+  .argument('[sub-conf]', 'The sub-configuration for the build.', '')
+  .argument('[host]', 'Comma-separated hosts to filter the build.', '')
+  .argument('[path]', 'Comma-separated paths to filter the build.', '')
+  .option('--sync-env-port', 'Sync environment port assignments across all deploy IDs')
+  .option('--single-replica', 'Build single replica folders instead of full client')
+  .description('Builds client assets, single replicas, and/or syncs environment ports.')
+  .action(Underpost.repo.client);
 
 program
   .command('start')
@@ -90,6 +104,7 @@ program
     '--changelog-no-hash',
     'Excludes commit hashes from the generated changelog entries (used with --changelog-build).',
   )
+  .option('-b', 'Shows the current Git branch name.')
   .description('Manages commits to a GitHub repository, supporting various commit types and options.')
   .action(Underpost.repo.commit);
 
@@ -112,11 +127,11 @@ program
   .argument('[subConf]', 'Optional: The sub configuration to set.')
   .description('Sets environment variables and configurations related to a specific deployment ID.')
   .action((deployId, env, subConf) => {
-    if (fs.existsSync(`./engine-private/conf/${deployId}/.env.${env}`))
-      dotenv.config({ path: `./engine-private/conf/${deployId}/.env.${env}`, override: true });
-    else if (deployId === 'root') {
-      deployId = Underpost.env.get('DEPLOY_ID');
-    } else dotenv.config({ path: `./.env`, override: true });
+    if (deployId === 'root') {
+      const underpostRootDeployId = Underpost.env.get('DEPLOY_ID');
+      if (underpostRootDeployId) deployId = underpostRootDeployId;
+    }
+    if (env) process.env.NODE_ENV = env;
     loadConf(deployId, subConf);
   });
 
@@ -556,7 +571,6 @@ program
   .option('--force', 'Forces operation, overriding any warnings or conflicts.')
   .option('--tls', 'Enables TLS for the runner execution.')
   .option('--reset', 'Resets the runner state before execution.')
-  .option('--terminal', 'Enables terminal mode for interactive script execution.')
   .option('--dev-proxy-port-offset <port-offset>', 'Sets a custom port offset for development proxy.')
   .option('--host-network', 'Enables host network mode for the runner execution.')
   .option('--requests-memory <requests-memory>', 'Requests memory limit for the runner execution.')
