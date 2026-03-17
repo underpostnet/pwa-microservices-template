@@ -47,9 +47,12 @@ const main = () => {
         a {
           color: black;
         }
+        .main-body-ssr-404 {
+          top: 45%;
+        }
       </style>
 
-      <div class="abs center" style="top: 45%">
+      <div class="abs center main-body-ssr-404">
         ${icon}
         <br />
         <br />
@@ -57,17 +60,18 @@ const main = () => {
         <br />
         <br />${Translate.Render('page-not-found')} <br />
         <br />
-        <a href="${location.origin}">${Translate.Render('back')}</a>
+        <a target="_top" href="${location.origin}">${Translate.Render('back')}</a>
       </div>`,
   );
 };
 
-SrrComponent = () => html`<script>
-  {
-    const s = ${s};
-    const append = ${append};
-    const getLang = ${getLang};
-    const main = ${main};
-    window.onload = main;
-  }
-</script>`;
+SrrComponent = () =>
+  html`<script>
+    {
+      const s = ${s};
+      const append = ${append};
+      const getLang = ${getLang};
+      const main = ${main};
+      window.onload = main;
+    }
+  </script>`;

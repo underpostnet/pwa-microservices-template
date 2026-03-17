@@ -2,10 +2,10 @@
     "type": "module",
     "main": "src/index.js",
     "name": "underpost",
-    "version": "3.1.2",
+    "version": "3.1.3",
     "description": "pwa api rest template",
     "scripts": {
-        "start": "node --max-old-space-size=8192 src/server",
+        "start": "node --max-old-space-size=8192 src/server dd-core",
         "build": "node bin client",
         "test": "NODE_ENV=test c8 mocha",
         "dev": "NODE_ENV=development nodemon src/server",
