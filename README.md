@@ -60,6 +60,7 @@ npm run dev
 
 <a target="_top" href="https://www.nexodev.org/docs?cid=src">See Docs here.</a>
 
+<!-- cli-index-start -->
 ## underpost ci/cd cli v3.1.2
 
 ### Usage: `underpost [options] [command]`
@@ -70,6 +71,7 @@ npm run dev
 
 Commands:
   new [options] [app-name]                                   Initializes a new Underpost project, service, or configuration.
+  client [options] [deploy-id] [sub-conf] [host] [path]      Builds client assets, single replicas, and/or syncs environment ports.
   start [options] <deploy-id> [env]                          Initiates application servers, build pipelines, or other defined services based on the deployment ID.
   clone [options] <uri>                                      Clones a specified GitHub repository into the current directory.
   pull [options] <path> <uri>                                Pulls the latest changes from a specified GitHub repository.
@@ -93,10 +95,11 @@ Commands:
   monitor [options] <deploy-id> [env]                        Manages health server monitoring for specified deployments.
   ssh [options]                                              Manages SSH credentials and sessions for remote access to cluster nodes or services.
   run [options] <runner-id> [path]                           Runs specified scripts using various runners.
-  lxd [options]                                              Manages LXD containers and virtual machines.
+  lxd [options]                                              Manages LXD virtual machines as K3s nodes (control plane or workers).
   baremetal [options] [workflow-id]                          Manages baremetal server operations, including installation, database setup, commissioning, and user management.
   help [command]                                             display help for command
  
 ```
+<!-- cli-index-end -->
 
 <a target="_top" href="https://github.com/underpostnet/pwa-microservices-template/blob/master/CLI-HELP.md">See CLI Docs here.</a>
