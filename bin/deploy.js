@@ -819,11 +819,19 @@ nvidia/gpu-operator \
     }
 
     case 'cyberia': {
-      const { CyberiaDependencies } = await import(`../src/client/components/cyberia-portal/CommonCyberiaPortal.js`);
+      const { CyberiaDependencies, CyberiaDependenciesOverrides, patchCyberiaDependencies } = await import(
+        `../src/client/components/cyberia-portal/CommonCyberiaPortal.js`,
+      );
+      const originPackageJson = JSON.parse(fs.readFileSync(`./package.json`, 'utf8'));
+      const backupPackageJson = JSON.stringify(originPackageJson, null, 4);
+      Object.assign(originPackageJson.overrides, CyberiaDependenciesOverrides);
+      fs.writeFileSync(`package.json`, JSON.stringify(originPackageJson, null, 4), 'utf8');
       for (const dep of Object.keys(CyberiaDependencies)) {
         const ver = CyberiaDependencies[dep];
         shellExec(`npm install ${dep}@${ver}`);
       }
+      patchCyberiaDependencies(fs);
+      fs.writeFileSync(`package.json`, backupPackageJson, 'utf8');
       break;
     }
 
@@ -874,7 +882,8 @@ nvidia/gpu-operator \
     }
 
     case 'dependabot': {
-      shellExec(`git fetch origin`);
+      dotenv.config({ path: `./engine-private/conf/dd-cron/.env.production`, override: true });
+      shellExec(`git fetch origin --prune`);
 
       const { stdout: branchOutput } = shellExec(`git branch -r`, { silent: true });
       const dependabotBranches = branchOutput
@@ -890,20 +899,59 @@ nvidia/gpu-operator \
 
       logger.info('Found dependabot branches:', dependabotBranches);
 
-      for (const branch of dependabotBranches) {
-        logger.info(`Checking out branch: ${branch}`);
-        shellExec(`git checkout -B ${branch} origin/${branch}`);
+      // Stash local changes to prevent checkout/merge conflicts
+      const stashResult = shellExec(`git stash --include-untracked`, { silent: true });
+      const hasStash = !stashResult.stdout.includes('No local changes to save');
+
+      // Checkout master
+      const checkoutResult = shellExec(`git checkout master`);
+      if (checkoutResult.code !== 0) {
+        logger.error('Failed to checkout master');
+        if (hasStash) shellExec(`git stash pop`);
+        break;
       }
 
-      logger.info('Checking out master');
-      shellExec(`git checkout master`);
+      // Pull latest master
+      shellExec(`git pull origin master`);
+
+      // Get repo URI from remote
+      const remoteUrl = shellExec(`git config --get remote.origin.url`, { stdout: true, silent: true }).trim();
+      const gitUri = remoteUrl.replace(/.*github\.com[:/]/, '').replace(/\.git$/, '');
+
+      const mergedBranches = [];
+      const failedBranches = [];
 
       for (const branch of dependabotBranches) {
         logger.info(`Merging branch: ${branch}`);
-        shellExec(`git merge ${branch}`);
+        const mergeResult = shellExec(`git merge origin/${branch}`);
+        if (mergeResult.code === 0) {
+          const isAlreadyMerged = mergeResult.stdout && mergeResult.stdout.includes('Already up to date');
+          mergedBranches.push({ branch, isAlreadyMerged });
+        } else {
+          logger.error(`Failed to merge branch: ${branch}`);
+          shellExec(`git merge --abort`, { silent: true });
+          failedBranches.push(branch);
+        }
       }
 
-      logger.info('All dependabot branches merged into master');
+      // Delete merged local and remote branches
+      for (const { branch, isAlreadyMerged } of mergedBranches) {
+        shellExec(`git branch -D ${branch}`, { silent: true });
+        // logger.info(`Deleting remote branch: ${branch}${isAlreadyMerged ? ' (already merged)' : ''}`);
+        // shellExec(`git push https://${process.env.GITHUB_TOKEN}@github.com/${gitUri}.git --delete ${branch}`, {
+        //   disableLog: true,
+        // });
+      }
+
+      // Restore stashed changes
+      if (hasStash) shellExec(`git stash pop`);
+
+      logger.info(
+        'Merged branches:',
+        mergedBranches.map((m) => m.branch),
+      );
+      if (failedBranches.length > 0) logger.warn('Failed branches:', failedBranches);
+      logger.info('Dependabot merge completed');
       break;
     }
   }
