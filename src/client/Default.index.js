@@ -11,10 +11,9 @@ import { RouterDefault } from './components/default/RoutesDefault.js';
 import { TranslateDefault } from './components/default/TranslateDefault.js';
 import { Worker } from './components/core/Worker.js';
 import { Keyboard } from './components/core/Keyboard.js';
-import { DefaultParams } from './components/default/CommonDefault.js';
 import { SocketIo } from './components/core/SocketIo.js';
 import { SocketIoDefault } from './components/default/SocketIoDefault.js';
-import { ElementsDefault } from './components/default/ElementsDefault.js';
+import { AppStoreDefault } from './components/default/AppStoreDefault.js';
 import { CssDefaultDark, CssDefaultLight } from './components/default/CssDefault.js';
 import { EventsUI } from './components/core/EventsUI.js';
 import { Modal } from './components/core/Modal.js';
@@ -71,14 +70,14 @@ window.onload = () =>
       await Responsive.Init();
       await MenuDefault.Render({ htmlMainBody });
       await SocketIo.Init({
-        channels: ElementsDefault.Data,
+        channels: AppStoreDefault.Data,
         path: `/`,
       });
       await SocketIoDefault.Init();
       await LogInDefault();
       await LogOutDefault();
       await SignUpDefault();
-      await Keyboard.Init({ callBackTime: DefaultParams.EVENT_CALLBACK_TIME });
+      await Keyboard.Init();
       await Modal.RenderSeoSanitizer();
     },
   });

@@ -67,8 +67,7 @@ const DefaultConf = /**/ {
         default: [
           'MenuDefault',
           'RoutesDefault',
-          'ElementsDefault',
-          'CommonDefault',
+          'AppStoreDefault',
           'CssDefault',
           'LogInDefault',
           'LogOutDefault',

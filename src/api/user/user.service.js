@@ -13,8 +13,7 @@ import {
   validatePasswordMiddleware,
 } from '../../server/auth.js';
 import { MailerProvider } from '../../mailer/MailerProvider.js';
-import { CoreWsMailerManagement } from '../../ws/core/management/core.ws.mailer.js';
-import { CoreWsEmit } from '../../ws/core/core.ws.emit.js';
+import { CoreWsEmitter } from '../../ws/core/core.ws.emit.js';
 import { CoreWsMailerChannel } from '../../ws/core/channels/core.ws.mailer.js';
 import validator from 'validator';
 import { DataBaseProvider } from '../../db/DataBaseProvider.js';
@@ -319,11 +318,13 @@ const UserService = {
         {
           const user = await User.findByIdAndUpdate(_id, { emailConfirmed: true }, { runValidators: true });
         }
-        const userWsId = CoreWsMailerManagement.getUserWsId(`${options.host}${options.path}`, user._id.toString());
-        CoreWsEmit(CoreWsMailerChannel.channel, CoreWsMailerChannel.client[userWsId], {
-          status: 'email-confirmed',
-          id: userWsId,
-        });
+        const userWsId = CoreWsMailerChannel.getUserWsId(`${options.host}${options.path}`, user._id.toString());
+        if (userWsId && CoreWsMailerChannel.client[userWsId]) {
+          CoreWsEmitter.emit(CoreWsMailerChannel.channel, CoreWsMailerChannel.client[userWsId], {
+            status: 'email-confirmed',
+            id: userWsId,
+          });
+        }
         options.png.header(res, req);
         return options.png.buffer['check'];
       } else {
