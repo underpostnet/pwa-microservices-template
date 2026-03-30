@@ -173,6 +173,7 @@ const DEFAULT_OPTION = {
   createJobNow: false,
   fromNCommit: 0,
   hostAliases: '',
+  gitClean: false,
 };
 
 /**
@@ -465,6 +466,21 @@ class UnderpostRun {
       });
     },
     /**
+     * @method docker-image
+     * @description Dispatches the Docker image CI workflow (`docker-image.ci.yml`) for the `engine` repository via `workflow_dispatch`.
+     * @param {string} path - The input value, identifier, or path for the operation.
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @memberof UnderpostRun
+     */
+    'docker-image': (path, options = DEFAULT_OPTION) => {
+      Underpost.repo.dispatchWorkflow({
+        repo: `${process.env.GITHUB_USERNAME}/engine`,
+        workflowFile: 'docker-image.ci.yml',
+        ref: 'master',
+        inputs: {},
+      });
+    },
+    /**
      * @method clean
      * @description Changes directory to the provided path (defaulting to `/home/dd/engine`) and runs `node bin/deploy clean-core-repo`.
      * @param {string} path - The input value, identifier, or path for the operation (used as the optional directory path).
@@ -631,20 +647,22 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
       const cmdString = options.cmd
         ? ' --cmd ' + (options.cmd.find((c) => c.match('"')) ? '"' + options.cmd + '"' : "'" + options.cmd + "'")
         : '';
+      const clusterFlag = options.k3s ? ' --k3s' : options.kind ? ' --kind' : ' --kubeadm';
+      const gitCleanFlag = options.gitClean ? ' --git-clean' : '';
 
       shellExec(
-        `${baseCommand} deploy --kubeadm --build-manifest --sync --info-router --replicas ${replicas} --node ${node}${
+        `${baseCommand} deploy${clusterFlag} --build-manifest --sync --info-router --replicas ${replicas} --node ${node}${
           image ? ` --image ${image}` : ''
         }${versions ? ` --versions ${versions}` : ''}${
           options.namespace ? ` --namespace ${options.namespace}` : ''
-        }${timeoutFlags}${cmdString} ${deployId} ${env}`,
+        }${timeoutFlags}${cmdString}${gitCleanFlag} ${deployId} ${env}`,
       );
 
       if (isDeployRunnerContext(path, options)) {
         shellExec(
-          `${baseCommand} deploy --kubeadm${cmdString} --replicas ${replicas} --disable-update-proxy ${deployId} ${env} --versions ${versions}${
+          `${baseCommand} deploy${clusterFlag}${cmdString} --replicas ${replicas} --disable-update-proxy ${deployId} ${env} --versions ${versions}${
             options.namespace ? ` --namespace ${options.namespace}` : ''
-          }${timeoutFlags}`,
+          }${timeoutFlags}${gitCleanFlag}`,
         );
         if (!targetTraffic)
           targetTraffic = Underpost.deploy.getCurrentTraffic(deployId, { namespace: options.namespace });
@@ -965,6 +983,8 @@ EOF
               env,
               version: targetTraffic,
               nodeName: options.nodeName,
+              clusterContext: options.k3s ? 'k3s' : options.kubeadm ? 'kubeadm' : 'kind',
+              gitClean: options.gitClean || false,
             });
         let deploymentYaml = `---
 ${Underpost.deploy
