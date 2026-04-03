@@ -97,6 +97,7 @@ class UnderpostRepository {
      * @param {boolean} [options.cached=false] - If true, commits only staged changes.
      * @param {number} [options.log=0] - If greater than 0, shows the last N commits with diffs.
      * @param {boolean} [options.lastMsg=0] - If greater than 0, copies or show the last last single n commit message to clipboard.
+     * @param {boolean} [options.unpush=false] - If true with --log, automatically detects unpushed commits ahead of remote and uses that count.
      * @param {string} [options.deployId=''] - An optional deploy ID to include in the commit message.
      * @param {string} [options.hashes=''] - If provided with diff option, shows the diff between two hashes.
      * @param {string} [options.extension=''] - If provided with diff option, filters the diff by this file extension.
@@ -127,6 +128,7 @@ class UnderpostRepository {
         changelogBuild: false,
         changelogMinVersion: '',
         changelogNoHash: false,
+        unpush: false,
         b: false,
         p: undefined,
         bc: '',
@@ -336,17 +338,36 @@ class UnderpostRepository {
         else console.log('Diff command:', _diffCmd);
         return;
       }
-      if (options.log) {
-        const history = Underpost.repo.getHistory(options.log);
+      if (options.log || options.unpush) {
+        if (options.unpush) {
+          const branch = shellExec(`cd ${repoPath} && git branch --show-current`, {
+            stdout: true,
+            silent: true,
+            disableLog: true,
+          }).trim();
+          shellExec(`cd ${repoPath} && git fetch origin 2>/dev/null`, { silent: true, disableLog: true });
+          const unpushCount = shellExec(`cd ${repoPath} && git rev-list --count origin/${branch}..HEAD 2>/dev/null`, {
+            stdout: true,
+            silent: true,
+            disableLog: true,
+          }).trim();
+          const count = parseInt(unpushCount);
+          if (isNaN(count) || count <= 0) {
+            logger.warn('No unpushed commits found');
+            return;
+          }
+          options.log = count;
+        }
+        const history = Underpost.repo.getHistory(options.log, repoPath);
         const chainCmd = history
           .reverse()
-          .map((commitData, i) => `${i === 0 ? '' : ' && '}git ${diffCmd} ${commitData.hash}`)
+          .map((commitData, i) => `${i === 0 ? '' : ' && '}git -C ${repoPath} ${diffCmd} ${commitData.hash}`)
           .join('');
         if (history[0]) {
           let index = history.length;
           for (const commit of history) {
             console.log(
-              shellExec(`git show -s --format=%ci ${commit.hash}`, {
+              shellExec(`cd ${repoPath} && git show -s --format=%ci ${commit.hash}`, {
                 stdout: true,
                 silent: true,
                 disableLog: true,
@@ -355,7 +376,7 @@ class UnderpostRepository {
             console.log(`${index}`.magenta, commit.hash.yellow, commit.message);
             index--;
             console.log(
-              shellExec(`git show --name-status --pretty="" ${commit.hash}`, {
+              shellExec(`cd ${repoPath} && git show --name-status --pretty="" ${commit.hash}`, {
                 stdout: true,
                 silent: true,
                 disableLog: true,
@@ -907,8 +928,8 @@ Prevent build private config repo.`,
      * @returns {Array<{hash: string, message: string, files: string}>} An array of commit objects with hash, message, and files.
      * @memberof UnderpostRepository
      */
-    getHistory(sinceCommit = 1) {
-      return shellExec(`git log -1 --pretty=format:"%h %s" -n ${sinceCommit}`, {
+    getHistory(sinceCommit = 1, repoPath = '.') {
+      return shellExec(`cd ${repoPath} && git log -1 --pretty=format:"%h %s" -n ${sinceCommit}`, {
         stdout: true,
         silent: true,
         disableLog: true,
@@ -923,7 +944,7 @@ Prevent build private config repo.`,
         })
         .filter((line) => line.hash)
         .map((line) => {
-          line.files = shellExec(`git show --name-status --pretty="" ${line.hash}`, {
+          line.files = shellExec(`cd ${repoPath} && git show --name-status --pretty="" ${line.hash}`, {
             stdout: true,
             silent: true,
             disableLog: true,
