@@ -262,7 +262,13 @@ ${Underpost.deploy
         }
         fs.writeFileSync(`./engine-private/conf/${deployId}/build/${env}/deployment.yaml`, deploymentYamlParts, 'utf8');
 
-        Underpost.deploy.buildGrpcServiceManifest({ deployId, env, confServer, namespace: options.namespace });
+        Underpost.deploy.buildGrpcServiceManifest({
+          deployId,
+          env,
+          confServer,
+          namespace: options.namespace,
+          traffic: options.traffic && typeof options.traffic === 'string' ? options.traffic.split(',') : ['blue'],
+        });
 
         const confVolume = fs.existsSync(`./engine-private/conf/${deployId}/conf.volume.json`)
           ? JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.volume.json`, 'utf8'))
@@ -374,27 +380,31 @@ ${Underpost.deploy
       }
     },
     /**
-     * Builds and writes a stable gRPC ClusterIP service YAML for a deployment.
+     * Builds and writes a gRPC ClusterIP service YAML for a deployment.
      * Scans conf.server.json for gRPC ports and emits grpc-service.yaml under
-     * `engine-private/conf/<deployId>/build/<env>/`. The selector uses the shared
-     * `deploy-id: <deployId>-<env>` label so both blue and green pods are targeted.
+     * `engine-private/conf/<deployId>/build/<env>/`. The selector always uses the
+     * explicit `app: <deployId>-<env>-<traffic>` label to target only the active
+     * colour (blue or green).
      * @param {string} deployId - Deployment ID.
      * @param {string} env - Environment ('development' or 'production').
      * @param {object} confServer - Parsed conf.server.json content.
      * @param {string} [namespace='default'] - Kubernetes namespace.
+     * @param {string[]} [traffic=['blue']] - Active traffic colour(s) ('blue', 'green', or both).
+     * @param {string|null} [host=null] - Specific host to scan for gRPC ports. If null, all hosts are scanned.
      * @returns {string|null} - Path to the written YAML file, or null if no gRPC ports found.
      * @memberof UnderpostDeploy
      */
-    buildGrpcServiceManifest({ deployId, env, confServer, namespace = 'default' }) {
+    buildGrpcServiceManifest({ deployId, env, confServer, namespace = 'default', traffic = ['blue'], host = null }) {
       const grpcPorts = new Set();
-      for (const host of Object.keys(confServer)) {
-        for (const path of Object.keys(confServer[host])) {
-          const grpc = confServer[host][path].grpc;
+      const hostsToScan = host ? [host] : Object.keys(confServer);
+      for (const h of hostsToScan) {
+        if (!confServer[h]) continue;
+        for (const path of Object.keys(confServer[h])) {
+          const grpc = confServer[h][path].grpc;
           if (grpc && grpc.port) grpcPorts.add(parseInt(grpc.port));
         }
       }
       if (grpcPorts.size === 0) return null;
-      const grpcServiceName = `${deployId}-grpc-service`;
       const grpcPortsList = [...grpcPorts]
         .map(
           (port) => `    - name: grpc-${port}
@@ -403,7 +413,11 @@ ${Underpost.deploy
       targetPort: ${port}`,
         )
         .join('\n');
-      const grpcServiceYaml = `---
+      let grpcServiceYaml = '';
+      for (const color of traffic) {
+        const grpcServiceName = `${deployId}-grpc-service-${env}-${color}`;
+        const selectorYaml = `app: ${deployId}-${env}-${color}`;
+        grpcServiceYaml += `---
 apiVersion: v1
 kind: Service
 metadata:
@@ -414,13 +428,16 @@ metadata:
 spec:
   type: ClusterIP
   selector:
-    deploy-id: ${deployId}-${env}
+    ${selectorYaml}
   ports:
 ${grpcPortsList}
 `;
+        logger.info(
+          `gRPC ClusterIP service YAML written: ${grpcServiceName} (selector: ${selectorYaml}, ports: ${[...grpcPorts].join(', ')})`,
+        );
+      }
       const yamlPath = `./engine-private/conf/${deployId}/build/${env}/grpc-service.yaml`;
       fs.writeFileSync(yamlPath, grpcServiceYaml, 'utf8');
-      logger.info(`gRPC ClusterIP service YAML written: ${grpcServiceName} (ports: ${[...grpcPorts].join(', ')})`);
       return yamlPath;
     },
     /**
@@ -615,7 +632,7 @@ EOF`);
             env,
             traffic: Underpost.deploy.getCurrentTraffic(deployId, { namespace }),
             router: await Underpost.deploy.routerFactory(deployId, env),
-            pods: await Underpost.deploy.get(deployId),
+            pods: await Underpost.kubectl.get(deployId),
             instances,
           });
         }
@@ -657,7 +674,7 @@ EOF`);
         if (!deployId) continue;
         if (options.expose === true) {
           const kindType = options.kindType ? options.kindType : 'svc';
-          const svc = Underpost.deploy.get(deployId, kindType)[0];
+          const svc = Underpost.kubectl.get(deployId, kindType)[0];
           const port = options.exposePort
             ? parseInt(options.exposePort)
             : options.port
@@ -739,65 +756,6 @@ EOF`);
         );
     },
     /**
-     * Retrieves information about a deployment.
-     * @param {string} deployId - Deployment ID for which information is being retrieved.
-     * @param {string} kindType - Type of Kubernetes resource to retrieve information for (e.g. 'pods').
-     * @param {string} namespace - Kubernetes namespace to retrieve information from.
-     * @returns {Array<object>} - Array of objects containing information about the deployment.
-     * @memberof UnderpostDeploy
-     */
-    get(deployId, kindType = 'pods', namespace = '') {
-      const raw = shellExec(
-        `sudo kubectl get ${kindType}${namespace ? ` -n ${namespace}` : ` --all-namespaces`} -o wide`,
-        {
-          stdout: true,
-          disableLog: true,
-          silent: true,
-        },
-      );
-
-      const heads = raw
-        .split(`\n`)[0]
-        .split(' ')
-        .filter((_r) => _r.trim());
-
-      const pods = raw
-        .split(`\n`)
-        .filter((r) => (deployId ? r.match(deployId) : r.trim() && !r.match('NAME')))
-        .map((r) => r.split(' ').filter((_r) => _r.trim()));
-
-      const result = [];
-
-      for (const row of pods) {
-        const pod = {};
-        let index = -1;
-        for (const head of heads) {
-          index++;
-          pod[head] = row[index];
-        }
-        result.push(pod);
-      }
-
-      return result;
-    },
-
-    /**
-     * Checks if a container file exists in a pod.
-     * @param {object} options - Options for the check.
-     * @param {string} options.podName - Name of the pod to check.
-     * @param {string} options.path - Path to the container file to check.
-     * @returns {boolean} - True if the container file exists, false otherwise.
-     * @memberof UnderpostDeploy
-     */
-    existsContainerFile({ podName, path }) {
-      const result = shellExec(`kubectl exec ${podName} -- test -f ${path} && echo "true" || echo "false"`, {
-        stdout: true,
-        disableLog: true,
-        silent: true,
-      }).trim();
-      return result === 'true';
-    },
-    /**
      * Checks the status of a deployment.
      * @param {string} deployId - Deployment ID for which the status is being checked.
      * @param {string} env - Environment for which the status is being checked.
@@ -809,7 +767,7 @@ EOF`);
      */
     async checkDeploymentReadyStatus(deployId, env, traffic, ignoresNames = [], namespace = 'default') {
       const cmd = `underpost config get container-status`;
-      const pods = Underpost.deploy.get(`${deployId}-${env}-${traffic}`, 'pods', namespace);
+      const pods = Underpost.kubectl.get(`${deployId}-${env}-${traffic}`, 'pods', namespace);
       const readyPods = [];
       const notReadyPods = [];
       for (const pod of pods) {
@@ -880,6 +838,9 @@ EOF`);
       );
 
       shellExec(`sudo kubectl apply -f ./engine-private/conf/${deployId}/build/${env}/proxy.yaml -n ${namespace}`);
+
+      const grpcServicePath = `./engine-private/conf/${deployId}/build/${env}/grpc-service.yaml`;
+      if (fs.existsSync(grpcServicePath)) shellExec(`kubectl apply -f ${grpcServicePath} -n ${namespace}`);
 
       Underpost.env.set(`${deployId}-${env}-traffic`, targetTraffic);
     },

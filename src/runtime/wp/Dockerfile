@@ -34,6 +34,11 @@ RUN mkdir -p /opt/lampp/htdocs && \
 # Add XAMPP binaries to PATH
 ENV PATH="/opt/lampp/bin:${PATH}"
 
+# Install WP-CLI
+RUN curl -sL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /usr/local/bin/wp && \
+    chmod +x /usr/local/bin/wp && \
+    wp --info --allow-root
+
 # Install Node.js
 RUN curl -fsSL https://rpm.nodesource.com/setup_24.x | bash -
 RUN dnf install nodejs -y
@@ -51,3 +56,4 @@ EXPOSE 80
 EXPOSE 443
 EXPOSE 3000-3100
 EXPOSE 4000-4100
+

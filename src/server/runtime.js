@@ -11,6 +11,7 @@ import * as promClient from 'prom-client';
 import { loggerFactory } from './logger.js';
 import { newInstance } from '../client/components/core/CommonJs.js';
 import { Lampp } from '../runtime/lampp/Lampp.js';
+import { WpService } from '../runtime/wp/Wp.js';
 import { getInstanceContext, readConfJson } from './conf.js';
 
 import ExpressService from '../runtime/express/Express.js';
@@ -72,6 +73,7 @@ const buildRuntime = async () => {
         apiBaseHost,
         useLocalSsl,
         grpc,
+        repository,
       } = confServer[host][path];
 
       // Calculate context data
@@ -131,7 +133,7 @@ const buildRuntime = async () => {
 
         case 'lampp':
           {
-            const { disabled } = await Lampp.createApp({
+            const { disabled } = Lampp.createApp({
               port,
               host,
               path,
@@ -145,6 +147,24 @@ const buildRuntime = async () => {
             await Underpost.start.listenPortController(Underpost.start.listenServerFactory(), port, runningData);
           }
           break;
+
+        case 'wp':
+          {
+            const { disabled } = WpService.createApp({
+              port,
+              host,
+              pathRoute: path,
+              repository,
+              db,
+              redirect,
+              redirectTarget,
+              resetRouter: currentPort === initPort,
+            });
+            if (disabled) continue;
+            await Underpost.start.listenPortController(Underpost.start.listenServerFactory(), port, runningData);
+          }
+          break;
+
         default:
           break;
       }
