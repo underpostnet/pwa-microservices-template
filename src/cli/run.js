@@ -4,7 +4,8 @@
  * @namespace UnderpostRun
  */
 
-import { daemonProcess, getTerminalPid, shellCd, shellExec } from '../server/process.js';
+import { daemonProcess, getTerminalPid, pbcopy, shellCd, shellExec } from '../server/process.js';
+import crypto from 'crypto';
 import {
   awaitDeployMonitor,
   buildKindPorts,
@@ -174,6 +175,7 @@ const DEFAULT_OPTION = {
   fromNCommit: 0,
   hostAliases: '',
   gitClean: false,
+  copy: false,
 };
 
 /**
@@ -400,8 +402,12 @@ class UnderpostRun {
       }
       shellExec(`${baseCommand} run pull`);
 
-      // Capture last N commit messages for propagation (default: last 1 commit)
-      const fromN = options.fromNCommit && parseInt(options.fromNCommit) > 0 ? parseInt(options.fromNCommit) : 1;
+      // Capture last N commit messages for propagation.
+      // When --from-n-commit is not set, auto-detect unpushed commit count (same as --unpush flag).
+      const fromN =
+        options.fromNCommit && parseInt(options.fromNCommit) > 0
+          ? parseInt(options.fromNCommit)
+          : Underpost.repo.getUnpushedCount('.').count;
       const message = shellExec(`node bin cmt --changelog ${fromN} --changelog-no-hash`, {
         silent: true,
         stdout: true,
@@ -457,7 +463,7 @@ class UnderpostRun {
      * @param {Object} options - The default underpost runner options for customizing workflow
      * @memberof UnderpostRun
      */
-    'template-deploy-local': (path, options = DEFAULT_OPTION) => {
+    'template-deploy-local': async (path, options = DEFAULT_OPTION) => {
       const baseCommand = options.dev ? 'node bin' : 'underpost';
       shellExec(`npm run security:secrets`);
       const reportPath = './gitleaks-report.json';
@@ -466,10 +472,23 @@ class UnderpostRun {
         return;
       }
       shellExec(`${baseCommand} run pull`);
-      shellExec(`${baseCommand} push engine-private ${process.env.GITHUB_USERNAME}/engine-private`);
-      shellExec(`${baseCommand} push . ${process.env.GITHUB_USERNAME}/engine`);
-      if (path) shellExec(`${baseCommand} release --ci-push ${path}`);
-      else shellExec(`${baseCommand} release --pwa-build`);
+
+      // Capture last N commit messages from the engine repo.
+      // When --from-n-commit is not set, auto-detect unpushed commit count (same as --unpush flag).
+      const fromN =
+        options.fromNCommit && parseInt(options.fromNCommit) > 0
+          ? parseInt(options.fromNCommit)
+          : Underpost.repo.getUnpushedCount('.').count;
+      const rawMessage = shellExec(`node bin cmt --changelog ${fromN} --changelog-no-hash`, {
+        silent: true,
+        stdout: true,
+      }).trim();
+      const sanitizedMessage = Underpost.repo.sanitizeChangelogMessage(rawMessage);
+
+      const { triggerCmd } = path
+        ? await Underpost.release.ci(path, sanitizedMessage, options)
+        : await Underpost.release.pwa(sanitizedMessage, options);
+      pbcopy(triggerCmd);
     },
     /**
      * @method template-deploy-image
@@ -1886,7 +1905,8 @@ EOF
 
       shellCd(dir);
 
-      shellExec(`git init && git add . && git commit -m "Base implementation"`);
+      Underpost.repo.initLocalRepo({ path: dir });
+      shellExec(`git add . && git commit -m "Base implementation"`);
       shellExec(`chmod +x ./replace_params.sh`);
       shellExec(`chmod +x ./build.sh`);
 
@@ -1931,6 +1951,43 @@ EOF
      * @param {Object} options - The default underpost runner options for customizing workflow
      * @memberof UnderpostRun
      */
+    /**
+     * @method generate-pass
+     * @description Generates a cryptographically secure random password that satisfies all validatePassword
+     * constraints (lowercase, uppercase, digit, special char, min 8 chars). Logs the plain password
+     * to the console or, when `--copy` is set, copies it to the clipboard via pbcopy.
+     * @param {string} path - Optional password length (default: 16).
+     * @param {Object} options - The default underpost runner options for customizing workflow.
+     * @param {boolean} options.copy - When true, copies to clipboard instead of logging.
+     * @memberof UnderpostRun
+     */
+    'generate-pass': (path, options = DEFAULT_OPTION) => {
+      const length = path && parseInt(path) > 0 ? parseInt(path) : 16;
+      const lower = 'abcdefghijklmnopqrstuvwxyz';
+      const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+      const digits = '0123456789';
+      const special = '@#$%^&*()_+';
+      const all = lower + upper + digits + special;
+      const buf = crypto.randomBytes(length + 4);
+      // Guarantee at least one character from each required class
+      const chars = [
+        lower[buf[0] % lower.length],
+        upper[buf[1] % upper.length],
+        digits[buf[2] % digits.length],
+        special[buf[3] % special.length],
+      ];
+      for (let i = 4; i < length; i++) chars.push(all[buf[i] % all.length]);
+      // Fisher-Yates shuffle using an independent random buffer
+      const shuf = crypto.randomBytes(length);
+      for (let i = chars.length - 1; i > 0; i--) {
+        const j = shuf[i % shuf.length] % (i + 1);
+        [chars[i], chars[j]] = [chars[j], chars[i]];
+      }
+      const password = chars.join('');
+      if (options.copy) pbcopy(password);
+      else console.log(password);
+    },
+
     secret: (path, options = DEFAULT_OPTION) => {
       const secretPath = path ? path : `/home/dd/engine/engine-private/conf/dd-cron/.env.production`;
       const command = `node bin secret underpost --create-from-file ${secretPath}`;

@@ -16,6 +16,7 @@ import path from 'path';
 import { shellExec } from '../../server/process.js';
 import { loggerFactory } from '../../server/logger.js';
 import { Lampp } from '../lampp/Lampp.js';
+import Underpost from '../../index.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -97,14 +98,19 @@ class WpService {
       WpService.provisionFresh({ host, siteRoot: wpDir, db, wp, subDir });
     }
 
+    // Ensure git is initialized and linked to the backup repository
+    if (repository) {
+      Underpost.repo.initLocalRepo({ path: wpDir, origin: repository });
+    }
+
     // Write a root .htaccess that rewrites / → /subDir/ when running in subdirectory mode
     if (subDir) {
       WpService.ensureSubdirHtaccess({ vhostDir, subDir });
     }
 
-    // Make the site writable by the XAMPP Apache process (runs as whoami:whoami).
+    // Make the site writable by the XAMPP Apache process (runs as daemon:daemon).
     // This is required for plugins like Wordfence WAF and Sucuri that write config/upload files.
-    shellExec(`sudo chown -R $(whoami):$(whoami) "${vhostDir}"`);
+    shellExec(`sudo chown -R daemon:daemon "${vhostDir}"`);
     shellExec(`sudo find "${vhostDir}" -type d -exec chmod 755 {} \\;`);
     shellExec(`sudo find "${vhostDir}" -type f -exec chmod 644 {} \\;`);
 
@@ -153,7 +159,7 @@ class WpService {
       shellExec(`git clone "${repository}" "${tmp}"`);
       shellExec(`sudo mv "${tmp}" "${siteRoot}"`);
       shellExec(`sudo chmod -R 755 "${siteRoot}"`);
-      shellExec(`sudo chown -R $(whoami):$(whoami) "${siteRoot}"`);
+      shellExec(`sudo chown -R daemon:daemon "${siteRoot}"`);
     } else {
       logger.info(`${host}: repo already present at ${siteRoot}`);
     }
@@ -163,6 +169,7 @@ class WpService {
       logger.warn(`${host}: wp-config.php not found — wiping site root and running fresh install`);
       shellExec(`sudo rm -rf "${siteRoot}"`);
       WpService.provisionFresh({ host, siteRoot, db, wp, subDir });
+      Underpost.repo.initLocalRepo({ path: siteRoot, origin: repository });
     }
   }
 
@@ -201,11 +208,11 @@ class WpService {
     if (!fs.existsSync(parentDir)) fs.mkdirSync(parentDir, { recursive: true });
     shellExec(`sudo mv "${extracted}" "${siteRoot}"`);
     shellExec(`sudo chmod -R 755 "${siteRoot}"`);
-    shellExec(`sudo chown -R $(whoami):$(whoami) "${siteRoot}"`);
+    shellExec(`sudo chown -R daemon:daemon "${siteRoot}"`);
 
     if (db) {
       WpService.createDatabase(db);
-      WpService.writeWpConfig({ siteRoot, db, host, subDir });
+      WpService.writeWpConfig({ siteRoot, db, host, subDir, wp });
       WpService.wpCliInstall({ siteRoot, db, host, wp, subDir });
     } else {
       logger.warn(`${host}: no db config provided — wp-config.php not written`);
@@ -259,6 +266,13 @@ class WpService {
     wpCli(`plugin auto-updates enable all-in-one-wp-security-and-firewall`);
     wpCli(`plugin auto-updates enable sucuri-scanner`);
     wpCli(`plugin auto-updates enable cleantalk-spam-protect`);
+
+    // Step 4 — install and activate WP Mail SMTP when configured
+    if (wp && wp.wpMailSmtp) {
+      logger.info(`${host}: installing WP Mail SMTP plugin`);
+      wpCli(`plugin install wp-mail-smtp --activate`);
+      wpCli(`plugin auto-updates enable wp-mail-smtp`);
+    }
 
     logger.info(`${host}: WP-CLI provisioning complete`, { siteUrl, adminUser, adminEmail });
   }
@@ -322,9 +336,11 @@ ${marker} end`;
 
   /**
    * Writes a minimal `wp-config.php` from `wp-config-sample.php`.
-   * @param {{ siteRoot: string, db: { host: string, name: string, user: string, password: string } }} opts
+   * When `wp.wpMailSmtp` is provided, injects WP Mail SMTP plugin constants
+   * (WPMS_ON, WPMS_SMTP_HOST, etc.) so the plugin is pre-configured on first boot.
+   * @param {{ siteRoot: string, db: { host: string, name: string, user: string, password: string }, host?: string, subDir?: string, wp?: object }} opts
    */
-  static writeWpConfig({ siteRoot, db, host = '', subDir = '' }) {
+  static writeWpConfig({ siteRoot, db, host = '', subDir = '', wp }) {
     const sample = path.join(siteRoot, 'wp-config-sample.php');
     const target = path.join(siteRoot, 'wp-config.php');
     if (!fs.existsSync(sample)) {
@@ -353,26 +369,69 @@ if (isset($_SERVER['HTTP_X_FORWARDED_PROTO']) && $_SERVER['HTTP_X_FORWARDED_PROT
 }
 `;
     cfg = cfg.replace('<?php', `<?php\n${httpsSnippet}`);
+
+    // Inject WP Mail SMTP constants when wpMailSmtp config is provided
+    const wpMailSmtp = wp && wp.wpMailSmtp;
+    if (wpMailSmtp) {
+      const smtp = wpMailSmtp.smtp || {};
+      const wpmsLines = [
+        `define( 'WPMS_ON', true );`,
+        wpMailSmtp.fromEmail ? `define( 'WPMS_MAIL_FROM', '${wpMailSmtp.fromEmail}' );` : null,
+        wpMailSmtp.fromName ? `define( 'WPMS_MAIL_FROM_NAME', '${wpMailSmtp.fromName}' );` : null,
+        `define( 'WPMS_MAIL_FROM_FORCE', true );`,
+        `define( 'WPMS_MAIL_FROM_NAME_FORCE', false );`,
+        wpMailSmtp.mailer ? `define( 'WPMS_MAILER', '${wpMailSmtp.mailer}' );` : null,
+        wpMailSmtp.returnPath !== undefined ? `define( 'WPMS_SET_RETURN_PATH', ${wpMailSmtp.returnPath} );` : null,
+        smtp.host ? `define( 'WPMS_SMTP_HOST', '${smtp.host}' );` : null,
+        smtp.port ? `define( 'WPMS_SMTP_PORT', ${smtp.port} );` : null,
+        smtp.encryption ? `define( 'WPMS_SSL', '${smtp.encryption}' );` : null,
+        smtp.auth !== undefined ? `define( 'WPMS_SMTP_AUTH', ${smtp.auth} );` : null,
+        `define( 'WPMS_SMTP_AUTOTLS', true );`,
+        smtp.user ? `define( 'WPMS_SMTP_USER', '${smtp.user}' );` : null,
+        smtp.pass ? `define( 'WPMS_SMTP_PASS', '${smtp.pass}' );` : null,
+      ]
+        .filter(Boolean)
+        .join('\n');
+      cfg = cfg.replace(
+        '/** Absolute path to the WordPress directory. */',
+        `// WP Mail SMTP plugin constants\n${wpmsLines}\n\n/** Absolute path to the WordPress directory. */`,
+      );
+      logger.info(`${host}: WP Mail SMTP constants injected into wp-config.php`);
+    }
+
     fs.writeFileSync(target, cfg, 'utf8');
     logger.info(`wp-config.php written for ${db.name}`);
   }
 
   /**
-   * Backs up a WordPress site: exports the MariaDB database and pushes the
-   * site directory to its git remote (if it is a git repo).
+   * Backs up a WordPress site: commits all changes and pushes the
+   * site directory to its git remote.
+   * If no `.git` directory exists but `repository` is provided, git is
+   * initialized first so subsequent cron-triggered backups can push.
    * @param {object} opts
-   * @param {string} opts.host       - Virtual-host name.
-   * @param {object|null} opts.db    - MariaDB config `{ host, name, user, password }`.
+   * @param {string}      opts.host       - Virtual-host name.
+   * @param {string|null} [opts.repository] - Git remote URL; used to initialize git if missing.
    */
-  static backup({ host }) {
+  static backup({ host, repository }) {
     const siteRoot = WpService.siteDir(host);
+    if (!fs.existsSync(siteRoot)) {
+      logger.warn(`backup: site root does not exist — ${siteRoot}`);
+      return;
+    }
     logger.info(`backup: ${host}`);
+
+    // Ensure git is initialized when a repository is configured
+    if (repository) {
+      Underpost.repo.initLocalRepo({ path: siteRoot, origin: repository });
+    }
 
     // MariaDB export is handled by the shared db.js backup flow — no duplicate dump here.
     if (fs.existsSync(path.join(siteRoot, '.git'))) {
       shellExec(`cd "${siteRoot}" && git add -A && git commit -m "wp backup $(date -u +%Y-%m-%dT%H:%M:%SZ)" || true`);
-      shellExec(`cd "${siteRoot}" && git push`);
+      shellExec(`cd "${siteRoot}" && git push || true`);
       logger.info(`backup: git push done for ${siteRoot}`);
+    } else {
+      logger.warn(`backup: no .git and no repository configured for ${host} — skipping git push`);
     }
   }
 }
