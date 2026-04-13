@@ -9,6 +9,7 @@ import { awaitDeployMonitor } from './conf.js';
 import { actionInitLog, loggerFactory } from './logger.js';
 import { shellCd, shellExec } from './process.js';
 import Underpost from '../index.js';
+import isInsideContainer from 'is-inside-container';
 const logger = loggerFactory(import.meta);
 
 /**
@@ -198,6 +199,10 @@ class UnderpostStartUp {
       shellExec(`npm ${runCmd} ${deployId}`, { async: true });
       await awaitDeployMonitor(true);
       Underpost.env.set('container-status', `${deployId}-${env}-running-deployment`);
+      if (env === 'production' && isInsideContainer()) {
+        shellExec(`sudo rm -rf /home/dd/engine/engine-private`);
+        if (fs.existsSync('/etc/config/.env.production')) fs.removeSync('/etc/config/.env.production');
+      }
     },
   };
 }
