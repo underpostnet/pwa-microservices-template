@@ -2,7 +2,7 @@
     "type": "module",
     "main": "src/index.js",
     "name": "underpost",
-    "version": "3.2.2",
+    "version": "3.2.3",
     "description": "pwa api rest template",
     "scripts": {
         "start": "node --max-old-space-size=8192 src/server",
@@ -86,7 +86,6 @@
         "http-proxy-middleware": "^3.0.5",
         "ignore-walk": "^8.0.0",
         "iovalkey": "^0.3.3",
-        "is-inside-container": "^1.0.0",
         "json-colorizer": "^3.0.1",
         "jsonwebtoken": "^9.0.3",
         "mariadb": "^3.2.2",
