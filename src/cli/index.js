@@ -337,10 +337,12 @@ program
   .argument('<platform>', `The secret management platform. Options: ${Object.keys(Underpost.secret).join(', ')}.`)
   .option('--init', 'Initializes the secrets platform environment.')
   .option('--create-from-file <path-env-file>', 'Creates secrets from a specified environment file.')
+  .option('--create-from-env', 'Creates secrets from container environment variables (envFrom: secretRef).')
   .option('--list', 'Lists all available secrets for the platform.')
   .description(`Manages secrets for various platforms.`)
   .action((...args) => {
     if (args[1].createFromFile) return Underpost.secret[args[0]].createFromEnvFile(args[1].createFromFile);
+    if (args[1].createFromEnv) return Underpost.secret[args[0]].createFromContainerEnv();
     if (args[1].list) return Underpost.secret[args[0]].list();
     if (args[1].init) return Underpost.secret[args[0]].init();
   });
@@ -423,6 +425,7 @@ program
   .option('--kubeadm', 'Enables the kubeadm context for database operations.')
   .option('--kind', 'Enables the kind context for database operations.')
   .option('--k3s', 'Enables the k3s context for database operations.')
+  .option('--repo-backup', 'Backs up repositories (git commit+push) inside deployment pods via kubectl exec.')
   .description(
     'Manages database operations with support for MariaDB and MongoDB, including import/export, multi-pod targeting, and Git integration.',
   )
@@ -468,7 +471,6 @@ program
     '--create-job-now',
     'After applying manifests, immediately create a Job from each CronJob (requires --apply).',
   )
-  .option('--ssh', 'Execute backup commands via SSH on the remote node instead of locally.')
   .description('Manages cron jobs: execute jobs directly or generate and apply K8s CronJob manifests.')
   .action(Underpost.cron.callback);
 
