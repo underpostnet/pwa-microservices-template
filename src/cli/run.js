@@ -654,6 +654,7 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
       const env = options.dev ? 'development' : 'production';
       const baseCommand = options.dev ? 'node bin' : 'underpost';
       const baseClusterCommand = options.dev ? ' --dev' : '';
+      const clusterFlag = options.k3s ? ' --k3s' : options.kind ? ' --kind' : ' --kubeadm';
       const defaultPath = [
         'dd-default',
         options.replicas,
@@ -674,7 +675,8 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
           if (!validVersion) throw new Error('Version mismatch');
         }
         if (options.timezone !== 'none') shellExec(`${baseCommand} run${baseClusterCommand} tz`);
-        if (options.deployIdCronJobs !== 'none') shellExec(`node bin cron --dev --setup-start --apply`);
+        if (options.deployIdCronJobs !== 'none')
+          shellExec(`node bin cron${baseClusterCommand}${clusterFlag} --setup-start --git --apply`);
       }
 
       const currentTraffic = isDeployRunnerContext(path, options)
@@ -687,7 +689,6 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
       const cmdString = options.cmd
         ? ' --cmd ' + (options.cmd.find((c) => c.match('"')) ? '"' + options.cmd + '"' : "'" + options.cmd + "'")
         : '';
-      const clusterFlag = options.k3s ? ' --k3s' : options.kind ? ' --kind' : ' --kubeadm';
       const gitCleanFlag = options.gitClean ? ' --git-clean' : '';
 
       shellExec(
@@ -701,7 +702,7 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
       if (isDeployRunnerContext(path, options)) {
         // Backup app/services repositories with repo-backup configured
         shellExec(
-          `${baseCommand} db ${deployId} ${clusterFlag} --repo-backup --dev --primary-pod --git --force-clone --preserveUUID ${options.namespace ? ` --ns ${options.namespace}` : ''}`,
+          `${baseCommand} db ${deployId} ${clusterFlag}${baseClusterCommand} --repo-backup --primary-pod --git --force-clone --preserveUUID ${options.namespace ? ` --ns ${options.namespace}` : ''}`,
         );
         shellExec(
           `${baseCommand} deploy${clusterFlag}${cmdString} --replicas ${replicas} --disable-update-proxy ${deployId} ${env} --versions ${versions}${
