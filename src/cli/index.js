@@ -46,6 +46,9 @@ program
   .option('--sync-env-port', 'Sync environment port assignments across all deploy IDs')
   .option('--single-replica', 'Build single replica folders instead of full client')
   .option('--build-zip', 'Create zip files of the builds')
+  .option('--split <mb>', 'Split generated zip files into parts of the specified size in MB')
+  .option('--unzip <build-prefix>', 'Extract a built client zip or split zip parts using the given build prefix')
+  .option('--merge-zip <build-prefix>', 'Merge split ZIP parts back into a single ZIP file for the given build prefix')
   .option('--lite-build', 'Skip full build (default is full build)')
   .option('--icons-build', 'Build icons')
   .description('Builds client assets, single replicas, and/or syncs environment ports.')
@@ -62,6 +65,7 @@ program
   .option('--build', 'Triggers the client-side application build process.')
   .option('--underpost-quickly-install', 'Uses Underpost Quickly Install for dependency installation.')
   .option('--skip-pull-base', 'Skips cloning repositories, uses current workspace code directly.')
+  .option('--skip-full-build', 'Skips the full client bundle build during deployment.')
   .action(Underpost.start.callback)
   .description('Initiates application servers, build pipelines, or other defined services based on the deployment ID.');
 
@@ -485,6 +489,7 @@ program
   .option('--recursive', 'Uploads files recursively from the specified path.')
   .option('--deploy-id <deploy-id>', 'Specifies the deployment configuration ID for file operations.')
   .option('--pull', 'Downloads the specified file.')
+  .option('--omit-unzip', 'With --pull, keeps the downloaded .zip file and skips extraction.')
   .option('--force', 'Forces the action, overriding any warnings or conflicts.')
   .option('--storage-file-path <storage-file-path>', 'Specifies a custom file storage path.')
   .description('Manages file storage, defaulting to file upload operations.')

@@ -38,6 +38,8 @@ import { ssrFactory } from './ssr.js';
  * @memberof clientBuild
  */
 const copyNonExistingFiles = (src, dest) => {
+  if (dir.basename(src) === '.git') return;
+
   // Ensure source exists
   if (!fs.existsSync(src)) {
     throw new Error(`Source directory does not exist: ${src}`);
@@ -72,6 +74,224 @@ const copyNonExistingFiles = (src, dest) => {
       copyNonExistingFiles(srcPath, destPath);
     }
   }
+};
+
+const splitFileByMb = ({ filePath, partSizeMb, logger }) => {
+  const partSizeBytes = Math.floor(Number(partSizeMb) * 1024 * 1024);
+  if (!Number.isFinite(partSizeBytes) || partSizeBytes <= 0) {
+    throw new Error(`Invalid --split value: ${partSizeMb}`);
+  }
+
+  // Clean ALL stale part files (any naming variant) before writing new ones
+  const zipDir = dir.dirname(filePath);
+  const zipBase = dir.basename(filePath);
+  if (fs.existsSync(zipDir)) {
+    fs.readdirSync(zipDir)
+      .filter((name) => name.startsWith(`${zipBase}.part`) || name.startsWith(`${zipBase}-part`))
+      .forEach((name) => fs.removeSync(dir.join(zipDir, name)));
+  }
+
+  const fileBuffer = fs.readFileSync(filePath);
+  const partPaths = [];
+
+  for (let offset = 0, partIndex = 0; offset < fileBuffer.length; offset += partSizeBytes, partIndex++) {
+    const partBuffer = fileBuffer.subarray(offset, offset + partSizeBytes);
+    const partPath = `${filePath}.part${String(partIndex + 1).padStart(3, '0')}`;
+    fs.writeFileSync(partPath, partBuffer);
+    partPaths.push(partPath);
+  }
+
+  logger.warn('split zip', {
+    filePath,
+    partSizeMb: Number(partSizeMb),
+    parts: partPaths.length,
+  });
+
+  return partPaths;
+};
+
+const getZipPartPaths = (zipPath) => {
+  const zipDir = dir.dirname(zipPath);
+  const zipBase = dir.basename(zipPath);
+  const partPrefixDot = `${zipBase}.part`;
+  const partPrefixDash = `${zipBase}-part`;
+
+  const parsePartIndex = (rawSuffix) => {
+    // Strip optional .zip suffix added by pull/download (e.g. '001.zip' → '001')
+    const digits = rawSuffix.replace(/\.zip$/i, '');
+    return /^\d+$/.test(digits) ? Number(digits) : NaN;
+  };
+
+  const getPartIndex = (name) => {
+    if (name.startsWith(partPrefixDot)) return parsePartIndex(name.slice(partPrefixDot.length));
+    if (name.startsWith(partPrefixDash)) return parsePartIndex(name.slice(partPrefixDash.length));
+    return NaN;
+  };
+
+  return fs
+    .readdirSync(zipDir)
+    .filter((name) => Number.isFinite(getPartIndex(name)))
+    .sort((a, b) => getPartIndex(a) - getPartIndex(b))
+    .map((name) => dir.join(zipDir, name));
+};
+
+const resolveClientBuildZip = (buildPrefix) => {
+  const normalizedPrefix = buildPrefix.replace(/\.zip(?:[.-]part\d+|[.-]part\*)?$/, '').replace(/[.-]part\*$/, '');
+  const candidatePrefixes = uniqueArray([
+    normalizedPrefix,
+    normalizedPrefix.endsWith('-') ? normalizedPrefix : `${normalizedPrefix}-`,
+  ]);
+
+  for (const prefix of candidatePrefixes) {
+    const zipPath = `${prefix}.zip`;
+    if (fs.existsSync(zipPath)) {
+      return {
+        buildPrefix: prefix,
+        zipPath,
+        partPaths: [],
+      };
+    }
+
+    const partPaths = fs.existsSync(dir.dirname(zipPath)) ? getZipPartPaths(zipPath) : [];
+    if (partPaths.length > 0) {
+      return {
+        buildPrefix: prefix,
+        zipPath,
+        partPaths,
+      };
+    }
+  }
+
+  const searchDir = dir.dirname(normalizedPrefix);
+  const prefixBase = dir.basename(normalizedPrefix);
+  if (!fs.existsSync(searchDir)) {
+    throw new Error(`Build directory not found: ${searchDir}`);
+  }
+
+  const matches = uniqueArray(
+    fs
+      .readdirSync(searchDir)
+      .filter((name) => name.startsWith(prefixBase) && /\.zip(?:[.-]part\d+)?$/.test(name))
+      .map((name) => name.replace(/[.-]part\d+$/, '')),
+  );
+
+  if (matches.length === 1) {
+    const zipPath = dir.join(searchDir, matches[0]);
+    const partPaths = getZipPartPaths(zipPath);
+    return {
+      buildPrefix: zipPath.replace(/\.zip$/, ''),
+      zipPath,
+      partPaths,
+    };
+  }
+
+  if (matches.length > 1) {
+    throw new Error(
+      `Multiple build zip matches found for '${buildPrefix}': ${matches.join(', ')}. Use a more specific --unzip path.`,
+    );
+  }
+
+  throw new Error(`No build zip or split parts found for: ${buildPrefix}`);
+};
+
+/**
+ * Merges split ZIP parts back into a single ZIP file.
+ * @param {object} options
+ * @param {string} options.buildPrefix - The build prefix path (e.g. build/underpost.net/underpost.net-).
+ * @param {object} options.logger - Logger instance.
+ * @returns {{ zipPath: string, partPaths: string[], mergedBytes: number }}
+ */
+const mergeClientBuildZip = ({ buildPrefix, logger }) => {
+  // Normalize to get the zip path, then look for parts directly (bypassing resolveClientBuildZip
+  // which prefers an existing monolithic zip over parts).
+  const normalizedPrefix = buildPrefix.replace(/\.zip(?:[.-]part\d+)?$/, '').replace(/[-.]$/, '') + '-';
+  const candidatePrefixes = uniqueArray([buildPrefix, buildPrefix.endsWith('-') ? buildPrefix : `${buildPrefix}-`]);
+
+  let zipPath;
+  let partPaths = [];
+
+  for (const prefix of candidatePrefixes) {
+    const candidate = prefix.endsWith('.zip') ? prefix : `${prefix}.zip`;
+    const parts = getZipPartPaths(candidate);
+    if (parts.length > 0) {
+      zipPath = candidate;
+      partPaths = parts;
+      break;
+    }
+  }
+
+  if (partPaths.length === 0) {
+    // Fall back to resolveClientBuildZip for the zipPath
+    const resolved = resolveClientBuildZip(buildPrefix);
+    zipPath = resolved.zipPath;
+    logger.warn('merge-zip: no split parts found, nothing to merge', { buildPrefix, zipPath });
+    return { zipPath, partPaths, mergedBytes: 0 };
+  }
+
+  // For each part, extract raw bytes: if the part file is a Cloudinary wrapper zip
+  // (downloaded via pull without --omit-unzip or with --omit-unzip keeping the .zip),
+  // extract the inner entry rather than using the wrapper bytes.
+  const readPartBytes = (partPath) => {
+    const rawBytes = fs.readFileSync(partPath);
+    // Check for ZIP magic bytes (PK\x03\x04)
+    if (rawBytes[0] === 0x50 && rawBytes[1] === 0x4b && rawBytes[2] === 0x03 && rawBytes[3] === 0x04) {
+      try {
+        const wrapperZip = new AdmZip(rawBytes);
+        const entries = wrapperZip.getEntries();
+        // The inner entry is the original part file (without the outer .zip wrapper)
+        const partBase = dir.basename(partPath).replace(/\.zip$/i, '');
+        const entry = entries.find((e) => e.entryName === partBase || e.entryName.endsWith('/' + partBase));
+        if (entry) {
+          return entry.getData();
+        }
+        // Fallback: single-entry archive
+        if (entries.length === 1) {
+          return entries[0].getData();
+        }
+      } catch (_) {
+        // Not a valid zip or extraction failed — use raw bytes
+      }
+    }
+    return rawBytes;
+  };
+
+  const mergedBuffer = Buffer.concat(partPaths.map(readPartBytes));
+  fs.writeFileSync(zipPath, mergedBuffer);
+
+  logger.warn('merge-zip: merged split parts into zip', {
+    zipPath,
+    parts: partPaths.length,
+    mergedBytes: mergedBuffer.length,
+  });
+
+  return { zipPath, partPaths, mergedBytes: mergedBuffer.length };
+};
+
+const unzipClientBuild = ({ buildPrefix, logger }) => {
+  const { zipPath, partPaths, buildPrefix: resolvedBuildPrefix } = resolveClientBuildZip(buildPrefix);
+  const outputPath = resolvedBuildPrefix.replace(/-$/, '');
+
+  fs.removeSync(outputPath);
+  fs.mkdirSync(outputPath, { recursive: true });
+
+  const zip =
+    partPaths.length > 0
+      ? new AdmZip(Buffer.concat(partPaths.map((partPath) => fs.readFileSync(partPath))))
+      : new AdmZip(zipPath);
+
+  zip.extractAllTo(outputPath, true);
+
+  logger.warn('unzip build', {
+    source: partPaths.length > 0 ? partPaths : [zipPath],
+    outputPath,
+    splitParts: partPaths.length,
+  });
+
+  return {
+    outputPath,
+    zipPath,
+    partPaths,
+  };
 };
 
 /** @type {string} Default XSL sitemap template used when no `sitemap` source file exists in the public directory. */
@@ -233,6 +453,7 @@ const defaultSitemapXsl = `<?xml version="1.0" encoding="UTF-8"?>
  * @param {Array} options.liveClientBuildPaths - List of paths to build incrementally.
  * @param {Array} options.instances - List of instances to build.
  * @param {boolean} options.buildZip - Whether to create zip files of the builds.
+ * @param {string|number} options.split - Optional zip split size in MB.
  * @param {boolean} options.fullBuild - Whether to perform a full build.
  * @param {boolean} options.iconsBuild - Whether to build icons.
  * @returns {Promise<void>} - Promise that resolves when the build is complete.
@@ -245,6 +466,7 @@ const buildClient = async (
     liveClientBuildPaths: [],
     instances: [],
     buildZip: false,
+    split: '',
     fullBuild: false,
     iconsBuild: false,
   },
@@ -311,35 +533,18 @@ const buildClient = async (
 
     buildAcmeChallengePath(acmeChallengeFullPath);
 
-    if (publicClientId && publicClientId.startsWith('html-website-templates')) {
-      if (!fs.existsSync(`/home/dd/html-website-templates/`))
-        shellExec(`cd /home/dd && git clone https://github.com/designmodo/html-website-templates.git`);
-      if (!fs.existsSync(`${rootClientPath}/index.php`)) {
-        fs.copySync(`/home/dd/html-website-templates/${publicClientId.split('-publicClientId-')[1]}`, rootClientPath);
-        Underpost.repo.initLocalRepo({ path: rootClientPath });
-        shellExec(`cd ${rootClientPath} && git add . && git commit -m "Base template implementation"`);
-        // git remote add origin git@github.com:<username>/<repo>.git
-        fs.writeFileSync(`${rootClientPath}/.git/.htaccess`, `Deny from all`, 'utf8');
-      }
-      return;
-    }
-
     fs.removeSync(rootClientPath);
 
     if (fs.existsSync(`./src/client/public/${publicClientId}`)) {
       if (iconsBuild === true) await buildIcons({ publicClientId, metadata });
 
-      fs.copySync(
-        `./src/client/public/${publicClientId}`,
-        rootClientPath /* {
-            filter: function (name) {
-              console.log(name);
-              return true;
-            },
-          } */,
-      );
+      fs.copySync(`./src/client/public/${publicClientId}`, rootClientPath, {
+        filter: (sourcePath) => !sourcePath.split(dir.sep).includes('.git'),
+      });
     } else if (fs.existsSync(`./engine-private/src/client/public/${publicClientId}`)) {
-      fs.copySync(`./engine-private/src/client/public/${publicClientId}`, rootClientPath);
+      fs.copySync(`./engine-private/src/client/public/${publicClientId}`, rootClientPath, {
+        filter: (sourcePath) => !sourcePath.split(dir.sep).includes('.git'),
+      });
     }
     if (dists)
       for (const dist of dists) {
@@ -838,13 +1043,24 @@ ${fs.readFileSync(`${rootClientPath}/sw.js`, 'utf8')}`,
         }
 
         const buildId = `${host}-${path.replaceAll('/', '')}`;
+        const zipPath = `./build/${buildId}.zip`;
 
-        logger.warn('write zip', `./build/${buildId}.zip`);
+        logger.warn('write zip', zipPath);
 
-        zip.writeZip(`./build/${buildId}.zip`);
+        zip.writeZip(zipPath);
+
+        if (options.split) {
+          splitFileByMb({
+            filePath: zipPath,
+            partSizeMb: options.split,
+            logger,
+          });
+          fs.removeSync(zipPath);
+          logger.warn('removed original zip after split', { zipPath });
+        }
       }
     }
   }
 };
 
-export { buildClient, copyNonExistingFiles };
+export { buildClient, copyNonExistingFiles, unzipClientBuild, mergeClientBuildZip };

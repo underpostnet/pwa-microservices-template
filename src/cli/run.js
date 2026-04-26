@@ -2123,7 +2123,7 @@ EOF
 
     secret: (path, options = DEFAULT_OPTION) => {
       const secretPath = path ? path : `/home/dd/engine/engine-private/conf/dd-cron/.env.production`;
-      const command = `node bin secret underpost --create-from-file ${secretPath}`;
+      const command = `${options.dev ? 'node bin' : 'underpost'} secret underpost --create-from-file ${secretPath}`;
       shellExec(command);
     },
     /**
@@ -2292,6 +2292,113 @@ EOF`;
       if (successInstance) {
         options.on?.init ? await options.on.init() : null;
         if (options.logs) shellExec(`kubectl logs -f ${podName} -n ${namespace}`, { async: true });
+      }
+    },
+
+    /**
+     * @method push-bundle
+     * @description Builds the client zip for the specified deployment, splits it into parts, and uploads to file storage.
+     *   Steps: set env, build+split zip, switch to cron env, upload parts to storage.
+     * @param {string} path - Optional `fsPath.splitOption` string.
+     *   Examples: `build` (default split 8), `build.16` (split 16 MB), `build.none-split` (no split flag).
+     * @param {Object} options - The default underpost runner options for customizing workflow.
+     * @param {string} [options.deployId] - Override deploy ID.
+     * @param {boolean} [options.dev] - Use development environment; defaults to production.
+     * @memberof UnderpostRun
+     */
+    'push-bundle': (path = '', options = DEFAULT_OPTION) => {
+      const baseCommand = options.dev ? 'node bin' : 'underpost';
+      const env = options.dev ? 'development' : 'production';
+      const deployId = options.deployId || 'dd-default';
+      const pathParts = (path || '').split('.');
+      const fsPath = (pathParts[0] || '').trim() || 'build';
+      const splitOption = (pathParts[1] || '').trim();
+
+      let splitFlag = '--split 8';
+      if (splitOption) {
+        if (splitOption === 'none-split') {
+          splitFlag = '';
+        } else {
+          const splitMb = Number(splitOption);
+          if (Number.isFinite(splitMb) && splitMb > 0) {
+            splitFlag = `--split ${splitMb}`;
+          } else {
+            logger.warn('push-bundle: invalid split option, using default split 8', {
+              path,
+              splitOption,
+            });
+          }
+        }
+      }
+
+      shellExec(`${baseCommand} env ${deployId} ${env}`);
+      shellExec(`${baseCommand} client ${deployId} --build-zip${splitFlag ? ` ${splitFlag}` : ''}`);
+      shellExec(
+        `${baseCommand} fs ${fsPath} --recursive --deploy-id ${deployId} --storage-file-path engine-private/conf/${deployId}/storage.bundle.json --force`,
+      );
+    },
+
+    /**
+     * @method pull-bundle
+     * @description Downloads split zip parts from file storage, merges and extracts them, and moves the result into the public directory.
+     *   Steps: set cron env, download parts (omit-unzip), merge zip, unzip, remove zip, move to public/<host>.
+     * @param {string} path - Optional host name(s) used to locate zip(s) and as public destination(s) (e.g. 'underpost.net' or 'a.com,b.com').
+     *   If omitted, hosts are loaded from `engine-private/conf/<deployId>/conf.server.json`.
+     * @param {Object} options - The default underpost runner options for customizing workflow.
+     * @param {string} [options.deployId] - Deploy ID for storage lookup (defaults to 'dd-default').
+     * @param {boolean} [options.dev] - Use development environment; defaults to production.
+     * @memberof UnderpostRun
+     */
+    'pull-bundle': (path = '', options = DEFAULT_OPTION) => {
+      const baseCommand = options.dev ? 'node bin' : 'underpost';
+      const env = options.dev ? 'development' : 'production';
+      const deployId = options.deployId || 'dd-default';
+      const confServerPath = `./engine-private/conf/${deployId}/conf.server.json`;
+      const hosts = path
+        ? path
+            .split(',')
+            .map((h) => h.trim())
+            .filter(Boolean)
+        : fs.existsSync(confServerPath)
+          ? Object.keys(loadConfServerJson(confServerPath))
+          : [];
+
+      if (hosts.length === 0) {
+        logger.error('pull-bundle: no hosts resolved', {
+          deployId,
+          path,
+          confServerPath,
+        });
+        return;
+      }
+
+      shellExec(`${baseCommand} env ${deployId} ${env}`);
+      if (!fs.existsSync('./build')) fs.mkdirSync('./build', { recursive: true });
+      shellExec(
+        `${baseCommand} fs build --recursive --deploy-id ${deployId} --storage-file-path engine-private/conf/${deployId}/storage.bundle.json --pull --omit-unzip`,
+      );
+      for (const host of hosts) {
+        const zipPath = `build/${host}-.zip`;
+        const hasZip = fs.existsSync(zipPath);
+        const hasParts =
+          fs.existsSync('./build') &&
+          fs
+            .readdirSync('./build')
+            .some((name) => name.startsWith(`${host}-.zip.part`) || name.startsWith(`${host}-.zip-part`));
+
+        if (!hasZip && !hasParts) {
+          logger.warn(`Bundle not found for host '${host}'. Skipping host.`, {
+            zipPath,
+            deployId,
+          });
+          continue;
+        }
+
+        if (hasParts) shellExec(`${baseCommand} client --merge-zip ${zipPath}`);
+        shellExec(`${baseCommand} client --unzip ${zipPath}`);
+        shellExec(`sudo rm -rf ${zipPath}`);
+        if (fs.existsSync(`public/${host}`)) shellExec(`sudo rm -rf public/${host}`);
+        shellExec(`sudo mv build/${host} public/${host}`);
       }
     },
   };

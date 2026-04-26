@@ -75,6 +75,7 @@ class UnderpostFileStorage {
      * @param {boolean} [options.force=false] - Flag to force file operations.
      * @param {boolean} [options.pull=false] - Flag to pull files from storage.
      * @param {boolean} [options.git=false] - Flag to use Git for file operations.
+     * @param {boolean} [options.omitUnzip=false] - If true, do not extract zip and keep downloaded zip file.
      * @param {string} [options.storageFilePath=''] - The path to the storage configuration file.
      * @returns {Promise<void>} A promise that resolves when the recursive callback is complete.
      * @memberof UnderpostFileStorage
@@ -88,10 +89,50 @@ class UnderpostFileStorage {
         force: false,
         pull: false,
         git: false,
+        omitUnzip: false,
         storageFilePath: '',
       },
     ) {
       const { storage, storageConf } = Underpost.fs.getStorageConf(options);
+
+      // In recursive remove mode, delete every tracked storage key under the requested path,
+      // even when local files/directories are already missing.
+      if (options.rm === true) {
+        const normalizedPath = typeof path === 'string' ? path.trim() : '';
+        const basePath = normalizedPath.replace(/\/+$/, '');
+        const hasPathFilter = basePath.length > 0;
+
+        const associatedPaths = Object.keys(storage || {}).filter((storedPath) => {
+          if (!hasPathFilter) return true;
+          return storedPath === basePath || storedPath.startsWith(`${basePath}/`);
+        });
+
+        for (const associatedPath of associatedPaths) {
+          await Underpost.fs.delete(associatedPath);
+          if (storage) delete storage[associatedPath];
+        }
+
+        if (hasPathFilter && options.force === true && fs.existsSync(basePath)) fs.removeSync(basePath);
+
+        Underpost.fs.writeStorageConf(storage, storageConf);
+
+        if (associatedPaths.length === 0)
+          logger.warn('No associated tracked storage paths found', { path: hasPathFilter ? basePath : '*' });
+        else
+          logger.info('Removed associated tracked storage paths', {
+            path: hasPathFilter ? basePath : '*',
+            removed: associatedPaths.length,
+          });
+
+        if (options.git === true) {
+          const gitPath = hasPathFilter ? basePath : '.';
+          shellExec(`cd ${gitPath} && git add .`);
+          shellExec(`underpost cmt ${gitPath} feat`);
+        }
+
+        return;
+      }
+
       const deleteFiles = options.pull === true ? [] : Underpost.repo.getDeleteFiles(path);
       for (const relativePath of deleteFiles) {
         const _path = path + '/' + relativePath;
@@ -143,12 +184,13 @@ class UnderpostFileStorage {
      * @param {boolean} [options.force=false] - Flag to force file operations.
      * @param {boolean} [options.pull=false] - Flag to pull files from storage.
      * @param {boolean} [options.git=false] - Flag to use Git for file operations.
+     * @param {boolean} [options.omitUnzip=false] - If true, do not extract zip and keep downloaded zip file.
      * @returns {Promise<void>} A promise that resolves when the callback is complete.
      * @memberof UnderpostFileStorage
      */
     async callback(
       path,
-      options = { rm: false, recursive: false, deployId: '', force: false, pull: false, git: false },
+      options = { rm: false, recursive: false, deployId: '', force: false, pull: false, git: false, omitUnzip: false },
     ) {
       if (options.recursive === true || options.git === true)
         return await Underpost.fs.recursiveCallback(path, options);
@@ -191,21 +233,36 @@ class UnderpostFileStorage {
      * @method pull
      * @description Pulls a file from Cloudinary.
      * @param {string} path - The path to the file to pull.
+     * @param {object} [options] - Pull options.
+     * @param {boolean} [options.omitUnzip=false] - If true, do not extract zip and keep downloaded zip file.
      * @returns {Promise<void>} A promise that resolves when the file is pulled.
      * @memberof UnderpostFileStorage
      */
-    async pull(path) {
+    async pull(path, options = { omitUnzip: false, force: false }) {
       Underpost.fs.cloudinaryConfig();
       const folder = dir.dirname(path);
       if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
+      const zipPath = `${path}.zip`;
+
+      if (options.omitUnzip === true && options.force !== true && fs.existsSync(zipPath)) {
+        logger.warn('pull skipped, zip already exists and omit-unzip is enabled', { path, zipPath });
+        return;
+      }
+
       const downloadResult = await cloudinary.utils.download_archive_url({
         public_ids: [path],
         resource_type: 'raw',
       });
       logger.info('download result', downloadResult);
-      await Downloader.downloadFile(downloadResult, path + '.zip');
-      path = Underpost.fs.zip2File(path + '.zip');
-      fs.removeSync(path + '.zip');
+      await Downloader.downloadFile(downloadResult, zipPath);
+
+      if (options.omitUnzip === true) {
+        logger.warn('omit unzip enabled, keeping downloaded zip file', { path, zipPath });
+        return;
+      }
+
+      path = Underpost.fs.zip2File(zipPath);
+      fs.removeSync(`${path}.zip`);
     },
     async delete(path) {
       Underpost.fs.cloudinaryConfig();
