@@ -65,6 +65,9 @@ const DefaultConf = /**/ {
           'SearchBox',
           'SocketIoHandler',
           'AppStore',
+          'AppRunner',
+          'AppDb',
+          'WebComponent',
         ],
         default: [
           'MenuDefault',
