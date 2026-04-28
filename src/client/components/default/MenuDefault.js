@@ -23,9 +23,10 @@ import { PanelForm } from '../core/PanelForm.js';
 import { Chat } from '../core/Chat.js';
 import { PublicProfile } from '../core/PublicProfile.js';
 
-const MenuDefault = {
-  Data: {},
-  Render: async function (options = { htmlMainBody: () => html`` }) {
+class MenuDefault {
+  static Data = {};
+
+  static async Render(options = { htmlMainBody: () => html`` }) {
     const id = getId(this.Data, 'menu-');
     this.Data[id] = {};
     const RouterInstance = RouterDefault();
@@ -759,7 +760,7 @@ const MenuDefault = {
         barMode,
       });
     });
-  },
-};
+  }
+}
 
 export { MenuDefault };

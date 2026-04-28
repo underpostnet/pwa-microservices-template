@@ -76,9 +76,9 @@ window.onload = () =>
         path: `/`,
       });
       await SocketIoDefault.Init();
-      await LogInDefault();
-      await LogOutDefault();
-      await SignUpDefault();
+      await LogInDefault.Init();
+      await LogOutDefault.Init();
+      await SignUpDefault.Init();
       await Keyboard.Init();
       await Modal.RenderSeoSanitizer();
     },

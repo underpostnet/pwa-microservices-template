@@ -1,4 +1,5 @@
 import { Translate } from './Translate.js';
+import { BaseComponent } from './WebComponent.js';
 
 const maintenance = async () => {
   const icon = html`<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 24 24">
@@ -72,6 +73,11 @@ const e500 = async () => {
   </div>`;
 };
 
-class Alert extends BaseComponent { static maintenance = maintenance; static noInternet = noInternet; static e404 = e404; static e500 = e500;}
+class Alert extends BaseComponent {
+  static maintenance = maintenance;
+  static noInternet = noInternet;
+  static e404 = e404;
+  static e500 = e500;
+}
 
 export { Alert };
