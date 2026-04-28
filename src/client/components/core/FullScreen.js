@@ -10,19 +10,20 @@ import { ToggleSwitch } from './ToggleSwitch.js';
 import { Translate } from './Translate.js';
 import { checkFullScreen, fullScreenIn, fullScreenOut, s } from './VanillaJs.js';
 
+import { BaseComponent } from './WebComponent.js';
 /**
  * Manages fullscreen mode state, event handling, and UI synchronization.
  * Supports all major browsers and PWA/Nativefier environments with comprehensive
  * vendor-prefixed API detection.
  * @memberof FullScreenClient
  */
-const FullScreen = {
+class FullScreen extends BaseComponent {
   /**
    * Internal state flag tracking the intended fullscreen mode.
    * @type {boolean}
    * @private
    */
-  _fullScreenSwitch: false,
+  static _fullScreenSwitch = false;
 
   /**
    * Flag indicating whether event listeners have been attached.
@@ -30,7 +31,7 @@ const FullScreen = {
    * @type {boolean}
    * @private
    */
-  _eventListenersAdded: false,
+  static _eventListenersAdded = false;
 
   /**
    * Flag preventing concurrent sync operations.
@@ -38,7 +39,7 @@ const FullScreen = {
    * @type {boolean}
    * @private
    */
-  _syncInProgress: false,
+  static _syncInProgress = false;
 
   /**
    * Checks if the browser is currently in fullscreen mode.
@@ -51,7 +52,7 @@ const FullScreen = {
    * @memberof FullScreenClient.FullScreen
    * @returns {boolean} True if currently in fullscreen mode, false otherwise.
    */
-  _isFullScreen: function () {
+  static _isFullScreen() {
     return !!(
       document.fullscreenElement ||
       document.webkitFullscreenElement ||
@@ -61,7 +62,7 @@ const FullScreen = {
       document.webkitIsFullScreen ||
       document.mozFullScreen
     );
-  },
+  }
 
   /**
    * Synchronizes the toggle switch UI state with the actual fullscreen state.
@@ -71,7 +72,7 @@ const FullScreen = {
    * @memberof FullScreenClient.FullScreen
    * @returns {void}
    */
-  _syncToggleState: function () {
+  static _syncToggleState() {
     if (this._syncInProgress) return;
     this._syncInProgress = true;
 
@@ -94,7 +95,7 @@ const FullScreen = {
     setTimeout(() => {
       this._syncInProgress = false;
     }, 100);
-  },
+  }
 
   /**
    * Event handler for fullscreen change events.
@@ -103,9 +104,9 @@ const FullScreen = {
    * @memberof FullScreenClient.FullScreen
    * @returns {void}
    */
-  _handleFullScreenChange: function () {
+  static _handleFullScreenChange() {
     this._syncToggleState();
-  },
+  }
 
   /**
    * Attaches all necessary event listeners for fullscreen mode detection.
@@ -118,7 +119,7 @@ const FullScreen = {
    * @memberof FullScreenClient.FullScreen
    * @returns {void}
    */
-  _addEventListeners: function () {
+  static _addEventListeners() {
     if (this._eventListenersAdded) return;
 
     const events = ['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange', 'MSFullscreenChange'];
@@ -148,7 +149,7 @@ const FullScreen = {
     );
 
     this._eventListenersAdded = true;
-  },
+  }
 
   /**
    * Enters fullscreen mode if not already in fullscreen.
@@ -158,7 +159,7 @@ const FullScreen = {
    * @memberof FullScreenClient.FullScreen
    * @returns {void}
    */
-  _enterFullScreen: function () {
+  static _enterFullScreen() {
     if (this._isFullScreen()) return;
 
     this._fullScreenSwitch = true;
@@ -166,7 +167,7 @@ const FullScreen = {
 
     // Verify after attempt
     setTimeout(() => this._syncToggleState(), 300);
-  },
+  }
 
   /**
    * Exits fullscreen mode if currently in fullscreen.
@@ -176,7 +177,7 @@ const FullScreen = {
    * @memberof FullScreenClient.FullScreen
    * @returns {void}
    */
-  _exitFullScreen: function () {
+  static _exitFullScreen() {
     if (!this._isFullScreen()) return;
 
     this._fullScreenSwitch = false;
@@ -184,7 +185,7 @@ const FullScreen = {
 
     // Verify after attempt
     setTimeout(() => this._syncToggleState(), 300);
-  },
+  }
 
   /**
    * Renders the fullscreen toggle setting UI component.
@@ -194,7 +195,7 @@ const FullScreen = {
    * @memberof FullScreenClient.FullScreen
    * @returns {Promise<string>} A promise resolving to the HTML string for the fullscreen setting component.
    */
-  RenderSetting: async function () {
+  static async RenderSetting() {
     // Initialize state from actual fullscreen status
     this._fullScreenSwitch = this._isFullScreen();
 
@@ -223,7 +224,7 @@ const FullScreen = {
         },
       })}
     </div>`;
-  },
-};
+  }
+}
 
 export { FullScreen };

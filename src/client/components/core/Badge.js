@@ -3,9 +3,10 @@ import { Css, renderCssAttr, Themes } from './Css.js';
 import { Modal } from './Modal.js';
 import { append, prepend, s } from './VanillaJs.js';
 
-const Badge = {
-  Tokens: {},
-  Render: async function (options = { id: '', type: 'circle-red', classList: '', text: '', style: '' }) {
+import { BaseComponent } from './WebComponent.js';
+class Badge extends BaseComponent {
+  static Tokens = {};
+  static async Render(options = { id: '', type: 'circle-red', classList: '', text: '', style: '' }) {
     if (!options.id) options.id = getId(this.Tokens, 'badge-');
     else options.id = 'badge-' + options.id;
     if (options && options.style && !options.style.color) options.style.color = 'white';
@@ -26,7 +27,7 @@ const Badge = {
     return html`<div class="badge wfm ${options.classList} ${id}" style="${renderCssAttr(options)}">
       <div class="badge-text">${options?.text ? options.text : 'B'}</div>
     </div>`;
-  },
-};
+  }
+}
 
 export { Badge };

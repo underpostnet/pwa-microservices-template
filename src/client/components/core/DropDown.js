@@ -6,9 +6,10 @@ import { ToggleSwitch } from './ToggleSwitch.js';
 import { Translate } from './Translate.js';
 import { s, htmls } from './VanillaJs.js';
 
-const DropDown = {
-  Tokens: {},
-  Render: async function (options) {
+import { BaseComponent } from './WebComponent.js';
+class DropDown extends BaseComponent {
+  static Tokens = {};
+  static async Render(options) {
     const id = options.id ? options.id : getId(this.Tokens, 'dropdown-');
     this.Tokens[id] = {
       onClickEvents: {},
@@ -343,7 +344,7 @@ const DropDown = {
         </div>
       </div>
     `;
-  },
-};
+  }
+}
 
 export { DropDown };

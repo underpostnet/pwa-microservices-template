@@ -11,6 +11,7 @@ import { s, getAllChildNodes, htmls } from './VanillaJs.js';
 import { Translate } from './Translate.js';
 import { darkTheme, ThemeEvents, subThemeManager, lightenHex, darkenHex } from './Css.js';
 
+import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta);
 
 /**
@@ -19,13 +20,13 @@ const logger = loggerFactory(import.meta);
  * custom rendering, click handlers, and result merging.
  * @memberof SearchBoxClient
  */
-const SearchBox = {
+class SearchBox extends BaseComponent {
   /**
    * Internal data storage for search state and handlers.
    * @type {object}
    * @memberof SearchBoxClient.SearchBox
    */
-  Data: {},
+  static Data = {};
 
   /**
    * Registry of registered search provider plugins.
@@ -38,7 +39,7 @@ const SearchBox = {
    * @type {Array<object>}
    * @memberof SearchBoxClient.SearchBox
    */
-  providers: [],
+  static providers = [];
 
   /**
    * Recent search results manager with localStorage persistence.
@@ -47,7 +48,7 @@ const SearchBox = {
    * @type {object}
    * @memberof SearchBoxClient.SearchBox
    */
-  RecentResults: {
+  static RecentResults = {
     /**
      * Storage key for localStorage persistence
      * @type {string}
@@ -98,10 +99,13 @@ const SearchBox = {
         return;
       }
 
+      const resultKey = result.targetSelector || result.routerId || result.id;
+
       // Create a clean copy excluding DOM elements (fontAwesomeIcon, imgElement)
       const cleanResult = {
         id: result.id,
         routerId: result.routerId,
+        targetSelector: result.targetSelector,
         type: result.type,
         providerId: result.providerId,
         title: result.title,
@@ -115,6 +119,9 @@ const SearchBox = {
 
       // Remove duplicate if it exists (based on id and providerId/routerId)
       const filteredRecent = recent.filter((r) => {
+        if (cleanResult.providerId === 'default-routes' && r.providerId === 'default-routes') {
+          return (r.targetSelector || r.routerId || r.id) !== resultKey;
+        }
         if (cleanResult.providerId && r.providerId) {
           return !(r.id === cleanResult.id && r.providerId === cleanResult.providerId);
         } else if (cleanResult.routerId && r.routerId) {
@@ -153,13 +160,17 @@ const SearchBox = {
         if (providerId) {
           return !(r.id === resultId && r.providerId === providerId);
         } else {
-          // For routes (providerId is null), match by routerId instead
-          return !(r.routerId === resultId);
+          // For default route/menu results, match by the most stable stored key.
+          return !(
+            (r.targetSelector || r.routerId || r.id) === resultId ||
+            r.routerId === resultId ||
+            r.id === resultId
+          );
         }
       });
       this.saveAll(filtered);
     },
-  },
+  };
 
   /**
    * Registers a search provider plugin for extensible search functionality.
@@ -173,7 +184,7 @@ const SearchBox = {
    * @param {number} [provider.priority=50] - Priority for result ordering (lower = higher priority).
    * @returns {void}
    */
-  registerProvider: function (provider) {
+  static registerProvider(provider) {
     if (!provider.id || !provider.search) {
       logger.error('Invalid provider. Must have id and search function');
       return;
@@ -186,13 +197,13 @@ const SearchBox = {
     this.providers.push({
       id: provider.id,
       search: provider.search,
-      renderResult: provider.renderResult || ((result) => this.defaultRenderResult(result)),
+      renderResult: provider.renderResult || ((result, index) => this.defaultRenderResult(result, index)),
       onClick: provider.onClick || (() => {}),
       priority: provider.priority || 50, // Lower number = higher priority in results
     });
 
     logger.info(`Registered search provider: ${provider.id}`);
-  },
+  }
 
   /**
    * Unregisters a search provider by its ID.
@@ -200,10 +211,10 @@ const SearchBox = {
    * @param {string} providerId - The ID of the provider to unregister.
    * @returns {void}
    */
-  unregisterProvider: function (providerId) {
+  static unregisterProvider(providerId) {
     this.providers = this.providers.filter((p) => p.id !== providerId);
     logger.info(`Unregistered search provider: ${providerId}`);
-  },
+  }
 
   /**
    * Default result renderer with support for tags and badges.
@@ -217,9 +228,10 @@ const SearchBox = {
    * @param {Array<string>} [result.tags] - Array of tag strings.
    * @param {string} result.type - Result type identifier.
    * @param {string} result.providerId - Provider ID that generated this result.
+   * @param {number} [index] - Result index used for click-handler binding.
    * @returns {string} HTML string for the search result.
    */
-  defaultRenderResult: function (result) {
+  static defaultRenderResult(result, index) {
     const icon = result.icon || '<i class="fas fa-file"></i>';
     const title = result.title || result.id || 'Untitled';
     const subtitle = result.subtitle || '';
@@ -238,6 +250,7 @@ const SearchBox = {
         class="search-result-item"
         data-result-id="${result.id}"
         data-result-type="${result.type}"
+        data-result-index="${index}"
         data-provider-id="${result.providerId}"
       >
         <div class="search-result-icon">${icon}</div>
@@ -247,7 +260,7 @@ const SearchBox = {
         </div>
       </div>
     `;
-  },
+  }
 
   /**
    * Navigates through search results using keyboard arrow keys.
@@ -260,7 +273,7 @@ const SearchBox = {
    * @param {number} totalItems - Total number of result items.
    * @returns {number} New active index after navigation.
    */
-  navigateResults: function (direction, containerId, currentIndex, totalItems) {
+  static navigateResults(direction, containerId, currentIndex, totalItems) {
     if (!containerId || totalItems === 0) return currentIndex;
 
     const container = s(`#${containerId}`) || s(`.${containerId}`);
@@ -289,7 +302,7 @@ const SearchBox = {
     }
 
     return newIndex;
-  },
+  }
 
   /**
    * Searches through default application routes for matches.
@@ -303,50 +316,172 @@ const SearchBox = {
    * @param {string} [context.options.searchCustomImgClass] - Custom image class to search for.
    * @returns {Array<object>} Array of route search results.
    */
-  searchRoutes: function (query, context) {
+  static normalizeSearchValue(value) {
+    return `${value ?? ''}`.toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  /**
+   * Collects currently rendered slide-menu buttons so search reflects the live UI.
+   * @returns {HTMLElement[]}
+   */
+  static getSearchableMenuButtons() {
+    if (typeof document === 'undefined') return [];
+
+    return Array.from(
+      document.querySelectorAll(
+        '.menu-btn-container .main-btn-menu, [class*="menu-btn-container-children"] .main-btn-menu',
+      ),
+    ).filter((button) => button && !button.classList.contains('hide'));
+  }
+
+  /**
+   * Builds stable metadata for a rendered menu button.
+   * @param {HTMLElement} button
+   * @returns {object}
+   */
+  static getMenuButtonMetadata(button) {
+    const classList = Array.from(button.classList || []);
+    const routeClass = classList.find(
+      (cls) => cls.startsWith('main-btn-') && cls !== 'main-btn-menu' && cls !== 'main-btn-menu-active',
+    );
+    const routerId = routeClass ? routeClass.slice('main-btn-'.length) : undefined;
+
+    const targetClass = [
+      ...(routeClass ? [routeClass] : []),
+      ...classList.filter(
+        (cls) =>
+          cls.startsWith('btn-') &&
+          ![
+            'btn-docs',
+            'btn-close',
+            'btn-menu',
+            'btn-modal-default',
+            'btn-icon-menu-back',
+            'btn-icon-menu-mode',
+          ].includes(cls),
+      ),
+    ].sort((left, right) => right.length - left.length)[0];
+
+    const labelEl = button.querySelector('.menu-label-text, .main-btn-menu-text');
+    const title = `${labelEl ? labelEl.textContent : button.textContent}`.replace(/\s+/g, ' ').trim();
+    const translationText = routerId ? this.normalizeSearchValue(Translate.Render(routerId)) : '';
+    const searchHaystack = this.normalizeSearchValue(
+      [
+        title,
+        routerId,
+        button.id,
+        button.tagName,
+        classList.join(' '),
+        button.getAttribute('title') || '',
+        button.getAttribute('aria-label') || '',
+        ...Object.values(button.dataset || {}),
+        translationText,
+      ].join(' '),
+    );
+
+    return {
+      routerId,
+      title,
+      targetSelector: button.id ? `#${button.id}` : targetClass ? `.${targetClass}` : null,
+      type: routerId ? 'route' : 'menu',
+      searchHaystack,
+    };
+  }
+
+  static searchRoutes(query, context) {
     const results = [];
     const { RouterInstance, options = {} } = context;
+    const lowerQuery = this.normalizeSearchValue(query);
 
-    if (!RouterInstance) return results;
+    if (!lowerQuery) return results;
+
+    const pushSearchResult = (result) => {
+      const resultKey = result.targetSelector || result.routerId || result.id;
+      if (!resultKey || results.find((item) => (item.targetSelector || item.routerId || item.id) === resultKey)) return;
+      results.push(result);
+    };
+
+    for (const button of this.getSearchableMenuButtons()) {
+      const metadata = this.getMenuButtonMetadata(button);
+      if (!metadata.searchHaystack.includes(lowerQuery)) continue;
+
+      const buttonChildren = getAllChildNodes(button);
+      const fontAwesomeIcon = buttonChildren.find((node) => {
+        return (
+          node.classList &&
+          Array.from(node.classList).find((cls) => cls.includes('fa-') && !cls.includes('fa-grip-vertical'))
+        );
+      });
+      const imgElement = buttonChildren.find((node) => {
+        return (
+          node.classList &&
+          Array.from(node.classList).find((cls) =>
+            options.searchCustomImgClass
+              ? cls.includes(options.searchCustomImgClass)
+              : cls.includes('img-btn-square-menu'),
+          )
+        );
+      });
+
+      pushSearchResult({
+        id: metadata.routerId || metadata.targetSelector?.replace(/^[.#]/, '') || metadata.title,
+        routerId: metadata.routerId,
+        targetSelector: metadata.targetSelector,
+        fontAwesomeIcon,
+        imgElement,
+        title: metadata.title || (metadata.routerId ? Translate.Render(metadata.routerId) : undefined),
+        type: metadata.type,
+        providerId: 'default-routes',
+      });
+    }
+
+    if (results.length > 0 || !RouterInstance || !RouterInstance.Routes) return results;
 
     const routerInstance = RouterInstance.Routes();
     for (const _routerId of Object.keys(routerInstance)) {
       const routerId = _routerId.slice(1);
-      if (routerId) {
-        if (
-          s(`.main-btn-${routerId}`) &&
-          (routerId.toLowerCase().match(query.toLowerCase()) ||
-            (Translate.Data[routerId] &&
-              Object.keys(Translate.Data[routerId]).filter((keyLang) =>
-                Translate.Data[routerId][keyLang].toLowerCase().match(query.toLowerCase()),
-              ).length > 0))
-        ) {
-          const fontAwesomeIcon = getAllChildNodes(s(`.main-btn-${routerId}`)).find((e) => {
-            return e.classList && Array.from(e.classList).find((e) => e.match('fa-') && !e.match('fa-grip-vertical'));
-          });
-          const imgElement = getAllChildNodes(s(`.main-btn-${routerId}`)).find((e) => {
-            return (
-              e.classList &&
-              Array.from(e.classList).find((e) =>
-                options.searchCustomImgClass ? e.match(options.searchCustomImgClass) : e.match('img-btn-square-menu'),
-              )
-            );
-          });
-          if (imgElement || fontAwesomeIcon) {
-            results.push({
-              id: routerId,
-              routerId,
-              fontAwesomeIcon,
-              imgElement,
-              type: 'route',
-              providerId: 'default-routes',
-            });
-          }
-        }
-      }
+      if (!routerId) continue;
+      if (!s(`.main-btn-${routerId}`)) continue;
+
+      const idMatches = this.normalizeSearchValue(routerId).includes(lowerQuery);
+      const translationMatches =
+        !idMatches &&
+        Translate.Data[routerId] &&
+        Object.keys(Translate.Data[routerId]).some((keyLang) =>
+          this.normalizeSearchValue(Translate.Data[routerId][keyLang]).includes(lowerQuery),
+        );
+
+      if (!idMatches && !translationMatches) continue;
+
+      const fontAwesomeIcon = getAllChildNodes(s(`.main-btn-${routerId}`)).find((e) => {
+        return (
+          e.classList && Array.from(e.classList).find((cls) => cls.includes('fa-') && !cls.includes('fa-grip-vertical'))
+        );
+      });
+      const imgElement = getAllChildNodes(s(`.main-btn-${routerId}`)).find((e) => {
+        return (
+          e.classList &&
+          Array.from(e.classList).find((cls) =>
+            options.searchCustomImgClass
+              ? cls.includes(options.searchCustomImgClass)
+              : cls.includes('img-btn-square-menu'),
+          )
+        );
+      });
+
+      // Always include matching routes — icon presence is a rendering concern, not a filter
+      pushSearchResult({
+        id: routerId,
+        routerId,
+        targetSelector: `.main-btn-${routerId}`,
+        fontAwesomeIcon,
+        imgElement,
+        type: 'route',
+        providerId: 'default-routes',
+      });
     }
     return results;
-  },
+  }
 
   /**
    * Executes search across all registered providers and default routes.
@@ -356,7 +491,7 @@ const SearchBox = {
    * @param {object} [context={}] - Search context object passed to all providers.
    * @returns {Promise<Array<object>>} Promise resolving to combined, priority-sorted results array.
    */
-  search: async function (query, context = {}) {
+  static async search(query, context = {}) {
     const allResults = [];
 
     // Always include default route search (backward compatible)
@@ -387,7 +522,7 @@ const SearchBox = {
     allResults.sort((a, b) => (a.priority || 50) - (b.priority || 50));
 
     return allResults;
-  },
+  }
 
   /**
    * Renders search results into a container element.
@@ -399,7 +534,7 @@ const SearchBox = {
    * @param {object} [context={}] - Render context passed to renderers and handlers.
    * @returns {void}
    */
-  renderResults: function (results, containerId, context = {}) {
+  static renderResults(results, containerId, context = {}) {
     const container = s(`#${containerId}`) || s(`.${containerId}`);
     if (!container) {
       logger.warn(`Container ${containerId} not found`);
@@ -468,7 +603,7 @@ const SearchBox = {
         provider.attachTagHandlers();
       }
     });
-  },
+  }
 
   /**
    * Attaches delete event handlers to result delete buttons within a specific container.
@@ -481,7 +616,7 @@ const SearchBox = {
    * @param {object} [context={}] - Context object.
    * @returns {void}
    */
-  attachDeleteHandlers: function (container, results, containerId, context = {}) {
+  static attachDeleteHandlers(container, results, containerId, context = {}) {
     // Only select delete buttons within this specific container
     const deleteButtons = container.querySelectorAll('.search-result-delete-btn');
     deleteButtons.forEach((btn) => {
@@ -530,7 +665,7 @@ const SearchBox = {
         }
       });
     });
-  },
+  }
 
   /**
    * Renders a default route search result.
@@ -546,17 +681,28 @@ const SearchBox = {
    * @param {object} [context.options] - Additional rendering options.
    * @returns {string} HTML string for the route search result.
    */
-  renderRouteResult: function (result, index, context = {}) {
+  static renderRouteResult(result, index, context = {}) {
     const { options = {} } = context;
     const routerId = result.routerId;
     const fontAwesomeIcon = result.fontAwesomeIcon;
     const imgElement = result.imgElement;
+    const targetSelector = result.targetSelector;
+
+    // Strip absolute-positioning classes from menu-button icons so they render
+    // in normal flow inside the .search-result-icon flex container.
+    // Menu buttons use class="abs center" (position:absolute + centering transform)
+    // which causes icons to fly outside the search result box when copied via outerHTML.
+    const cleanIconHtml = (el) => {
+      const clone = el.cloneNode(true);
+      clone.classList.remove('abs', 'center');
+      return clone.outerHTML;
+    };
 
     let iconHtml = '';
 
     // For route results from history, reconstruct icons from DOM
-    if (!fontAwesomeIcon && !imgElement && routerId) {
-      const routeBtn = s(`.main-btn-${routerId}`);
+    if (!fontAwesomeIcon && !imgElement) {
+      const routeBtn = (targetSelector && s(targetSelector)) || (routerId ? s(`.main-btn-${routerId}`) : null);
       if (routeBtn) {
         const icon = getAllChildNodes(routeBtn).find((e) => {
           return e.classList && Array.from(e.classList).find((e) => e.match('fa-') && !e.match('fa-grip-vertical'));
@@ -570,27 +716,29 @@ const SearchBox = {
           );
         });
         if (img) {
-          iconHtml = img.outerHTML;
+          iconHtml = cleanIconHtml(img);
         } else if (icon) {
-          iconHtml = icon.outerHTML;
+          iconHtml = cleanIconHtml(icon);
         }
       }
     } else {
       // For fresh search results, use provided DOM elements
       if (imgElement) {
-        iconHtml = imgElement.outerHTML;
+        iconHtml = cleanIconHtml(imgElement);
       } else if (fontAwesomeIcon) {
-        iconHtml = fontAwesomeIcon.outerHTML;
+        iconHtml = cleanIconHtml(fontAwesomeIcon);
       }
     }
 
-    const translatedText = Translate.Render(routerId);
+    const translatedText = result.title || (routerId ? Translate.Render(routerId) : result.id);
+    const resultId = result.id || routerId;
+    const resultType = result.type || 'route';
 
     return html`
       <div
         class="search-result-item search-result-route"
-        data-result-id="${routerId}"
-        data-result-type="route"
+        data-result-id="${resultId}"
+        data-result-type="${resultType}"
         data-result-index="${index}"
         data-provider-id="default-routes"
       >
@@ -600,7 +748,7 @@ const SearchBox = {
         </div>
       </div>
     `;
-  },
+  }
 
   /**
    * Attaches click event handlers to all rendered search results.
@@ -612,9 +760,12 @@ const SearchBox = {
    * @param {Function} [context.onResultClick] - Callback invoked after any result is clicked.
    * @returns {void}
    */
-  attachClickHandlers: function (results, containerId, context = {}) {
+  static attachClickHandlers(results, containerId, context = {}) {
+    const container = s(`#${containerId}`) || s(`.${containerId}`);
     results.forEach((result, index) => {
-      const element = s(`[data-result-index="${index}"]`);
+      const element = container
+        ? container.querySelector(`[data-result-index="${index}"]`)
+        : s(`[data-result-index="${index}"]`);
       if (!element) return;
 
       element.onclick = (e) => {
@@ -625,13 +776,10 @@ const SearchBox = {
         this.RecentResults.add(result);
 
         const provider = this.providers.find((p) => p.id === result.providerId);
+        const btnSelector = result.targetSelector || (result.routerId ? `.main-btn-${result.routerId}` : null);
 
-        if (result.type === 'route') {
-          // Default route behavior - click the menu button
-          const btnSelector = `.main-btn-${result.routerId}`;
-          if (s(btnSelector)) {
-            s(btnSelector).click();
-          }
+        if (btnSelector && s(btnSelector)) {
+          s(btnSelector).click();
         } else if (provider && provider.onClick) {
           // Custom provider click handler
           provider.onClick(result, context);
@@ -643,7 +791,7 @@ const SearchBox = {
         }
       };
     });
-  },
+  }
 
   /**
    * Scrolls an element into view within a scrollable container if needed.
@@ -668,7 +816,7 @@ const SearchBox = {
    * @param {HTMLElement} container - The scrollable container (or parent of scrollable).
    * @returns {void}
    */
-  scrollIntoViewIfNeeded: function (element, container) {
+  static scrollIntoViewIfNeeded(element, container) {
     if (!element || !container) return;
 
     // CRITICAL FIX: Find the actual scrollable container
@@ -744,7 +892,7 @@ const SearchBox = {
         });
       }
     }, 0);
-  },
+  }
 
   /**
    * Gets base CSS styles for SearchBox with theme-aware styling.
@@ -753,7 +901,7 @@ const SearchBox = {
    * @memberof SearchBoxClient.SearchBox
    * @returns {string} CSS string containing all base SearchBox styles.
    */
-  getBaseStyles: () => {
+  static getBaseStyles() {
     // Get theme color from subThemeManager
     const themeColor = darkTheme ? subThemeManager.darkColor : subThemeManager.lightColor;
     const hasThemeColor = themeColor && themeColor !== null;
@@ -806,11 +954,10 @@ const SearchBox = {
         align-items: center;
         gap: 10px;
         padding: 12px 14px;
-        margin: 4px 0;
         cursor: pointer;
         border-radius: 4px;
         transition: all 0.15s ease;
-        border: 1px solid transparent;
+        border: 2px solid transparent;
         background: transparent;
         min-height: 44px;
         box-sizing: border-box;
@@ -826,13 +973,13 @@ const SearchBox = {
       .search-result-item.active-search-result,
       .search-result-item.main-btn-menu-active {
         background: ${activeBg} !important;
-        border: 1px solid ${activeBorder} !important;
-        box-shadow: 0 0 0 1px ${activeBorder}66 !important;
+        border: 2px solid ${activeBorder} !important;
+        box-shadow: 0 0 0 2px ${activeBorder}66 !important;
       }
 
       .search-result-route {
         padding: 10px 12px;
-        margin: 2px;
+        margin: 2px 0;
         text-align: left;
         min-height: 40px;
       }
@@ -968,7 +1115,7 @@ const SearchBox = {
         transition: all 0.2s ease;
       }
     `;
-  },
+  }
 
   /**
    * Injects base SearchBox styles into the document head.
@@ -977,7 +1124,7 @@ const SearchBox = {
    * @memberof SearchBoxClient.SearchBox
    * @returns {void}
    */
-  injectStyles: function () {
+  static injectStyles() {
     const styleId = 'search-box-base-styles';
     let styleTag = document.getElementById(styleId);
 
@@ -1001,7 +1148,7 @@ const SearchBox = {
         }
       };
     }
-  },
-};
+  }
+}
 
 export { SearchBox };

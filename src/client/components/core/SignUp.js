@@ -8,12 +8,13 @@ import { Translate } from './Translate.js';
 import { Validator } from './Validator.js';
 import { s } from './VanillaJs.js';
 
-const SignUp = {
-  Event: {},
-  Trigger: async function (options) {
+import { BaseComponent } from './WebComponent.js';
+class SignUp extends BaseComponent {
+  static Event = {};
+  static async Trigger(options) {
     for (const eventKey of Object.keys(this.Event)) await this.Event[eventKey](options);
-  },
-  Render: async function (options = { bottomRender: async () => '' }) {
+  }
+  static async Render(options = { bottomRender: async () => '' }) {
     setTimeout(async () => {
       const formData = [
         {
@@ -138,7 +139,7 @@ const SignUp = {
         </div>
       </form>
     `;
-  },
-};
+  }
+}
 
 export { SignUp };

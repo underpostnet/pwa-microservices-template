@@ -13,28 +13,28 @@ import { DefaultService } from './default.service.js';
 
 const logger = loggerFactory(import.meta);
 
-const DefaultOptions = {
-  idModal: 'modal-default-management',
-  serviceId: 'default-management',
-  entity: 'default',
-  columnDefs: [
+class DefaultOptions {
+  static idModal = 'modal-default-management';
+  static serviceId = 'default-management';
+  static entity = 'default';
+  static columnDefs = [
     { field: '0', headerName: '0', cellClassRules: { 'row-new-highlight': (params) => true } },
     { field: '1', headerName: '1' },
     { field: '2', headerName: '2' },
     { field: 'createdAt', headerName: 'createdAt', cellDataType: 'date', editable: false },
     { field: 'updatedAt', headerName: 'updatedAt', cellDataType: 'date', editable: false },
-  ],
-  defaultColKeyFocus: '0',
-  ServiceProvider: DefaultService,
-  permissions: {
+  ];
+  static defaultColKeyFocus = '0';
+  static ServiceProvider = DefaultService;
+  static permissions = {
     add: true,
     remove: true,
     reload: true,
-  },
-  paginationOptions: {
+  };
+  static paginationOptions = {
     limitOptions: [10, 20, 50, 100],
-  },
-};
+  };
+}
 
 const columnDefFormatter = (obj, columnDefs, customFormat) => {
   for (const colDef of columnDefs)
@@ -60,10 +60,10 @@ const columnDefFormatter = (obj, columnDefs, customFormat) => {
   return customFormat ? customFormat(obj) : obj;
 };
 
-const DefaultManagement = {
-  Tokens: {},
+class DefaultManagement {
+  static Tokens = {};
   // Helper functions for managing serviceOptions ID filter
-  setIdFilter: function (id, itemId) {
+  static setIdFilter(id, itemId) {
     if (!this.Tokens[id]) {
       this.Tokens[id] = {};
     }
@@ -74,16 +74,16 @@ const DefaultManagement = {
       this.Tokens[id].serviceOptions.get = {};
     }
     this.Tokens[id].serviceOptions.get.id = itemId;
-  },
-  clearIdFilter: function (id) {
+  }
+  static clearIdFilter(id) {
     if (this.Tokens[id]?.serviceOptions?.get?.id) {
       delete this.Tokens[id].serviceOptions.get.id;
     }
-  },
-  getIdFilter: function (id) {
+  }
+  static getIdFilter(id) {
     return this.Tokens[id]?.serviceOptions?.get?.id ?? undefined;
-  },
-  waitGridReady: function (id) {
+  }
+  static waitGridReady(id) {
     return new Promise((resolve) => {
       if (this.Tokens[id]?.gridApi) {
         return resolve(this.Tokens[id].gridApi);
@@ -94,8 +94,8 @@ const DefaultManagement = {
         resolve(params.api);
       };
     });
-  },
-  runIsolated: async function (id, callback) {
+  }
+  static async runIsolated(id, callback) {
     if (!this.Tokens[id]) return await callback();
     this.Tokens[id].isProcessingQueryChange = true;
     try {
@@ -103,8 +103,8 @@ const DefaultManagement = {
     } finally {
       this.Tokens[id].isProcessingQueryChange = false;
     }
-  },
-  loadTable: async function (id, options = {}) {
+  }
+  static async loadTable(id, options = {}) {
     options = { reload: true, force: true, createHistory: false, skipUrlUpdate: false, ...options };
     try {
       if (!this.Tokens[id]) {
@@ -261,8 +261,8 @@ const DefaultManagement = {
       logger.error(`Error in loadTable for ${id}:`, error);
       throw error;
     }
-  },
-  hasActiveFilters: function (id) {
+  }
+  static hasActiveFilters(id) {
     const gridId = this.Tokens[id]?.gridId;
     if (!gridId) return false;
 
@@ -272,8 +272,8 @@ const DefaultManagement = {
     const sortModel = this.Tokens[id]?.sortModel || [];
 
     return Object.keys(filterModel).length > 0 || !!idFilter || sortModel.length > 0;
-  },
-  updateClearFilterButtonVisibility: function (id) {
+  }
+  static updateClearFilterButtonVisibility(id) {
     const clearFilterBtn = s(`.management-table-btn-clear-filter-${id}`);
     if (!clearFilterBtn) return;
 
@@ -282,8 +282,8 @@ const DefaultManagement = {
     } else {
       clearFilterBtn.classList.add('hide');
     }
-  },
-  refreshTable: async function (id) {
+  }
+  static async refreshTable(id) {
     const gridApi = AgGrid.grids[this.Tokens[id].gridId];
     if (gridApi) {
       // Use refreshCells with change detection for optimal performance
@@ -293,8 +293,8 @@ const DefaultManagement = {
         suppressFlash: false, // Show flash animation for changed cells (requires enableCellChangeFlash)
       });
     }
-  },
-  RenderTable: async function (options = DefaultOptions) {
+  }
+  static async RenderTable(options = DefaultOptions) {
     if (!options) options = DefaultOptions;
     const { serviceId, columnDefs, entity, defaultColKeyFocus, ServiceProvider, permissions, paginationOptions } =
       options;
@@ -1117,7 +1117,7 @@ const DefaultManagement = {
           },
         })}
       </div>`;
-  },
-};
+  }
+}
 
 export { DefaultManagement };

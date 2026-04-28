@@ -5,10 +5,11 @@ import { loggerFactory } from './Logger.js';
 import { append, htmls, s } from './VanillaJs.js';
 import { getProxyPath } from './Router.js';
 
+import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta);
 
-const LoadingAnimation = {
-  bar: {
+class LoadingAnimation extends BaseComponent {
+  static bar = {
     tokens: {},
     getId: (id) => `bar-progress-${id.slice(1)}`,
     play: async function (container) {
@@ -54,8 +55,8 @@ const LoadingAnimation = {
       setTimeout(() => (s(`.${id}`).style.opacity = 0));
       setTimeout(() => s(`.${id}`).remove(), 400);
     },
-  },
-  spinner: {
+  };
+  static spinner = {
     getId: (id) => `spinner-progress-${id.slice(1)}`,
     play: async function (container, spinner, options = { append: '', prepend: '' }) {
       if (!s(container)) return;
@@ -99,8 +100,8 @@ const LoadingAnimation = {
       const label = BtnIcon.findLabel(s(container));
       if (label) label.classList.remove('hide');
     },
-  },
-  img: {
+  };
+  static img = {
     tokens: {},
     load: function ({ key, src, classes, style }) {
       this.tokens[key] = { src, classes, style };
@@ -115,8 +116,8 @@ const LoadingAnimation = {
         />`,
       );
     },
-  },
-  barLevel: {
+  };
+  static barLevel = {
     append: () => {
       if (Array.from(sa('.ssr-loading-bar-block')).length >= 5) return;
       s(`.ssr-blink-bar`).classList.remove('ssr-blink-bar');
@@ -125,17 +126,17 @@ const LoadingAnimation = {
     clear: () => {
       htmls('.ssr-loading-bar', html`<div class="ssr-loading-bar-block ssr-blink-bar"></div>`);
     },
-  },
-  removeSplashScreen: function (backgroundContainer, callBack) {
+  };
+  static removeSplashScreen(backgroundContainer, callBack) {
     if (s(`.clean-cache-container`)) s(`.clean-cache-container`).style.display = 'none';
     if (!backgroundContainer) backgroundContainer = '.ssr-background';
     if (s(backgroundContainer)) {
       s(backgroundContainer).style.display = 'none';
       if (callBack) callBack();
     }
-  },
+  }
 
-  RenderCurrentSrcLoad: function (event) {
+  static RenderCurrentSrcLoad(event) {
     if (s(`.ssr-loading-info`)) {
       let nameSrcLoad = event.data.path;
       if (nameSrcLoad) {
@@ -153,6 +154,6 @@ const LoadingAnimation = {
           );
       }
     }
-  },
-};
+  }
+}
 export { LoadingAnimation };

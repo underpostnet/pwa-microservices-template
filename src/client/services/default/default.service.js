@@ -8,8 +8,8 @@ logger.info('Load service');
 
 const endpoint = 'default';
 
-const DefaultService = {
-  post: (options = { id: '', body: {} }) =>
+class DefaultService {
+  static post = (options = { id: '', body: {} }) =>
     new Promise((resolve, reject) =>
       fetch(getApiBaseUrl({ id: options.id, endpoint }), {
         method: 'POST',
@@ -28,8 +28,8 @@ const DefaultService = {
           logger.error(error);
           return reject(error);
         }),
-    ),
-  put: (options = { id: '', body: {} }) =>
+    );
+  static put = (options = { id: '', body: {} }) =>
     new Promise((resolve, reject) =>
       fetch(getApiBaseUrl({ id: options.id, endpoint }), {
         method: 'PUT',
@@ -48,8 +48,8 @@ const DefaultService = {
           logger.error(error);
           return reject(error);
         }),
-    ),
-  get: (options = {}) => {
+    );
+  static get(options = {}) {
     const { id, page, limit, filterModel, sortModel, sort, asc, order } = options;
     const url = buildQueryUrl(getApiBaseUrl({ id, endpoint }), {
       page,
@@ -79,8 +79,8 @@ const DefaultService = {
           return reject(error);
         }),
     );
-  },
-  delete: (options = { id: '', body: {} }) =>
+  }
+  static delete = (options = { id: '', body: {} }) =>
     new Promise((resolve, reject) =>
       fetch(getApiBaseUrl({ id: options.id, endpoint }), {
         method: 'DELETE',
@@ -99,7 +99,7 @@ const DefaultService = {
           logger.error(error);
           return reject(error);
         }),
-    ),
-};
+    );
+}
 
 export { DefaultService };

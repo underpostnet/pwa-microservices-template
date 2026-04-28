@@ -2,9 +2,10 @@ import { getId, newInstance } from './CommonJs.js';
 import { Modal } from './Modal.js';
 import { s } from './VanillaJs.js';
 
-const RichText = {
-  Tokens: {},
-  Render: async function (options = { id: '', parentIdModal: '' }) {
+import { BaseComponent } from './WebComponent.js';
+class RichText extends BaseComponent {
+  static Tokens = {};
+  static async Render(options = { id: '', parentIdModal: '' }) {
     const id = options?.id ? options.id : getId(this.Tokens, 'rich-text-');
     this.Tokens[id] = {};
     setTimeout(() => {
@@ -27,16 +28,9 @@ const RichText = {
       // easyMDE.value();
       // easyMDE.value(val);
     });
-    return html` <style>
-        .md-container {
-          background: white;
-        }
-        .md-container button {
-          color: black;
-        }
-      </style>
+    return html` <style></style>
       <div class="in md-container"><textarea class="${id}"></textarea></div>`;
-  },
-};
+  }
+}
 
 export { RichText };

@@ -11,6 +11,7 @@ import { listenQueryPathInstance, RouterEvents, setQueryPath, getQueryParams } f
 import { Translate } from './Translate.js';
 import { append, getTimeZone, htmls, s, sa } from './VanillaJs.js';
 
+import { BaseComponent } from './WebComponent.js';
 // https://fullcalendar.io/docs/event-object
 
 const daysOfWeekOptions = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
@@ -22,10 +23,10 @@ const eventDateFactory = (event) =>
     end: event.end,
   });
 
-const CalendarCore = {
-  RenderStyle: async function () {},
-  Data: {},
-  Render: async function (options = { idModal: '', appStore: {}, hiddenDates: [] }) {
+class CalendarCore extends BaseComponent {
+  static async RenderStyle() {}
+  static Data = {};
+  static async Render(options = { idModal: '', appStore: {}, hiddenDates: [] }) {
     this.Data[options.idModal] = {
       data: [],
       originData: [],
@@ -452,7 +453,7 @@ const CalendarCore = {
         <div class="in"><div class="calendar-${idPanel}"></div></div>
       </div>
     `;
-  },
-};
+  }
+}
 
 export { CalendarCore };

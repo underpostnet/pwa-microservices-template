@@ -37,23 +37,184 @@ import { Scroll } from './Scroll.js';
 import { windowGetH, windowGetW } from './windowGetDimensions.js';
 import { SearchBox } from './SearchBox.js';
 
+import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta, { trace: true });
 
-const Modal = {
-  Data: {},
+/**
+ * Bar button configuration used inside `ModalRenderOptions.barConfig`.
+ * @typedef {object} ModalBarButton
+ * @property {boolean} [disabled] - Hide this button from the bar.
+ * @property {string}  [label]    - Inner HTML label for the button.
+ * @property {Function} [onClick] - Custom click handler (overrides default behaviour).
+ */
 
-  Render: async function (
+/**
+ * Bar configuration passed to `Modal.Render`.
+ * @typedef {object} ModalBarConfig
+ * @property {{ close: ModalBarButton, maximize: ModalBarButton, minimize: ModalBarButton, restore: ModalBarButton, menu: ModalBarButton }} buttons
+ */
+
+/**
+ * Options accepted by {@link Modal.Render}.
+ *
+ * @typedef {object} ModalRenderOptions
+ *
+ * --- Identity ---
+ * @property {string}   [id]               - Explicit CSS-safe modal ID. Auto-generated when omitted.
+ * @property {string}   [selector='body']  - DOM selector where the modal is appended/prepended.
+ * @property {'prepend'|string} [renderType] - Insert strategy. `'prepend'` inserts before existing children; default appends.
+ *
+ * --- Content ---
+ * @property {string|Function} [html]      - Inner body HTML string or async factory `() => Promise<string>`.
+ * @property {string}          [title]     - Plain-text title shown in the title bar.
+ * @property {Function}        [titleRender] - Render function returning an HTML string for the title (overrides `title`).
+ * @property {string}          [status]    - Optional status icon rendered in the bar.
+ * @property {string}          [icon]      - Icon HTML used by `RenderConfirm`.
+ *
+ * --- Dimensions & Layout ---
+ * @property {object}  [style]             - Inline style overrides applied to the modal root element (e.g. `{ width:'400px', 'z-index':5 }`).
+ * @property {boolean} [disableCenter]     - Skip automatic viewport-centering on first render.
+ * @property {boolean} [maximize]          - Programmatically click the maximize button after render.
+ * @property {boolean} [disableBoxShadow]  - Remove the default box-shadow CSS class.
+ * @property {string}  [class]             - Additional CSS classes appended to the modal root element.
+ *
+ * --- Mode ---
+ * @property {''|'view'|'slide-menu'|'slide-menu-right'|'slide-menu-left'|'dropNotification'} [mode]
+ *   Rendering mode:
+ *   - `''`               — standard floating modal (default).
+ *   - `'view'`           — full-width view panel, fills the content area to the right of the slide-menu.
+ *   - `'slide-menu'`     — side-drawer that slides in from the left.
+ *   - `'slide-menu-right'` — side-drawer from the right.
+ *   - `'slide-menu-left'`  — alias for `'slide-menu'`.
+ *   - `'dropNotification'` — toast-style drop notification.
+ * @property {'top-bottom-bar'|string} [barMode]
+ *   When `'top-bottom-bar'`, a bottom bar is added and heights are split 50 / 50.
+ *
+ * --- Bar & Buttons ---
+ * @property {ModalBarConfig} [barConfig]         - Button labels, visibility, and click overrides.
+ * @property {string}  [barClass]                 - Extra CSS classes for the `.top-bar` / bottom-bar element.
+ * @property {string}  [btnBarModalClass]          - CSS classes for the entire button-bar container (e.g. `'hide'`).
+ * @property {string}  [btnContainerClass]         - Extra classes on each individual bar-button wrapper.
+ * @property {string}  [btnIconContainerClass]     - Extra classes on the icon `<div>` inside each bar button.
+ * @property {string}  [titleClass]               - CSS classes for the title element (e.g. `'hide'`).
+ *
+ * --- Drag ---
+ * @property {boolean} [dragDisabled]             - Disable the @neodrag draggable behaviour entirely.
+ * @property {'bar'|string} [handleType='bar']    - Drag-handle strategy. `'bar'` restricts dragging to the title bar only.
+ *
+ * --- Slide-menu specific ---
+ * @property {string}   [slideMenu]               - ID of the slide-menu this `view` modal should track for width/position.
+ * @property {Function} [slideMenuTopBarBannerFix] - Async factory returning an HTML string shown in the top-bar banner area of a slide-menu modal.
+ * @property {Function} [onCollapseMenu]           - Called when the slide-menu collapses to icon-only width.
+ * @property {Function} [onExtendMenu]             - Called when the slide-menu expands back to full width.
+ * @property {string[]} [disableTools]             - Tool IDs to hide in the slide-menu top bar: `'app-icon'`, `'text-box'`, `'profile'`.
+ * @property {string}   [htmlMainBody]             - Extra HTML rendered inside the main-body panel attached to a slide-menu.
+ *
+ * --- View-mode specific ---
+ * @property {string}   [route]                   - URL path associated with this `view` modal for route-sync.
+ * @property {object}   [RouterInstance]           - Router instance used for `view`-mode route handling.
+ * @property {boolean}  [zIndexSync]              - Auto-manage z-index so the last-clicked `view` modal stays on top.
+ *
+ * --- Misc ---
+ * @property {boolean}  [observer]                - Attach a `ResizeObserver`; fires `onObserverListener` callbacks on resize.
+ * @property {string[]} [homeModals]              - Modal IDs that should be kept alive when `onHomeRouterEvent` is triggered.
+ * @property {boolean}  [query]                   - Capture the current `window.location.search` into the modal data on creation.
+ * @property {boolean}  [disableBtnCancel]        - (RenderConfirm only) Hide the cancel button.
+ */
+
+/**
+ * Runtime state stored in `Modal.Data[idModal]` for every live modal.
+ *
+ * @typedef {object} ModalDataEntry
+ * @property {ModalRenderOptions}       options               - Original options passed to `Render`.
+ * @property {Object.<string,Function>} onCloseListener       - Keyed callbacks fired when the modal closes.
+ * @property {Object.<string,Function>} onMenuListener        - Keyed callbacks fired when the menu button is clicked.
+ * @property {Object.<string,Function>} onCollapseMenuListener - Keyed callbacks fired when the slide-menu collapses.
+ * @property {Object.<string,Function>} onExtendMenuListener  - Keyed callbacks fired when the slide-menu expands.
+ * @property {Object.<string,Function>} onDragEndListener     - Keyed callbacks fired at the end of a drag gesture.
+ * @property {Object.<string,Function>} onObserverListener    - Keyed callbacks fired by the `ResizeObserver` (when `observer: true`).
+ * @property {Object.<string,Function>} onClickListener       - Keyed callbacks fired on any click of the modal root.
+ * @property {Object.<string,Function>} onExpandUiListener    - Keyed callbacks for UI expand events.
+ * @property {Object.<string,Function>} onBarUiOpen           - Keyed callbacks for bar-UI open events.
+ * @property {Object.<string,Function>} onBarUiClose          - Keyed callbacks for bar-UI close events.
+ * @property {Object.<string,Function>} onReloadModalListener - Keyed callbacks fired when the modal content reloads.
+ * @property {Object.<string,Function>} onHome                - Keyed callbacks for home-navigation events.
+ * @property {string[]}                 homeModals            - Populated from `options.homeModals`.
+ * @property {string|undefined}         query                 - Captured `window.location.search` (when `options.query` was true).
+ * @property {Function}                 getTop                - Returns the current bottom-anchor top offset in px.
+ * @property {Function}                 getHeight             - Returns the available content height minus top/bottom bars.
+ * @property {Function}                 getMenuLeftStyle      - Returns the CSS `left` value for the slide-menu in its current open/closed state.
+ * @property {Function}                 center                - Recomputes and applies the viewport-centred `top`/`left` values.
+ * @property {Function}                 setDragInstance       - Re-creates the @neodrag instance with optional updated options.
+ * @property {import('@neodrag/vanilla').DraggableOptions} [dragOptions] - Live drag options object.
+ * @property {import('@neodrag/vanilla').Draggable|null}   [dragInstance] - Live @neodrag instance (null when drag is disabled).
+ * @property {ResizeObserver|undefined} [observer]           - Live `ResizeObserver` when `options.observer` was true.
+ * @property {Function|undefined}      [observerCallBack]    - The callback wired into the observer.
+ * @property {{ callBack: Function, id: string }|undefined} [slideMenu] - Set while this modal is maximised against a slide-menu.
+ */
+
+class Modal extends BaseComponent {
+  /**
+   * Registry of every currently live modal, keyed by modal ID.
+   * @type {Object.<string, ModalDataEntry>}
+   */
+  static Data = {};
+
+  /**
+   * Creates and mounts a modal into the DOM.
+   *
+   * Returns the `ModalDataEntry` for the newly created modal (including its `id`).
+   * If a modal with the same `id` already exists it is reloaded in-place by firing
+   * all `onReloadModalListener` callbacks and maximising the existing window.
+   *
+   * @param {ModalRenderOptions} options
+   * @returns {Promise<ModalDataEntry & { id: string }>}
+   */
+  static async Render(
     options = {
+      // --- Identity ---
       id: '',
-      barConfig: {},
-      title: '',
+      selector: 'body',
+      renderType: '',
+      // --- Content ---
       html: '',
-      handleType: 'bar',
-      mode: '' /* slide-menu */,
-      RouterInstance: {},
-      disableTools: [],
-      observer: false,
+      title: '',
+      titleRender: undefined,
+      titleClass: '',
+      status: '',
+      // --- Dimensions & Layout ---
+      style: {},
+      disableCenter: false,
+      maximize: false,
       disableBoxShadow: false,
+      class: '',
+      // --- Mode ---
+      mode: '' /* 'view' | 'slide-menu' | 'slide-menu-right' | 'slide-menu-left' | 'dropNotification' */,
+      barMode: '' /* 'top-bottom-bar' */,
+      // --- Bar & Buttons ---
+      barConfig: {},
+      barClass: '',
+      btnBarModalClass: '',
+      btnContainerClass: '',
+      btnIconContainerClass: '',
+      // --- Drag ---
+      dragDisabled: false,
+      handleType: 'bar',
+      // --- Slide-menu specific ---
+      slideMenu: '',
+      slideMenuTopBarBannerFix: undefined,
+      onCollapseMenu: undefined,
+      onExtendMenu: undefined,
+      disableTools: [] /* ['app-icon', 'text-box', 'profile'] */,
+      htmlMainBody: '',
+      // --- View-mode specific ---
+      route: '',
+      RouterInstance: {},
+      zIndexSync: false,
+      // --- Misc ---
+      observer: false,
+      homeModals: [],
+      query: false,
     },
   ) {
     const originHeightBottomBar = 50;
@@ -132,14 +293,14 @@ const Modal = {
         case 'view':
           // if (options && options.slideMenu) s(`.btn-close-${options.slideMenu}`).click();
           options.zIndexSync = true;
+          options.dragDisabled = true;
 
           options.style = { width: '100%', ...options.style, 'min-width': `${minWidth}px` };
+          options.style.resize = 'none';
 
           if (Modal.mobileModal()) {
             options.barConfig.buttons.restore.disabled = true;
             options.barConfig.buttons.minimize.disabled = true;
-            options.dragDisabled = true;
-            options.style.resize = 'none';
             setTimeout(() => {
               s(`.btn-close-modal-menu`).click();
             });
@@ -681,7 +842,12 @@ const Modal = {
                       // Check minimum query length (default: 1 character)
                       const minLength = searchContext.minQueryLength;
                       if (trimmedQuery.length >= minLength) {
-                        results = await SearchBox.search(trimmedQuery, searchContext);
+                        try {
+                          results = await SearchBox.search(trimmedQuery, searchContext);
+                        } catch (err) {
+                          logger.error('SearchBox.search error:', err);
+                          results = [];
+                        }
                         renderSearchResult(results, false); // Search results - no delete buttons
                       } else if (trimmedQuery.length === 0) {
                         // Show recent results from persistent history when query is empty
@@ -768,78 +934,87 @@ const Modal = {
                 }
                 Modal.removeModal(searchBoxHistoryId);
               };
-              let boxHistoryDelayRender = 0;
+              let searchBoxHistoryOpening = null;
               const searchBoxHistoryOpen = async () => {
-                if (boxHistoryDelayRender) return;
+                // If a render is already in progress, wait for it to finish before proceeding.
+                // This prevents concurrent duplicate renders when oninput fires before the first
+                // Modal.Render completes (the old setTimeout-based flag reset too early).
+                if (searchBoxHistoryOpening) {
+                  await searchBoxHistoryOpening;
+                  return;
+                }
                 if (Modal.mobileModal()) {
                   btnCloseEvent();
                 }
-                boxHistoryDelayRender = 1000;
-                setTimeout(() => (boxHistoryDelayRender = 0));
                 if (!s(`.${searchBoxHistoryId}`)) {
-                  const { barConfig } = await Themes[Css.currentTheme]();
-                  barConfig.buttons.maximize.disabled = true;
-                  barConfig.buttons.minimize.disabled = true;
-                  barConfig.buttons.restore.disabled = true;
-                  barConfig.buttons.menu.disabled = true;
-                  barConfig.buttons.close.disabled = false;
-
-                  await Modal.Render({
-                    id: searchBoxHistoryId,
-                    barConfig,
-                    title: html`<div
-                      style="display: flex; align-items: center; justify-content: space-between; width: 100%;"
-                    >
-                      <div style="display: flex; align-items: center; gap: 8px;">
-                        <div class="search-box-recent-title">
-                          ${renderViewTitle({
-                            icon: html`<i class="fas fa-history mini-title"></i>`,
-                            text: Translate.Render('recent'),
-                          })}
-                        </div>
-                        <div class="search-box-result-title hide">
-                          ${renderViewTitle({
-                            icon: html`<i class="far fa-list-alt mini-title"></i>`,
-                            text: Translate.Render('results'),
-                          })}
-                        </div>
-                      </div>
-                    </div>`,
-                    html: () => html``,
-                    titleClass: 'mini-title',
-                    style: {
-                      resize: 'none',
-                      'max-width': '450px',
-                      height:
-                        this.mobileModal() && windowGetW() < 445
-                          ? `${windowGetH() - originHeightTopBar}px !important`
-                          : '300px !important',
-                      'z-index': 7,
-                    },
-                    class: 'search-history-modal',
-                    dragDisabled: true,
-                    maximize: true,
-                    barMode: options.barMode,
+                  let settle;
+                  searchBoxHistoryOpening = new Promise((resolve) => {
+                    settle = resolve;
                   });
+                  try {
+                    const { barConfig } = await Themes[Css.currentTheme]();
+                    barConfig.buttons.maximize.disabled = true;
+                    barConfig.buttons.minimize.disabled = true;
+                    barConfig.buttons.restore.disabled = true;
+                    barConfig.buttons.menu.disabled = true;
+                    barConfig.buttons.close.disabled = false;
 
-                  // Bind hover/focus and click-outside to dismiss
-                  hoverFocusCtl.bind();
-                  unbindDocSearch = EventsUI.bindDismissOnDocumentClick({
-                    shouldStay: hoverFocusCtl.shouldStay,
-                    onDismiss: () => dismissSearchBox(),
-                    anchors: [`.top-bar-search-box-container`, `.${id}`],
-                  });
-                  // Ensure cleanup when modal closes
-                  Modal.Data[id].onCloseListener[`unbind-doc-${id}`] = () => unbindDocSearch && unbindDocSearch();
+                    await Modal.Render({
+                      id: searchBoxHistoryId,
+                      barConfig,
+                      title: html`<div
+                        style="display: flex; align-items: center; justify-content: space-between; width: 100%;"
+                      >
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                          <div class="search-box-recent-title">
+                            ${renderViewTitle({
+                              icon: html`<i class="fas fa-history mini-title"></i>`,
+                              text: Translate.Render('recent'),
+                            })}
+                          </div>
+                          <div class="search-box-result-title hide">
+                            ${renderViewTitle({
+                              icon: html`<i class="far fa-list-alt mini-title"></i>`,
+                              text: Translate.Render('results'),
+                            })}
+                          </div>
+                        </div>
+                      </div>`,
+                      html: () => html``,
+                      titleClass: 'mini-title',
+                      style: {
+                        resize: 'none',
+                        'max-width': '450px',
+                        height:
+                          this.mobileModal() && windowGetW() < 445
+                            ? `${windowGetH() - originHeightTopBar}px !important`
+                            : '300px !important',
+                        'z-index': 7,
+                      },
+                      class: 'search-history-modal',
+                      dragDisabled: true,
+                      maximize: true,
+                      barMode: options.barMode,
+                    });
 
-                  Modal.MoveTitleToBar(id);
+                    // Bind hover/focus and click-outside to dismiss
+                    hoverFocusCtl.bind();
+                    unbindDocSearch = EventsUI.bindDismissOnDocumentClick({
+                      shouldStay: hoverFocusCtl.shouldStay,
+                      onDismiss: () => dismissSearchBox(),
+                      anchors: [`.top-bar-search-box-container`, `.${id}`],
+                    });
+                    // Ensure cleanup when modal closes
+                    Modal.Data[id].onCloseListener[`unbind-doc-${id}`] = () => unbindDocSearch && unbindDocSearch();
 
-                  // Add styles for inline button layout in the search history modal bar
-                  const styleId = 'search-history-modal-bar-styles';
-                  if (!s(`#${styleId}`)) {
-                    const styleTag = document.createElement('style');
-                    styleTag.id = styleId;
-                    styleTag.textContent = `
+                    Modal.MoveTitleToBar(id);
+
+                    // Add styles for inline button layout in the search history modal bar
+                    const styleId = 'search-history-modal-bar-styles';
+                    if (!s(`#${styleId}`)) {
+                      const styleTag = document.createElement('style');
+                      styleTag.id = styleId;
+                      styleTag.textContent = `
                       .search-history-modal .btn-bar-modal-container .bar-default-modal {
                         display: flex;
                         flex-direction: row-reverse;
@@ -861,46 +1036,50 @@ const Modal = {
                         max-width: 100%;
                       }
                     `;
-                    document.head.appendChild(styleTag);
+                      document.head.appendChild(styleTag);
+                    }
+
+                    // Add clear all button to the bar area, before the close button
+                    const clearAllBtnHtml = await BtnIcon.Render({
+                      class: `btn-search-history-clear-all btn-modal-default btn-modal-default-${searchBoxHistoryId}`,
+                      label: html`<i class="fas fa-trash-alt"></i>`,
+                      attrs: `title="Clear all recent items"`,
+                      style: 'padding: 4px 8px; font-size: 12px; display: none;',
+                    });
+
+                    // Insert before close button in the bar (with flex row-reverse, inserting after close button places our button to its left visually)
+                    const closeBtn = s(`.btn-close-${searchBoxHistoryId}`);
+                    if (closeBtn) {
+                      closeBtn.insertAdjacentHTML('afterend', clearAllBtnHtml);
+                    }
+
+                    // Add click handler for clear all history button
+                    const clearAllBtn = s(`.btn-search-history-clear-all`);
+                    if (clearAllBtn) {
+                      clearAllBtn.onclick = (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        // Clear all history from persistent storage
+                        SearchBox.RecentResults.clear();
+                        // Re-render to show empty history (with isRecentHistory true to hide button)
+                        renderSearchResult([], true);
+                      };
+                    }
+
+                    prepend(`.btn-bar-modal-container-${id}`, html`<div class="hide">${inputInfoNode.outerHTML}</div>`);
+                  } finally {
+                    settle();
+                    searchBoxHistoryOpening = null;
                   }
-
-                  // Add clear all button to the bar area, before the close button
-                  const clearAllBtnHtml = await BtnIcon.Render({
-                    class: `btn-search-history-clear-all btn-modal-default btn-modal-default-${searchBoxHistoryId}`,
-                    label: html`<i class="fas fa-trash-alt"></i>`,
-                    attrs: `title="Clear all recent items"`,
-                    style: 'padding: 4px 8px; font-size: 12px; display: none;',
-                  });
-
-                  // Insert before close button in the bar (with flex row-reverse, inserting after close button places our button to its left visually)
-                  const closeBtn = s(`.btn-close-${searchBoxHistoryId}`);
-                  if (closeBtn) {
-                    closeBtn.insertAdjacentHTML('afterend', clearAllBtnHtml);
-                  }
-
-                  // Add click handler for clear all history button
-                  const clearAllBtn = s(`.btn-search-history-clear-all`);
-                  if (clearAllBtn) {
-                    clearAllBtn.onclick = (e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      // Clear all history from persistent storage
-                      SearchBox.RecentResults.clear();
-                      // Re-render to show empty history (with isRecentHistory true to hide button)
-                      renderSearchResult([], true);
-                    };
-                  }
-
-                  prepend(`.btn-bar-modal-container-${id}`, html`<div class="hide">${inputInfoNode.outerHTML}</div>`);
                 }
               };
 
-              s('.top-bar-search-box').oninput = () => {
-                searchBoxHistoryOpen();
+              s('.top-bar-search-box').oninput = async () => {
+                await searchBoxHistoryOpen();
                 searchBoxCallBack(formDataInfoNode[0]);
               };
-              s('.top-bar-search-box').onfocus = () => {
-                searchBoxHistoryOpen();
+              s('.top-bar-search-box').onfocus = async () => {
+                await searchBoxHistoryOpen();
                 searchBoxCallBack(formDataInfoNode[0]);
               };
 
@@ -915,8 +1094,8 @@ const Modal = {
               s('.top-bar-search-box').onblur = () => {
                 hoverFocusCtl.checkDismiss();
               };
-              EventsUI.onClick(`.top-bar-search-box-container`, () => {
-                searchBoxHistoryOpen();
+              EventsUI.onClick(`.top-bar-search-box-container`, async () => {
+                await searchBoxHistoryOpen();
                 searchBoxCallBack(formDataInfoNode[0]);
                 const inputEl = s(`.${inputSearchBoxId}`);
                 if (inputEl && inputEl.focus) inputEl.focus();
@@ -1913,6 +2092,10 @@ const Modal = {
       // Restore original dimensions and position
       this.Data[idModal].center();
       modal.style.transform = '';
+      if (options.mode === 'view') {
+        modal.style.position = 'fixed';
+        modal.style.translate = '0px 0px';
+      }
       modal.style.height = `${height}px`;
       modal.style.left = left;
       modal.style.top = top;
@@ -1944,6 +2127,10 @@ const Modal = {
       s(`.btn-restore-${idModal}`).style.display = null;
       s(`.btn-minimize-${idModal}`).style.display = null;
       modal.style.transform = null;
+      if (options.mode === 'view') {
+        modal.style.position = 'fixed';
+        modal.style.translate = '0px 0px';
+      }
 
       if (options.slideMenu) {
         const idSlide = this.Data[options.slideMenu]['slide-menu']
@@ -2029,10 +2216,19 @@ const Modal = {
       id: idModal,
       ...this.Data[idModal],
     };
-  },
-  subMenuBtnClass: {},
+  }
+  static subMenuBtnClass = {};
 
-  onHomeRouterEvent: async () => {
+  /**
+   * Navigate to home, close all non-home modals, and reset the slide-menu UI.
+   *
+   * Called by the router when the user navigates to the root path.
+   * Modals listed in `Modal.Data['modal-menu']?.homeModals` and core-UI element
+   * IDs that start with an entry in `coreUI` are kept open.
+   *
+   * @returns {Promise<void>}
+   */
+  static async onHomeRouterEvent() {
     // 1. Get list of modals to close.
     const modalsToClose = Object.keys(Modal.Data).filter((idModal) => {
       const modal = Modal.Data[idModal];
@@ -2072,9 +2268,24 @@ const Modal = {
     if (s(`.btn-close-modal-menu`) && !s(`.btn-close-modal-menu`).classList.contains('hide')) {
       s(`.btn-close-modal-menu`).click();
     }
-  },
-  currentTopModalId: '',
-  zIndexSync: function ({ idModal }) {
+  }
+  /**
+   * ID of the modal that is currently on top (highest z-index).
+   * Updated by {@link Modal.setTopModalCallback}.
+   * @type {string}
+   */
+  static currentTopModalId = '';
+
+  /**
+   * Bring a modal to the front and keep it there whenever the user clicks it.
+   *
+   * All other modals whose `zIndexSync` option is `true` are pushed back to z-index 3,
+   * while the target modal is raised to z-index 4. A permanent `onClickListener` is
+   * registered so subsequent clicks re-apply the elevation logic.
+   *
+   * @param {{ idModal: string }} params
+   */
+  static zIndexSync({ idModal }) {
     setTimeout(() => {
       if (!this.Data[idModal]) return;
       const cleanTopModal = () => {
@@ -2100,14 +2311,38 @@ const Modal = {
         }
       };
     });
-  },
-  setTopModalCallback: function (idModal) {
+  }
+  /**
+   * Mark `idModal` as the top modal by setting its z-index to 4 and recording it
+   * in {@link Modal.currentTopModalId}.
+   *
+   * @param {string} idModal
+   */
+  static setTopModalCallback(idModal) {
     s(`.${idModal}`).style.zIndex = '4';
     this.currentTopModalId = `${idModal}`;
-  },
-  mobileModal: () => windowGetW() < 600 || windowGetH() < 600,
-  writeHTML: ({ idModal, html }) => htmls(`.html-${idModal}`, html),
-  updateModal: async function ({ idModal, html, title }) {
+  }
+  /**
+   * Returns `true` when the viewport is small enough to be treated as a mobile screen
+   * (width < 600 px **or** height < 600 px).
+   *
+   * @type {() => boolean}
+   */
+  static mobileModal = () => windowGetW() < 600 || windowGetH() < 600;
+  /**
+   * Replace the inner HTML of the `.html-{idModal}` element.
+   *
+   * @param {{ idModal: string, html: string }} params
+   */
+  static writeHTML = ({ idModal, html }) => htmls(`.html-${idModal}`, html);
+  /**
+   * Update the content and/or title of an existing modal and fire all
+   * `onReloadModalListener` callbacks.
+   *
+   * @param {{ idModal: string, html?: string, title?: string }} params
+   * @returns {Promise<boolean>} `true` on success, `false` if the modal does not exist.
+   */
+  static async updateModal({ idModal, html, title }) {
     if (!this.Data[idModal] || !s(`.${idModal}`)) {
       console.warn(`Modal ${idModal} not found for update`);
       return false;
@@ -2134,19 +2369,48 @@ const Modal = {
     }
 
     return true;
-  },
-  viewModalOpen: function () {
+  }
+  /**
+   * Return the ID of the first currently rendered `view`-mode modal, or
+   * `undefined` if none is open.
+   *
+   * @returns {string|undefined}
+   */
+  static viewModalOpen() {
     return Object.keys(this.Data).find((idModal) => s(`.${idModal}`) && this.Data[idModal].options.mode === 'view');
-  },
-  removeModal: function (idModal) {
+  }
+  /**
+   * Unmount a modal and remove all associated DOM elements and registry data.
+   *
+   * Safe to call even if the modal is already gone — returns immediately when
+   * the element is not found in the DOM.
+   *
+   * @param {string} idModal
+   */
+  static removeModal(idModal) {
     if (!s(`.${idModal}`)) return;
     s(`.${idModal}`).remove();
     sa(`.style-${idModal}`).forEach((element) => {
       element.remove();
     });
     delete this.Data[idModal];
-  },
-  RenderConfirm: async function (options) {
+  }
+  /**
+   * Render a confirm/cancel dialog modal.
+   *
+   * Appends a semi-transparent backdrop to `<body>`, renders a centred modal with
+   * an icon, custom body HTML, and Confirm / Cancel buttons (Cancel can be hidden via
+   * `options.disableBtnCancel`). Resolves when the user interacts.
+   *
+   * @param {ModalRenderOptions & {
+   *   id: string,
+   *   html: () => Promise<string>,
+   *   icon?: string,
+   *   disableBtnCancel?: boolean,
+   * }} options
+   * @returns {Promise<{ status: 'confirm'|'cancelled' }>}
+   */
+  static async RenderConfirm(options) {
     const { id } = options;
     append(
       'body',
@@ -2242,10 +2506,27 @@ const Modal = {
         resolve({ status: 'confirm' });
       };
     });
-  },
-  labelSelectorTopOffsetStartAnimation: `-40px`,
-  labelSelectorTopOffsetEndAnimation: `-3px`,
-  menuTextLabelAnimation: (idModal, subMenuId) => {
+  }
+  /** Starting CSS `top` value for menu-label slide-in animation. */
+  static labelSelectorTopOffsetStartAnimation = `-40px`;
+  /** Ending CSS `top` value for menu-label slide-in animation. */
+  static labelSelectorTopOffsetEndAnimation = `-3px`;
+
+  /**
+   * Run the slide-in animation for menu-button text labels inside a slide-menu.
+   *
+   * When the slide-menu expands, icon-only labels are hidden, then after a short
+   * delay each label slides from `labelSelectorTopOffsetStartAnimation` down to
+   * `labelSelectorTopOffsetEndAnimation` (a drop-in effect).
+   *
+   * If `subMenuId` is provided only that sub-menu group is animated; otherwise all
+   * registered groups in `Modal.subMenuBtnClass` plus the root `.main-btn-menu` labels
+   * are animated.
+   *
+   * @param {string} idModal   - ID of the parent slide-menu modal.
+   * @param {string} [subMenuId] - If set, animate only this sub-menu group.
+   */
+  static menuTextLabelAnimation(idModal, subMenuId) {
     if (
       !s(
         `.btn-icon-menu-mode-${Modal.Data[idModal].options.mode === 'slide-menu-right' ? 'left' : 'right'}`,
@@ -2288,8 +2569,7 @@ const Modal = {
         });
       }, 400);
     }
-  },
-  // Move modal title element into the bar's render container so it aligns with control buttons
+  }
   /**
    * Position a modal relative to an anchor element
    * @param {Object} options - Positioning options
@@ -2300,7 +2580,7 @@ const Modal = {
    * @param {boolean} [options.autoVertical=true] - Whether to automatically determine vertical position
    * @param {boolean} [options.placeAbove] - Force position above/below anchor (overrides autoVertical)
    */
-  positionRelativeToAnchor({
+  static positionRelativeToAnchor({
     modalSelector,
     anchorSelector,
     offset = { x: 0, y: 6 },
@@ -2372,9 +2652,17 @@ const Modal = {
     } catch (e) {
       console.error('Error positioning modal:', e);
     }
-  },
+  }
 
-  MoveTitleToBar(idModal) {
+  /**
+   * Move the modal's title element into the bar button-container so it sits
+   * inline with the control buttons.
+   *
+   * No-op (silently) if the expected elements are not present in the DOM.
+   *
+   * @param {string} idModal
+   */
+  static MoveTitleToBar(idModal) {
     try {
       const titleEl = s(`.title-modal-${idModal}`);
       const container = s(`.btn-bar-modal-container-render-${idModal}`);
@@ -2387,8 +2675,14 @@ const Modal = {
     } catch (e) {
       // non-fatal: keep default placement if structure not present
     }
-  },
-  setTopBannerLink: function () {
+  }
+  /**
+   * Wire up the `.a-link-top-banner` anchor so it navigates to the proxy root
+   * via the client-side router instead of a full page reload.
+   *
+   * Safe to call even when the element is absent — returns immediately if not found.
+   */
+  static setTopBannerLink() {
     if (s(`.a-link-top-banner`)) {
       s(`.a-link-top-banner`).setAttribute('href', `${location.origin}${getProxyPath()}`);
       EventsUI.onClick(`.a-link-top-banner`, (e) => {
@@ -2396,33 +2690,101 @@ const Modal = {
         s(`.action-btn-home`).click();
       });
     }
-  },
-  headerTitleHeight: 40,
-  actionBtnCenter: function () {
+  }
+  /** Height in pixels reserved by the header-title area. @type {number} */
+  static headerTitleHeight = 40;
+
+  /**
+   * Toggle the main slide-menu by programmatically clicking its open or close
+   * button, whichever is currently visible.
+   *
+   * Typically mapped to a center-action button so keyboard / accessibility
+   * users can open/close the menu from a fixed position.
+   */
+  static actionBtnCenter() {
     if (!s(`.btn-close-modal-menu`).classList.contains('hide')) {
       return s(`.btn-close-modal-menu`).click();
     }
     if (!s(`.btn-menu-modal-menu`).classList.contains('hide')) {
       return s(`.btn-menu-modal-menu`).click();
     }
-  },
-  cleanUI: function () {
+  }
+  /**
+   * Hide the top bar, bottom bar, and main slide-menu (`modal-menu`).
+   *
+   * Used to enter a "full-screen" or "presentation" mode.
+   * Pair with {@link Modal.restoreUI} to reverse.
+   */
+  static cleanUI() {
     s(`.top-bar`).classList.add('hide');
     s(`.bottom-bar`).classList.add('hide');
     s(`.modal-menu`).classList.add('hide');
-  },
-  restoreUI: function () {
+  }
+  /**
+   * Restore the top bar, bottom bar, and main slide-menu hidden by {@link Modal.cleanUI}.
+   */
+  static restoreUI() {
     s(`.top-bar`).classList.remove('hide');
     s(`.bottom-bar`).classList.remove('hide');
     s(`.modal-menu`).classList.remove('hide');
-  },
-  RenderSeoSanitizer: async () => {
+  }
+
+  /**
+   * Re-applies the canonical top/height layout for maximized slide-menu-backed view modals.
+   *
+   * Chrome can leave these modals 50px short after same-origin iframe navigation inside Docs.
+   * This method uses the global slide-menu UI state as the source of truth and normalizes
+   * all live view containers back to that geometry.
+   */
+  static syncViewLayout() {
+    const modalMenuOptions = this.Data['modal-menu']?.options || {};
+    const uiCollapsed = !!s(`.main-body-btn-ui-close`) && s(`.main-body-btn-ui-close`).classList.contains('hide');
+    const topOffset = uiCollapsed ? 0 : modalMenuOptions.heightTopBar ? modalMenuOptions.heightTopBar : 50;
+    const bottomOffset = uiCollapsed ? 0 : modalMenuOptions.heightBottomBar ? modalMenuOptions.heightBottomBar : 0;
+    const height = `${windowGetH() - topOffset - bottomOffset}px`;
+
+    Object.keys(this.Data).forEach((idModal) => {
+      const modalData = this.Data[idModal];
+      const modalEl = s(`.${idModal}`);
+      if (!modalData || !modalEl || !modalData.slideMenu) return;
+      if (s(`.btn-restore-${idModal}`) && s(`.btn-restore-${idModal}`).style.display === 'none') return;
+
+      modalEl.style.position = 'fixed';
+      modalEl.style.translate = '0px 0px';
+      modalEl.style.transform = '';
+      modalEl.style.top = `${topOffset}px`;
+      modalEl.style.height = height;
+    });
+
+    if (Responsive.Event[`view-${'main-body'}`]) Responsive.Event[`view-${'main-body'}`]();
+    if (Responsive.Event[`view-${'bottom-bar'}`]) Responsive.Event[`view-${'bottom-bar'}`]();
+    if (Responsive.Event[`view-${'main-body-top'}`]) Responsive.Event[`view-${'main-body-top'}`]();
+  }
+
+  /**
+   * Add a missing `alt` attribute to every `<img>` in the document.
+   *
+   * The generated alt text is `"image {Worker.title} {uniqueSuffix}"` which
+   * satisfies basic SEO / accessibility requirements.
+   *
+   * @returns {Promise<void>}
+   */
+  static async RenderSeoSanitizer() {
     sa('img').forEach((img) => {
       if (!img.getAttribute('alt')) img.setAttribute('alt', 'image ' + Worker.title + ' ' + s4());
     });
-  },
-};
+  }
+}
 
+/**
+ * Render the icon + text label for a slide-menu navigation button.
+ *
+ * When `img` or `src` is provided an `<img>` element is used as the icon;
+ * otherwise `icon` (raw HTML) is rendered inline.
+ *
+ * @param {{ img?: string, src?: string, text: string, icon?: string }} params
+ * @returns {string} HTML string for the menu button label.
+ */
 const renderMenuLabel = ({ img, src, text, icon }) => {
   if (!img && !src) return html`<span class="inl menu-btn-icon">${icon}</span> ${text}`;
   const imgSrc = src ? src : `${getProxyPath()}assets/ui-icons/${img}`;
@@ -2430,6 +2792,27 @@ const renderMenuLabel = ({ img, src, text, icon }) => {
     <div class="abs center main-btn-menu-text">${text}</div>`;
 };
 
+/**
+ * Render the combined icon + text label used in `view`-mode titles.
+ *
+ * Supports a plain icon string, a bare `img` URL, or an asset-folder
+ * `ui-icon` filename.  Dimensions are controlled by `dim` (default 30 px)
+ * and vertical offsets by `top` / `topText`.
+ *
+ * @param {{
+ *   icon?: string,
+ *   img?: string,
+ *   'ui-icon'?: string,
+ *   assetFolder?: string,
+ *   text: string,
+ *   dim?: number,
+ *   top?: number,
+ *   topText?: number|string,
+ *   imgClass?: string,
+ *   textClass?: string,
+ * }} options
+ * @returns {string} HTML string for the view-title area.
+ */
 const renderViewTitle = (
   options = {
     icon: '',
@@ -2475,6 +2858,16 @@ const renderViewTitle = (
     </div>`;
 };
 
+/**
+ * Build the `Badge.Render` option object for a slide-menu button tooltip.
+ *
+ * The tooltip shows the translated label of `id` and is positioned to the
+ * `'left'` or `'right'` of the button icon.
+ *
+ * @param {string} id       - Translation key and element-ID suffix.
+ * @param {'left'|'right'} [sideKey='left'] - Tooltip side.
+ * @returns {object} Option object accepted by `Badge.Render`.
+ */
 const buildBadgeToolTipMenuOption = (id, sideKey = 'left') => {
   const option = {
     id: `tooltip-content-main-btn-${id}`,
@@ -2498,10 +2891,30 @@ const buildBadgeToolTipMenuOption = (id, sideKey = 'left') => {
   return option;
 };
 
+/**
+ * Return `true` when the sub-menu identified by `subMenuId` is currently open
+ * (its down-arrow is rotated 180 deg).
+ *
+ * @param {string} subMenuId
+ * @returns {boolean}
+ */
 const isSubMenuOpen = (subMenuId) => {
   return s(`.down-arrow-submenu-${subMenuId}`) && s(`.down-arrow-submenu-${subMenuId}`).style.rotate === '180deg';
 };
 
+/**
+ * Toggle the open/closed state of a slide-menu sub-menu with a CSS animation.
+ *
+ * - **Open → close**: collapses the container height to 0 and resets the arrow.
+ * - **Close → open**: expands the container, runs the label slide-in animation,
+ *   and repositions the container via `subMenuBtnClass[subMenuId].top()`.
+ *
+ * Also registers the sub-menu's button/label selectors into `Modal.subMenuBtnClass`
+ * so that {@link Modal.menuTextLabelAnimation} can animate them on slide-menu expand.
+ *
+ * @param {string} subMenuId - The route key that identifies the sub-menu group.
+ * @returns {Promise<void>}
+ */
 const subMenuRender = async (subMenuId) => {
   const _hBtn = 51;
   const menuBtn = s(`.main-btn-${subMenuId}`);
@@ -2566,6 +2979,16 @@ const subMenuRender = async (subMenuId) => {
   }, 500);
 };
 
+/**
+ * Close all sub-menus that are currently open except the one whose route matches
+ * `route`, then set the active-button highlight to the matching `cid` query param.
+ *
+ * Typically called on every client-side route change to keep the slide-menu
+ * sub-menu state in sync with the URL.
+ *
+ * @param {string[]} routes - Full list of route keys managed by this slide-menu.
+ * @param {string}   route  - The newly active route (sanitised internally).
+ */
 const subMenuHandler = (routes, route) => {
   route = sanitizeRoute(route);
   for (let _route of routes) {

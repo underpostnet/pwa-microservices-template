@@ -19,6 +19,7 @@ import { htmls, htmlStrSanitize, s } from './VanillaJs.js';
 import { getApiBaseUrl } from '../../services/core/core.service.js';
 import { FileService } from '../../services/file/file.service.js';
 
+import { BaseComponent } from './WebComponent.js';
 /**
  * Logger instance for this module.
  * @type {Function}
@@ -184,7 +185,7 @@ const getSrcFromFileData = (fileData) => {
  * @namespace InputClient.Input
  * @memberof InputClient
  */
-const Input = {
+class Input extends BaseComponent {
   /**
    * Renders an input element based on the provided options.
    * @async
@@ -200,7 +201,7 @@ const Input = {
    * @param {boolean} [options.disabled] - Whether the input is disabled.
    * @returns {Promise<string>} HTML string for the input component.
    */
-  Render: async function (options) {
+  static async Render(options) {
     const { id } = options;
     options?.placeholder
       ? options.placeholder === true
@@ -274,15 +275,15 @@ const Input = {
         <div class="in input-info input-info-${id}">&nbsp</div>
       </div>
     </div>`;
-  },
-  parseJson: (selector) => {
+  }
+  static parseJson(selector) {
     try {
       return JSON.parse(s(selector).value);
     } catch (error) {
       return s(selector).value;
     }
-  },
-  getValues: function (formData) {
+  }
+  static getValues(formData) {
     const obj = {};
     for (const inputData of formData) {
       if (inputData.disableRender) continue;
@@ -309,8 +310,8 @@ const Input = {
       }
     }
     return obj;
-  },
-  cleanValues: function (formData) {
+  }
+  static cleanValues(formData) {
     const obj = {};
     for (const inputData of formData) {
       if (!s(`.${inputData.id}`)) continue;
@@ -350,8 +351,8 @@ const Input = {
       if (s(`.input-info-${inputData.id}`)) htmls(`.input-info-${inputData.id}`, html`&nbsp`);
     }
     return obj;
-  },
-  setValues: async function (formData, obj, originObj, fileObj) {
+  }
+  static async setValues(formData, obj, originObj, fileObj) {
     setTimeout(async () => {
       for (const inputData of formData) {
         if (!s(`.${inputData.id}`)) continue;
@@ -436,11 +437,11 @@ const Input = {
         if (s(`.input-info-${inputData.id}`)) htmls(`.input-info-${inputData.id}`, html`&nbsp`);
       }
     });
-  },
-};
+  }
+}
 
-const InputFile = {
-  Render: async function (
+class InputFile extends BaseComponent {
+  static async Render(
     options = { id: '', multiple: false, extensionsAccept: [] },
     on = { change: () => {}, clear: () => {} },
   ) {
@@ -563,8 +564,8 @@ const InputFile = {
         </div>
       </div>
     </div>`;
-  },
-};
+  }
+}
 
 function isTextInputFocused() {
   const active = document.activeElement;

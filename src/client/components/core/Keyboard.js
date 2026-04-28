@@ -1,22 +1,46 @@
 import { cap, getId } from './CommonJs.js';
+import { BaseComponent } from './WebComponent.js';
 
-const Keyboard = {
-  ActiveKey: {},
-  Event: {},
-  Init: async function () {
+/**
+ * Keyboard input manager.
+ *
+ * Tracks which keys are currently held down and dispatches registered
+ * callbacks at a fixed polling interval.
+ *
+ * Uses `addEventListener` (not `window.onkeydown = ...`) so that other
+ * modules can also listen for key events without being silently overridden.
+ *
+ * @namespace Keyboard
+ */
+class Keyboard extends BaseComponent {
+  /** @type {Object.<string, true>} Map of currently pressed key names. */
+  static ActiveKey = {};
+
+  /**
+   * Registered key-event handlers.
+   * Structure: `{ [eventGroupId]: { [keyName]: callbackFn } }`
+   * @type {Object.<string, Object.<string, function>>}
+   */
+  static Event = {};
+
+  /**
+   * Initialises keyboard listeners and starts the polling interval.
+   * Safe to call multiple times — handler registration is idempotent on
+   * the singleton object.
+   * @returns {Promise<void>}
+   */
+  static async Init() {
     const callBackTime = 45;
-    window.onkeydown = (e = new KeyboardEvent()) => {
+
+    // addEventListener ensures we do not overwrite handlers registered by
+    // third-party libraries or other modules.
+    window.addEventListener('keydown', (e) => {
       this.ActiveKey[e.key] = true;
-      // e.composedPath()
-      // if (['Tab'].includes(e.key)) {
-      //   e.preventDefault();
-      //   e.stopPropagation();
-      //   e.stopImmediatePropagation();
-      // }
-    };
-    window.onkeyup = (e = new KeyboardEvent()) => {
+    });
+    window.addEventListener('keyup', (e) => {
       delete this.ActiveKey[e.key];
-    };
+    });
+
     setInterval(() => {
       Object.keys(this.Event).map((key) => {
         Object.keys(this.ActiveKey).map((activeKey) => {
@@ -24,9 +48,9 @@ const Keyboard = {
         });
       });
     }, callBackTime);
-  },
-  instanceMultiPressKeyTokens: {},
-  instanceMultiPressKey: (options = { keys: [], id, timePressDelay, eventCallBack: () => {} }) => {
+  }
+  static instanceMultiPressKeyTokens = {};
+  static instanceMultiPressKey(options = { keys: [], id, timePressDelay, eventCallBack: () => {} }) {
     if (typeof options.keys[0] === 'string') options.keys[0] = [options.keys[0]];
     if (!options.id) options.id = getId(Keyboard.instanceMultiPressKeyTokens, 'key-press-');
     if (!options.timePressDelay) options.timePressDelay = 500;
@@ -67,7 +91,7 @@ const Keyboard = {
         Keyboard.Event[`instanceMultiPressKey-${id}-${privateIndexCombined}`][cap(key)] = multiPressKey[key].trigger;
       }
     }
-  },
-};
+  }
+}
 
 export { Keyboard };

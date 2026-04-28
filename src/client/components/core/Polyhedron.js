@@ -5,11 +5,12 @@ import { getId, random } from './CommonJs.js';
 import { dynamicCol } from './Css.js';
 import { fullScreenIn, htmls, s } from './VanillaJs.js';
 import { Translate } from './Translate.js';
-// https://css-loaders.com/3d/
 
-const Polyhedron = {
-  Tokens: {},
-  Render: async function (options) {
+import { BaseComponent } from './WebComponent.js';// https://css-loaders.com/3d/
+
+class Polyhedron extends BaseComponent {
+  static Tokens = {};
+  static async Render(options) {
     const id = options?.id ? options.id : getId(this.Tokens, 'polyhedron-');
     if (!this.Tokens[id])
       this.Tokens[id] = {
@@ -1045,7 +1046,7 @@ const Polyhedron = {
         </div>
       </div>
     `;
-  },
-};
+  }
+}
 
 export { Polyhedron };

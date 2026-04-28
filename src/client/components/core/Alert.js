@@ -72,6 +72,6 @@ const e500 = async () => {
   </div>`;
 };
 
-const Alert = { maintenance, noInternet, e404, e500 };
+class Alert extends BaseComponent { static maintenance = maintenance; static noInternet = noInternet; static e404 = e404; static e500 = e500;}
 
 export { Alert };

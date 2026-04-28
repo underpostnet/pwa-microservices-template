@@ -3,9 +3,10 @@ import { Css, Themes } from './Css.js';
 import { Modal } from './Modal.js';
 import { append, prepend, s } from './VanillaJs.js';
 
-const NotificationManager = {
-  Types: ['success', 'error', 'warning', 'info'],
-  RenderBoard: async function (options) {
+import { BaseComponent } from './WebComponent.js';
+class NotificationManager extends BaseComponent {
+  static Types = ['success', 'error', 'warning', 'info'];
+  static async RenderBoard(options) {
     this.options = options;
     append(
       'body',
@@ -28,9 +29,9 @@ const NotificationManager = {
         <div class="fix notification-board-container"></div>
       `,
     );
-  },
-  Tokens: {},
-  Push: async function (options = { status: '', html: '' }) {
+  }
+  static Tokens = {};
+  static async Push(options = { status: '', html: '' }) {
     const { barConfig } = await Themes[Css.currentTheme](); // newInstance
     barConfig.buttons.maximize.disabled = true;
     barConfig.buttons.minimize.disabled = true;
@@ -57,8 +58,8 @@ const NotificationManager = {
     setTimeout(() => {
       if (s(`.btn-close-${idNotification}`)) s(`.btn-close-${idNotification}`).click();
     }, 2000);
-  },
-  NotificationScheme: {
+  }
+  static NotificationScheme = {
     // Visual Options
     body: '<String>',
     icon: '<URL String>',
@@ -78,7 +79,7 @@ const NotificationManager = {
     vibrate: '<Array of Integers>',
     sound: '<URL String>',
     silent: '<Boolean>',
-  },
-};
+  };
+}
 
 export { NotificationManager };

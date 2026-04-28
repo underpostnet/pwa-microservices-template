@@ -121,7 +121,7 @@ const transformClientJs = async (
       contents: stripped,
       loader: 'js',
       resolveDir: path.dirname(path.resolve(srcPath)),
-      sourcefile: srcPath,
+      sourcefile: path.basename(srcPath),
     },
     bundle: true,
     write: false,
@@ -136,4 +136,45 @@ const transformClientJs = async (
   return result.outputFiles[0].text;
 };
 
-export { srcFormatted, JSONweb, transformClientJs };
+/**
+ * Transforms a **service-worker** source file using esbuild, bundling all npm
+ * dependencies (e.g. Workbox) directly into the output file.
+ *
+ * Unlike `transformClientJs`, this function does NOT use `importRewritePlugin`.
+ * All `import` statements from `node_modules` are resolved and inlined by
+ * esbuild, producing a self-contained SW bundle with no external dependencies.
+ *
+ * The resulting string is written to `sw.js` and then prepended with
+ * `self.renderPayload = …` by the calling build step.
+ *
+ * @param {string} srcPath - Path to the SW source file (e.g. `workbox.sw.js`).
+ * @param {object} [options]
+ * @param {boolean} [options.minify=false] - Whether to minify the output.
+ * @returns {Promise<string>} The bundled SW source code.
+ * @memberof clientFormatted
+ */
+const transformSwBundle = async (srcPath, { minify: shouldMinify = false } = {}) => {
+  const src = fs.readFileSync(srcPath, 'utf8');
+  const stripped = srcFormatted(src);
+
+  const result = await esbuild.build({
+    stdin: {
+      contents: stripped,
+      loader: 'js',
+      resolveDir: path.dirname(path.resolve(srcPath)),
+      sourcefile: path.basename(srcPath),
+    },
+    bundle: true,
+    write: false,
+    format: 'esm',
+    platform: 'browser',
+    target: 'esnext',
+    minify: shouldMinify,
+    logLevel: 'warning',
+    // No importRewritePlugin: all npm modules (Workbox, etc.) are inlined.
+  });
+
+  return result.outputFiles[0].text;
+};
+
+export { srcFormatted, JSONweb, transformClientJs, transformSwBundle };

@@ -240,10 +240,10 @@ const CssCommonCore = async () => {
     <div class="ag-grid-style"></div>`;
 };
 
-const CssCoreDark = {
-  theme: 'core-dark',
-  dark: true,
-  render: async () =>
+class CssCoreDark {
+  static theme = 'core-dark';
+  static dark = true;
+  static render = async () =>
     (await CssCommonCore()) +
     html`
       <style>
@@ -552,13 +552,13 @@ const CssCoreDark = {
         }
       </style>
       ${scrollBarDarkRender()} ${borderChar(1, 'black', ['.main-body-btn-container'])}
-    `,
-};
+    `;
+}
 
-const CssCoreLight = {
-  theme: 'core-light',
-  dark: false,
-  render: async () =>
+class CssCoreLight {
+  static theme = 'core-light';
+  static dark = false;
+  static render = async () =>
     (await CssCommonCore()) +
     html`
       <style>
@@ -879,7 +879,7 @@ const CssCoreLight = {
         }
       </style>
       ${scrollBarLightRender()} ${borderChar(1, 'white', ['.main-body-btn-container'])}
-    `,
-};
+    `;
+}
 
 export { CssCoreDark, CssCoreLight };

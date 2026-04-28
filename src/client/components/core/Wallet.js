@@ -9,9 +9,10 @@ import { NotificationManager } from './NotificationManager.js';
 import { Translate } from './Translate.js';
 import { copyData, htmls, s } from './VanillaJs.js';
 
-const Wallet = {
-  Data: {},
-  Render: async function (options) {
+import { BaseComponent } from './WebComponent.js';
+class Wallet extends BaseComponent {
+  static Data = {};
+  static async Render(options) {
     const id = getId(this.Data, 'wallet-');
     setTimeout(async () => {
       EventsUI.onClick(`.btn-generate-keys-${id}`, async (e) => {
@@ -100,7 +101,7 @@ const Wallet = {
         </div>
       </div>
     `;
-  },
-};
+  }
+}
 
 export { Wallet };

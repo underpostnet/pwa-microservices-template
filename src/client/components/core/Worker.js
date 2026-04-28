@@ -81,17 +81,42 @@ class PwaWorker {
    * @param {function(): Promise<void>} options.render - Function to render the application's UI.
    * @returns {Promise<void>}
    */
-  async instance({ router, render }) {
-    window.ononline = async () => {
-      logger.warn('ononline');
-    };
-    window.onoffline = async () => {
-      logger.warn('onoffline');
-    };
+  /**
+   * Initializes the PWA worker, registers global/worker event listeners,
+   * checks service worker status, and renders the initial content.
+   *
+   * Boot sequence (designed for minimum Time-To-Interactive):
+   *   1. Register online/offline listeners.
+   *   2. Wire up SW message listeners (non-blocking).
+   *   3. **Kick off SW registration in the background** — does not block
+   *      the first paint.
+   *   4. `render()` — paint the app shell.
+   *   5. `LoadRouter` — route to the current URL.
+   *   6. Remove the splash screen → user sees the app.
+   *   7. `sessionInit()` — session verification runs after first paint so it
+   *      never delays the splash-screen removal.
+   *   8. Settle SW registration promise.
+   *
+   * @memberof PwaWorker
+   * @param {object} options - Configuration options.
+   * @param {function(): object} options.router - Returns the router instance.
+   * @param {function(): Promise<void>} options.render - Renders the app shell (CSS, layout, menu).
+   * @param {function(): Promise<void>} [options.sessionInit] - Performs session / auth / socket
+   *   initialisation.  Runs **after** the splash screen is removed so it never
+   *   blocks the first paint.  When omitted the old inline behaviour is preserved
+   *   for backward compatibility.
+   * @returns {Promise<void>}
+   */
+  async instance({ router, render, sessionInit }) {
+    // --- Online / offline event bridge ---
+    window.addEventListener('online', () => logger.warn('ononline'));
+    window.addEventListener('offline', () => logger.warn('onoffline'));
+    // Fire ononline immediately when we already have connectivity.
     setTimeout(() => {
-      if ('onLine' in navigator && navigator.onLine) window.ononline();
+      if ('onLine' in navigator && navigator.onLine) window.dispatchEvent(new Event('online'));
     });
 
+    // --- Service worker message bridge ---
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         logger.info('The controller of current browsing context has changed.');
@@ -99,55 +124,36 @@ class PwaWorker {
       navigator.serviceWorker.ready.then((worker) => {
         logger.info('Service Worker Ready', worker);
 
-        // event message listener
         navigator.serviceWorker.addEventListener('message', (event) => {
           logger.info('Received event message', event.data);
           const { status } = event.data;
-
-          switch (status) {
-            case 'loader':
-              {
-                LoadingAnimation.RenderCurrentSrcLoad(event);
-              }
-              break;
-
-            default:
-              break;
-          }
+          if (status === 'loader') LoadingAnimation.RenderCurrentSrcLoad(event);
         });
-
-        // if (navigator.serviceWorker.controller)
-        //   navigator.serviceWorker.controller.postMessage({
-        //     title: 'Hello from Client event message',
-        //   });
-
-        // broadcast message
-        // const channel = new BroadcastChannel('sw-messages');
-        // channel.addEventListener('message', (event) => {
-        //   logger.info('Received broadcast message', event.data);
-        // });
-        // channel.postMessage({ title: 'Hello from Client broadcast message' });
-        // channel.close();
       });
     }
 
     this.RouterInstance = router();
-    const isInstall = await this.status();
-    if (!isInstall) await this.install();
+
+    // Kick off SW registration in the background so it never blocks the
+    // first render.  We settle the promise later (step 8).
+    const swReady = this.status()
+      .then((isInstall) => {
+        if (!isInstall) return this.install();
+      })
+      .catch((err) => logger.error('SW init error (non-fatal):', err));
+
+    // --- Paint the app shell ---
     await render();
     await LoadRouter(this.RouterInstance);
     LoadingAnimation.removeSplashScreen();
-    if (this.devMode()) {
-      // const delayLiveReload = 1250;
-      // window.addEventListener('visibilitychange', () => {
-      //   if (document.visibilityState === 'visible') {
-      //     this.reload(delayLiveReload);
-      //   }
-      // });
-      // window.addEventListener('focus', () => {
-      //   this.reload(delayLiveReload);
-      // });
+
+    // --- Session / auth / socket — runs after the splash is gone ---
+    if (typeof sessionInit === 'function') {
+      await sessionInit();
     }
+
+    // --- Settle SW ---
+    await swReady;
     window.serviceWorkerReady = true;
   }
 
@@ -179,8 +185,15 @@ class PwaWorker {
   }
 
   /**
-   * Updates the application by clearing specific caches and running the service worker update logic.
-   * Cache names matching 'components/', 'services/', or '.index.js' are deleted.
+   * Updates the application by deleting **all** caches and triggering a
+   * service worker update check.
+   *
+   * The previous implementation matched cache names against path fragments
+   * ('components/', 'services/', '.index.js') which never matched the flat
+   * CACHE_NAME string used at runtime, making the method a no-op.  This
+   * version deletes every cache unconditionally so a clean precache is built
+   * on the next install event.
+   *
    * @memberof PwaWorker
    * @returns {Promise<void>}
    */
@@ -188,11 +201,7 @@ class PwaWorker {
     const isInstall = await this.status();
     if (isInstall) {
       const cacheNames = await caches.keys();
-      for (const cacheName of cacheNames) {
-        if (cacheName.match('components/') || cacheName.match('services/') || cacheName.match('.index.js')) {
-          await caches.delete(cacheName);
-        }
-      }
+      await Promise.all(cacheNames.map((name) => caches.delete(name)));
       await this.updateServiceWorker();
     }
   }

@@ -4,27 +4,27 @@ import { shellExec } from '../../server/process.js';
 
 const logger = loggerFactory(import.meta);
 
-const CoreService = {
-  post: async (req, res, options) => {
+class CoreService {
+  static async post(req, res, options) {
     /** @type {import('./core.model.js').CoreModel} */
     const Core = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.models.Core;
     return await new Core(req.body).save();
-  },
-  get: async (req, res, options) => {
+  }
+  static async get(req, res, options) {
     /** @type {import('./core.model.js').CoreModel} */
     const Core = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.models.Core;
     return await Core.findById(req.params.id);
-  },
-  put: async (req, res, options) => {
+  }
+  static async put(req, res, options) {
     /** @type {import('./core.model.js').CoreModel} */
     const Core = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.models.Core;
     return await Core.findByIdAndUpdate(req.params.id, req.body);
-  },
-  delete: async (req, res, options) => {
+  }
+  static async delete(req, res, options) {
     /** @type {import('./core.model.js').CoreModel} */
     const Core = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.models.Core;
     return await Core.findByIdAndDelete(req.params.id);
-  },
-};
+  }
+}
 
 export { CoreService };

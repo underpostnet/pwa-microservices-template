@@ -12,10 +12,11 @@ import { Validator } from './Validator.js';
 import { htmls, s } from './VanillaJs.js';
 import { WebhookProvider } from './Webhook.js';
 
+import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta);
 
-const LogIn = {
-  Scope: {
+class LogIn extends BaseComponent {
+  static Scope = {
     user: {
       main: {
         model: {
@@ -23,9 +24,9 @@ const LogIn = {
         },
       },
     },
-  },
-  Event: {},
-  Trigger: async function (options) {
+  };
+  static Event = {};
+  static async Trigger(options) {
     const { user } = options;
     if (user) this.Scope.user.main.model.user = { ...this.Scope.user.main.model.user, ...user };
 
@@ -107,8 +108,8 @@ const LogIn = {
         </div>`,
       );
     }
-  },
-  Render: async function () {
+  }
+  static async Render() {
     setTimeout(async () => {
       const formData = [
         { model: 'email', id: `log-in-email`, rules: [{ type: 'isEmpty' }, { type: 'isEmail' }] },
@@ -206,7 +207,7 @@ const LogIn = {
         </div>
       </form>
     `;
-  },
-};
+  }
+}
 
 export { LogIn };

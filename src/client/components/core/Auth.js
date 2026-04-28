@@ -7,6 +7,7 @@
 
 import { UserMock, UserService } from '../../services/user/user.service.js';
 import { Account } from './Account.js';
+import { AppDb } from './AppDb.js';
 import { loggerFactory } from './Logger.js';
 import { LogIn } from './LogIn.js';
 import { LogOut } from './LogOut.js';
@@ -16,6 +17,23 @@ import { Translate } from './Translate.js';
 import { s } from './VanillaJs.js';
 
 const logger = loggerFactory(import.meta, { trace: true });
+
+/**
+ * Decodes a JWT payload (without verification — trust is handled server-side).
+ * Used client-side only to extract `refreshExpiresAt` for local TTL checks.
+ *
+ * @param {string} token
+ * @returns {object|null}
+ * @memberof AuthClient
+ */
+const decodeJwtPayload = (token) => {
+  try {
+    const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    return JSON.parse(atob(base64));
+  } catch {
+    return null;
+  }
+};
 
 /**
  * Manages user authentication state, tokens, and session lifecycle.
@@ -183,29 +201,64 @@ class Auth {
 
   /**
    * Establishes a user session (logged-in) or falls back to a guest session.
-   * It attempts to use the provided token or a token from localStorage ('jwt').
+   *
+   * Fast-path optimisation: if AppDb holds a non-expired token whose
+   * `refreshExpiresAt` claim (set by the server in `jwtSign`) is still in
+   * the future, the `/auth` network call is skipped entirely.
+   *
+   * For **guest** sessions (stateless JWT-only since Valkey was removed),
+   * the token is fully self-validating — there is no server state to query.
+   * The client simply re-uses the token until `refreshExpiresAt` passes.
+   *
+   * Flow:
+   *   1. Check AppDb for a cached user token (fast-path, no network).
+   *   2. If no fast-path hit, validate with the backend.
+   *   3. On failure, check a cached guest token (no network needed).
+   *   4. On guest miss, create a new guest session (`sessionOut`).
+   *
    * @memberof AuthClient.Auth
-   * @param {object} [userServicePayload] - Payload from a successful login/signup call to UserService.
-   * @returns {Promise<{user: object}>} A promise resolving to the current user object.
+   * @param {object} [userServicePayload] - Payload from a successful login/signup call.
+   * @returns {Promise<{user: object}>} Resolves to the current user object.
    */
   async sessionIn(userServicePayload) {
     try {
-      let token = userServicePayload?.data?.token || localStorage.getItem('jwt');
+      // --- Fast-path: locally valid user token (no network round-trip) ---
+      if (!userServicePayload) {
+        const stored = await AppDb.session.get('jwt');
+        if (stored?.value) {
+          // AppDb.get() prunes entries whose `expiresAt` has passed.  We
+          // set expiresAt = refreshExpiresAt from the JWT so the fast-path
+          // lifetime matches the server-side refresh window exactly.
+          this.setToken(stored.value);
+          this.renderSessionUI();
+          this.scheduleTokenRefresh();
+          logger.info('sessionIn: fast-path from AppDb (no network)');
+          return { user: { role: 'user' } };
+        }
+      }
+
+      // --- Network path ---
+      let token = userServicePayload?.data?.token;
+      if (!token) {
+        const stored = await AppDb.session.get('jwt');
+        token = stored?.value ?? null;
+      }
 
       if (token) {
         this.setToken(token);
 
-        const result = userServicePayload
-          ? userServicePayload // From login/signup
-          : await UserService.get({ id: 'auth' }); // Verify token with backend
+        const result = userServicePayload ? userServicePayload : await UserService.get({ id: 'auth' });
 
         const { status, data, message } = result;
 
         if (status === 'success' && data.token) {
-          // A valid user token was found/refreshed
           this.setToken(data.token);
-          localStorage.setItem('jwt', data.token);
-          // Clear cached profile image to ensure fresh load for new user
+          // Use refreshExpiresAt from the JWT as the AppDb TTL so the
+          // fast-path lifetime is exactly aligned with the server's refresh
+          // window.  Fall back to 30 min if the claim is missing.
+          const claims = decodeJwtPayload(data.token);
+          const expiresAt = claims?.refreshExpiresAt ?? Date.now() + 30 * 60 * 1000;
+          await AppDb.session.put({ key: 'jwt', value: data.token, expiresAt });
           LogIn.Scope.user.main.model.user = {};
           this.renderSessionUI();
           await LogIn.Trigger({ user: data.user });
@@ -214,7 +267,6 @@ class Auth {
           return { user: data.user };
         } else if (message && message.match('expired')) {
           logger.warn('User session token expired.');
-          // Redirect to login modal and push notification
           setTimeout(() => {
             s(`.main-btn-log-in`).click();
             NotificationManager.Push({
@@ -225,49 +277,57 @@ class Auth {
         }
       }
 
-      // Cleanup failed user session attempt
+      // Cleanup failed user session attempt.
       this.deleteToken();
-      localStorage.removeItem('jwt');
+      await AppDb.session.delete('jwt');
 
-      // Anon guest session attempt
-      let guestToken = localStorage.getItem('jwt.g');
+      // --- Guest fast-path (fully offline — stateless JWT) ---
+      // Guest sessions are self-contained in the JWT payload; no Valkey
+      // lookup needed.  Simply check whether the token is still fresh.
+      const storedGuest = await AppDb.session.get('jwt.g');
+      const guestToken = storedGuest?.value ?? null;
       if (guestToken) {
         this.setGuestToken(guestToken);
-        let { data, status, message } = await UserService.get({ id: 'auth' }); // Verify guest token
-        if (status === 'success' && data.token) {
-          // Guest token is valid and refreshed
-          this.setGuestToken(data.token);
-          localStorage.setItem('jwt.g', data.token);
-          // Clear cached profile image for fresh guest session
-          LogIn.Scope.user.main.model.user = {};
-          await LogIn.Trigger(data);
-          await Account.updateForm(data.user);
-          return data;
-        } else {
-          logger.error(`Guest token validation failed: ${message}`);
-          // Fall through to full sessionOut to re-create guest session
-        }
+        // Re-mint guest identity from JWT claims (no network round-trip).
+        const claims = decodeJwtPayload(guestToken);
+        const guestUser = {
+          _id: claims?._id ?? '',
+          username: claims?.email?.split('@')[0] ?? 'guest',
+          email: claims?.email ?? '',
+          role: 'guest',
+          emailConfirmed: false,
+          profileImageId: null,
+          publicProfile: false,
+          briefDescription: '',
+        };
+        LogIn.Scope.user.main.model.user = {};
+        await LogIn.Trigger({ user: guestUser });
+        await Account.updateForm(guestUser);
+        return { user: guestUser };
       }
 
-      // If all attempts fail, create a new guest session (which calls sessionIn recursively)
       return await this.sessionOut();
     } catch (error) {
       logger.error('Error during sessionIn process:', error);
-      // Fallback to a mock user object
       return { user: UserMock.default };
     }
   }
 
   /**
-   * Ends the current user session (logout) and initiates a new anonymous guest session.
+   * Ends the current user session (logout) and initiates a new anonymous
+   * guest session.
+   *
+   * Cleans up all stored tokens from AppDb (namespaced; does not affect
+   * other apps on the same origin).
+   *
    * @memberof AuthClient.Auth
-   * @returns {Promise<object>} A promise resolving to the newly created guest session data.
+   * @returns {Promise<object>} Resolves to the newly created guest session data.
    */
   async sessionOut() {
-    // 1. End User Session
+    // 1. End user session
     try {
       const result = await UserService.delete({ id: 'logout' });
-      localStorage.removeItem('jwt');
+      await AppDb.session.delete('jwt');
       SearchBox.RecentResults.clear();
       this.deleteToken();
       if (this.#refreshTimeout) {
@@ -275,23 +335,30 @@ class Auth {
         this.#refreshTimeout = undefined;
       }
       this.renderGuestUi();
-      // Reset user data in the LogIn state/model
       LogIn.Scope.user.main.model.user = {};
       await LogOut.Trigger(result);
     } catch (error) {
       logger.error('Error during user logout:', error);
     }
 
-    // 2. Start Guest Session
+    // 2. Start guest session
     try {
-      localStorage.removeItem('jwt.g');
+      await AppDb.session.delete('jwt.g');
       this.deleteGuestToken();
-      const result = await UserService.post({ id: 'guest' }); // Request a new guest token
+      const result = await UserService.post({ id: 'guest' });
 
       if (result.status === 'success' && result.data.token) {
-        localStorage.setItem('jwt.g', result.data.token);
+        // Use refreshExpiresAt from the JWT claim as the AppDb TTL so the
+        // guest token is evicted at exactly the same time the server would
+        // reject it.  Fall back to 30 min if the claim is absent.
+        const guestClaims = decodeJwtPayload(result.data.token);
+        const guestExpiresAt = guestClaims?.refreshExpiresAt ?? Date.now() + 30 * 60 * 1000;
+        await AppDb.session.put({
+          key: 'jwt.g',
+          value: result.data.token,
+          expiresAt: guestExpiresAt,
+        });
         this.setGuestToken(result.data.token);
-        // Recursively call sessionIn to complete the guest login process (UI update, etc.)
         return await this.sessionIn();
       } else {
         logger.error('Failed to get a new guest token.');

@@ -3,9 +3,10 @@ import { renderCssAttr } from './Css.js';
 import { ToolTip } from './ToolTip.js';
 import { getAllChildNodes, htmlStrSanitize, s } from './VanillaJs.js';
 
-const BtnIcon = {
-  Tokens: {},
-  Render: async function (
+import { BaseComponent } from './WebComponent.js';
+class BtnIcon extends BaseComponent {
+  static Tokens = {};
+  static async Render(
     options = {
       class: '',
       type: '',
@@ -66,10 +67,10 @@ const BtnIcon = {
           });
       });
     return render;
-  },
+  }
   // https://developer.mozilla.org/en-US/docs/Games/Techniques/Control_mechanisms/Mobile_touch
-  TouchTokens: {},
-  RenderTouch: async function (options = { id: '', Events: {} }) {
+  static TouchTokens = {};
+  static async RenderTouch(options = { id: '', Events: {} }) {
     const { id } = options;
     this.TouchTokens[id] = { Events: {}, ...options };
     setTimeout(() => {
@@ -101,11 +102,11 @@ const BtnIcon = {
       style="${renderCssAttr({ style: { width: '100%', height: '100%', top: '0px', left: '0px', border: 'none' } })}"
     >
     </canvas>`;
-  },
-  findLabel: (el) =>
+  }
+  static findLabel = (el) =>
     getAllChildNodes(el).find((e) => {
       return e.classList && Array.from(e.classList).find((e) => e.match('BtnIcon-label'));
-    }),
-};
+    });
+}
 
 export { BtnIcon };

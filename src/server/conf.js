@@ -277,13 +277,13 @@ const DEFAULT_DEPLOY_ID = 'dd-default';
  * and system provisioning for different architectures.
  * @memberof ServerConfBuilder
  */
-const Config = {
+class Config {
   /**
    * @method default
    * @description The default configuration of the server.
    * @memberof ServerConfBuilder
    */
-  default: DefaultConf,
+  static default = DefaultConf;
   /**
    * @method build
    * @description Builds the configuration of the server.
@@ -292,7 +292,7 @@ const Config = {
    * @param {string} [subConf=''] - The sub configuration.
    * @memberof ServerConfBuilder
    */
-  build: async function (deployContext = DEFAULT_DEPLOY_ID, deployList, subConf) {
+  static async build(deployContext = DEFAULT_DEPLOY_ID, deployList, subConf) {
     if (process.argv[2] && typeof process.argv[2] === 'string' && process.argv[2].startsWith('dd-'))
       deployContext = process.argv[2];
     else if (deployContext !== 'proxy' && process.env.DEPLOY_ID && process.env.DEPLOY_ID.startsWith('dd-'))
@@ -302,7 +302,7 @@ const Config = {
     Underpost.env.set('await-deploy', new Date().toISOString());
     if (deployContext.startsWith('dd-')) loadConf(deployContext, subConf);
     if (deployContext === 'proxy') await Config.buildProxy(deployList, subConf);
-  },
+  }
   /**
    * @method deployIdFactory
    * @description Creates a new deploy ID.
@@ -310,7 +310,7 @@ const Config = {
    * @param {object} [options={ subConf: '', cluster: false }] - The options.
    * @memberof ServerConfBuilder
    */
-  deployIdFactory: function (deployId = DEFAULT_DEPLOY_ID, options = { subConf: '', cluster: false }) {
+  static deployIdFactory(deployId = DEFAULT_DEPLOY_ID, options = { subConf: '', cluster: false }) {
     if (!deployId.startsWith('dd-')) deployId = `dd-${deployId}`;
 
     logger.info('Build deployId', deployId);
@@ -388,7 +388,7 @@ const Config = {
     }
 
     return { deployIdFolder: folder, deployId };
-  },
+  }
   /**
    * @method buildProxyByDeployId
    * @description Builds the proxy by deploy ID.
@@ -396,7 +396,7 @@ const Config = {
    * @param {string} [subConf=''] - The sub configuration.
    * @memberof ServerConfBuilder
    */
-  buildProxyByDeployId: function (deployId = 'dd-default', subConf = '') {
+  static buildProxyByDeployId(deployId = 'dd-default', subConf = '') {
     let confPath = fs.existsSync(`./engine-private/replica/${deployId}/conf.server.json`)
       ? `./engine-private/replica/${deployId}/conf.server.json`
       : `./engine-private/conf/${deployId}/conf.server.json`;
@@ -415,7 +415,7 @@ const Config = {
         ...this.default.server[host],
         ...serverConf[host],
       };
-  },
+  }
   /**
    * @method buildProxy
    * @description Builds the proxy.
@@ -423,7 +423,7 @@ const Config = {
    * @param {string} [subConf=''] - The sub configuration.
    * @memberof ServerConfBuilder
    */
-  buildProxy: async function (deployList = 'dd-default', subConf = '') {
+  static async buildProxy(deployList = 'dd-default', subConf = '') {
     if (!deployList) deployList = process.argv[3];
     if (!subConf) subConf = process.argv[4];
     this.default.server = {};
@@ -436,8 +436,8 @@ const Config = {
         }
       }
     }
-  },
-};
+  }
+}
 
 /**
  * @method loadConf

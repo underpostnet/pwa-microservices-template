@@ -9,12 +9,13 @@ import { Validator } from './Validator.js';
 import { s } from './VanillaJs.js';
 import { getProxyPath, getQueryParams } from './Router.js';
 
-const Recover = {
-  Event: {},
-  Trigger: async function (options) {
+import { BaseComponent } from './WebComponent.js';
+class Recover extends BaseComponent {
+  static Event = {};
+  static async Trigger(options) {
     for (const eventKey of Object.keys(this.Event)) await this.Event[eventKey](options);
-  },
-  Render: async function (options = { idModal: '', user: {}, bottomRender: async () => '' }) {
+  }
+  static async Render(options = { idModal: '', user: {}, bottomRender: async () => '' }) {
     const { idModal, user } = options;
     let mode = 'recover-verify-email';
     const recoverToken = getQueryParams().payload;
@@ -201,7 +202,7 @@ const Recover = {
         </div>
       </form>
     `;
-  },
-};
+  }
+}
 
 export { Recover };

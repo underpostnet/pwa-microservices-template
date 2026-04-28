@@ -6,9 +6,10 @@ import { htmls, s } from './VanillaJs.js';
 import { WebhookProvider } from './Webhook.js';
 import { NotificationManager } from './NotificationManager.js';
 
-const LogOut = {
-  Event: {},
-  Trigger: async function (options) {
+import { BaseComponent } from './WebComponent.js';
+class LogOut extends BaseComponent {
+  static Event = {};
+  static async Trigger(options) {
     await WebhookProvider.unregister();
     for (const eventKey of Object.keys(this.Event)) await this.Event[eventKey](options);
     if (s(`.session`))
@@ -35,8 +36,8 @@ const LogOut = {
           }
         </style>`,
       );
-  },
-  Render: async function () {
+  }
+  static async Render() {
     setTimeout(() => {
       s('.btn-log-out').onclick = async (e) => {
         e.preventDefault();
@@ -57,7 +58,7 @@ const LogOut = {
         })}
       </div>
     </form>`;
-  },
-};
+  }
+}
 
 export { LogOut };

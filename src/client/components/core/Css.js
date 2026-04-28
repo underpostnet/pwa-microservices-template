@@ -6,15 +6,16 @@ import { Translate } from './Translate.js';
 import { append, htmls, s, sa } from './VanillaJs.js';
 import { getProxyPath } from './Router.js';
 
+import { BaseComponent } from './WebComponent.js';
 let ThemesScope = [];
 
 // https://css.github.io/csso/csso.html
 // https://www.fontspace.com/
 // https://www.1001fonts.com/
 
-const Css = {
+class Css extends BaseComponent {
   // Menu button container transition styles
-  menuButtonContainer: () => css`
+  static menuButtonContainer = () => css`
     .main-btn-menu {
       transition: all 0.2s ease-in-out;
       position: relative;
@@ -44,9 +45,9 @@ const Css = {
       width: 80%;
       background: currentColor;
     }
-  `,
+  `;
 
-  loadThemes: async function (themes = []) {
+  static async loadThemes(themes = []) {
     ThemesScope = [];
     for (const themeOptions of themes) addTheme(themeOptions);
     // if (!ThemesScope.find((t) => t.dark)) addTheme(CssCoreDark);
@@ -61,8 +62,8 @@ const Css = {
       if (themeOption) return await this.Init(themeOption);
     }
     await this.Init();
-  },
-  Init: async function (options) {
+  }
+  static async Init(options) {
     if (!options) options = ThemesScope[0];
     const { theme } = options;
 
@@ -76,8 +77,8 @@ const Css = {
     }
 
     return await Themes[theme](options);
-  },
-  RenderSetting: async function () {
+  }
+  static async RenderSetting() {
     return html` <div class="in section-mp">
       ${await DropDown.Render({
         id: 'settings-theme',
@@ -92,8 +93,8 @@ const Css = {
         }),
       })}
     </div>`;
-  },
-};
+  }
+}
 
 const barLabels = (options) => {
   return {
@@ -179,13 +180,13 @@ const renderDefaultWindowsModalButtonContent = (options) => {
 };
 
 let darkTheme = true;
-const ThemeEvents = {};
+class ThemeEvents {}
 const TriggerThemeEvents = () => {
   localStorage.setItem('_theme', Css.currentTheme);
   Object.keys(ThemeEvents).map((keyEvent) => ThemeEvents[keyEvent]());
 };
 
-const Themes = {};
+class Themes {}
 
 const addTheme = (options) => {
   ThemesScope.push(options);

@@ -12,9 +12,9 @@ import { loggerFactory } from './logger.js';
 const logger = loggerFactory(import.meta);
 
 // Per-instance registries keyed by `${host}${path}`
-const ValkeyInstances = {};
-const DummyStores = {}; // in-memory Maps per instance
-const ValkeyStatus = {}; // 'connected' | 'dummy' | 'error' | undefined
+class ValkeyInstances {}
+class DummyStores {} // in-memory Maps per instance
+class ValkeyStatus {} // 'connected' | 'dummy' | 'error' | undefined
 
 /**
  * Checks if any Valkey instance is connected.
@@ -270,15 +270,15 @@ const valkeyObjectFactory = async (options = { host: 'localhost', path: '', obje
  * @type {object}
  * @memberof ValkeyServiceService
  */
-const ValkeyAPI = {
-  valkeyClientFactory,
-  selectDtoFactory,
-  getValkeyObject,
-  setValkeyObject,
-  valkeyObjectFactory,
-  updateValkeyObject,
-  createValkeyConnection,
-};
+class ValkeyAPI {
+  static valkeyClientFactory = valkeyClientFactory;
+  static selectDtoFactory = selectDtoFactory;
+  static getValkeyObject = getValkeyObject;
+  static setValkeyObject = setValkeyObject;
+  static valkeyObjectFactory = valkeyObjectFactory;
+  static updateValkeyObject = updateValkeyObject;
+  static createValkeyConnection = createValkeyConnection;
+}
 
 export {
   valkeyClientFactory,

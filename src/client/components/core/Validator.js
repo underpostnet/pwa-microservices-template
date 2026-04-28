@@ -4,16 +4,17 @@ import { loggerFactory } from './Logger.js';
 import { textFormatted, Translate } from './Translate.js';
 import { htmls, s } from './VanillaJs.js';
 
+import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta);
 
-const Validator = {
-  renderErrorMessage: function (rule, text) {
+class Validator extends BaseComponent {
+  static renderErrorMessage(rule, text) {
     return html` <div class="in">
       ${renderStatus('error', { class: 'inl' })} &nbsp
       <span style="color: red">${text ? textFormatted(text) : Translate.Render(rule.type)}</span>
     </div>`;
-  },
-  instance: function (validators, callBack = (value) => {}) {
+  }
+  static instance(validators, callBack = (value) => {}) {
     const validatorFunction = {};
     if (!Array.isArray(validators)) validators = Object.values(validators);
     for (const validatorData of validators) {
@@ -124,7 +125,7 @@ const Validator = {
       }
       return { errorMessage, errorKeys, successKeys };
     };
-  },
-};
+  }
+}
 
 export { Validator };

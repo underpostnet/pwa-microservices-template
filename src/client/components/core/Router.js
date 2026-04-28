@@ -17,7 +17,7 @@ const logger = loggerFactory(import.meta, { trace: true });
  * @description Holds event listeners for router changes.
  * @memberof PwaRouter
  */
-const RouterEvents = {};
+class RouterEvents {}
 
 /**
  * @type {Object.<string, function>}\n
@@ -242,7 +242,21 @@ const Router = function (options = { Routes: () => {}, e: new PopStateEvent() })
 const LoadRouter = async function (RouterInstance) {
   await RouterReady;
   Router(RouterInstance);
+  // Track the last full path that was actually routed, so we can detect
+  // Chrome-specific spurious popstate events fired when a same-origin iframe
+  // navigates (hash change or link click). In Chrome, iframe navigation creates
+  // a joint session history entry and fires popstate in the parent window even
+  // though the parent's URL has not changed.
+  let lastRoutedFullPath = window.location.pathname + window.location.search;
   window.onpopstate = (e) => {
+    const currentFullPath = window.location.pathname + window.location.search;
+    if (currentFullPath === lastRoutedFullPath) {
+      // Path did not change — this is almost certainly an iframe-induced popstate
+      // (Chrome propagates same-origin iframe hash navigation to the parent history).
+      // Skip routing to prevent unintended modal re-renders and position resets.
+      return;
+    }
+    lastRoutedFullPath = currentFullPath;
     Router({ ...RouterInstance, e });
     // Notify query params listeners on browser back/forward navigation
     const updatedParams = getQueryParams();

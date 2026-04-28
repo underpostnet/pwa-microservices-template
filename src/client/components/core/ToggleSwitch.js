@@ -2,11 +2,12 @@ import { getId } from './CommonJs.js';
 import { loggerFactory } from './Logger.js';
 import { htmls, s } from './VanillaJs.js';
 
+import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta);
 
-const ToggleSwitch = {
-  Tokens: {},
-  Render: async function (options) {
+class ToggleSwitch extends BaseComponent {
+  static Tokens = {};
+  static async Render(options) {
     const id = options?.id ? options.id : getId(this.Tokens, 'toggle-switch-');
     this.Tokens[id] = {};
 
@@ -95,7 +96,7 @@ const ToggleSwitch = {
       `;
     }
     return htmlRender;
-  },
-};
+  }
+}
 
 export { ToggleSwitch };

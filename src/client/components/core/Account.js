@@ -17,11 +17,12 @@ import { getProxyPath } from './Router.js';
 import { getApiBaseUrl } from '../../services/core/core.service.js';
 import { loggerFactory } from './Logger.js';
 
+import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta);
 
-const Account = {
-  UpdateEvent: {},
-  Render: async function (options = { user: {}, bottomRender: async () => '', idModal: '' }) {
+class Account extends BaseComponent {
+  static UpdateEvent = {};
+  static async Render(options = { user: {}, bottomRender: async () => '', idModal: '' }) {
     // app profile page design example
     // CSS animated backgrounds
     let { user, idModal } = options;
@@ -351,25 +352,17 @@ const Account = {
           if (ToggleSwitch.Tokens['account-public-profile']) {
             const originalClick = ToggleSwitch.Tokens['account-public-profile'].click;
             ToggleSwitch.Tokens['account-public-profile'].click = async function () {
-              originalClick.call(this);
-              const isChecked = s(`.account-public-profile-checkbox`).checked;
               // Always get the current user from LogIn.Scope
               const currentUser = LogIn.Scope.user.main.model.user;
-              if (!currentUser || !currentUser._id) {
+              if (!currentUser || !currentUser._id || currentUser.role === 'guest') {
                 NotificationManager.Push({
                   html: Translate.Render('error-user-not-authenticated'),
                   status: 'error',
                 });
                 return;
               }
-              // Guest users cannot toggle public profile
-              if (currentUser.role === 'guest') {
-                NotificationManager.Push({
-                  html: Translate.Render('error-user-not-authenticated'),
-                  status: 'error',
-                });
-                return;
-              }
+              originalClick.call(this);
+              const isChecked = s(`.account-public-profile-checkbox`).checked;
               const result = await UserService.put({ id: currentUser._id, body: { publicProfile: isChecked } });
               NotificationManager.Push({
                 html:
@@ -544,13 +537,13 @@ const Account = {
         })}
       </div>
     `;
-  },
-  triggerUpdateEvent: async function (options = { user: {} }) {
+  }
+  static async triggerUpdateEvent(options = { user: {} }) {
     for (const updateEvent of Object.keys(this.UpdateEvent)) {
       await this.UpdateEvent[updateEvent](options);
     }
-  },
-  renderVerifyEmailStatus: function (user) {
+  }
+  static renderVerifyEmailStatus(user) {
     if (s('.verify-email-status')) {
       if (s(`.btn-confirm-email`)) {
         if (user.emailConfirmed) s(`.btn-confirm-email`).classList.add('hide');
@@ -563,9 +556,9 @@ const Account = {
       );
       if (user.emailConfirmed === true) s(`.account-email`).setAttribute('disabled', '');
     }
-  },
-  instanceModalUiEvents: async (user) => null,
-  updateForm: async function (user) {
+  }
+  static instanceModalUiEvents = async (user) => null;
+  static async updateForm(user) {
     if (!s(`.modal-account`)) return;
 
     // Always sync the current user data into LogIn.Scope, preserving profileImage if it exists
@@ -611,7 +604,7 @@ const Account = {
         ToggleSwitch.Tokens['account-public-profile'].click();
       }
     }
-  },
-};
+  }
+}
 
 export { Account };

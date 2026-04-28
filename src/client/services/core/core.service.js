@@ -177,7 +177,7 @@ const buildQueryUrl = (baseUrl, options = {}) => {
  * Core Service object providing CRUD operations for the core API endpoint.
  * @memberof CoreServiceClient
  */
-const CoreService = {
+class CoreService {
   /**
    * Performs a raw GET request to fetch content as text.
    * @memberof CoreServiceClient.CoreService
@@ -185,7 +185,7 @@ const CoreService = {
    * @param {string} [options.url=''] - The full URL to fetch.
    * @return {Promise<string>} A promise that resolves with the response text.
    */
-  getRaw: (options = { url: '' }) =>
+  static getRaw = (options = { url: '' }) =>
     new Promise((resolve, reject) =>
       fetch(options.url, {
         method: 'GET',
@@ -201,7 +201,7 @@ const CoreService = {
           logger.error(error);
           return reject(error);
         }),
-    ),
+    );
 
   /**
    * Performs a POST request to create a new resource.
@@ -211,7 +211,7 @@ const CoreService = {
    * @param {Object} [options.body={}] - The request body payload.
    * @return {Promise<Object>} A promise that resolves with the JSON response.
    */
-  post: (options = { id: '', body: {} }) =>
+  static post = (options = { id: '', body: {} }) =>
     new Promise((resolve, reject) =>
       fetch(getApiBaseUrl({ id: options.id, endpoint }), {
         method: 'POST',
@@ -230,7 +230,7 @@ const CoreService = {
           logger.error(error);
           return reject(error);
         }),
-    ),
+    );
 
   /**
    * Performs a PUT request to update an existing resource.
@@ -240,7 +240,7 @@ const CoreService = {
    * @param {Object} [options.body={}] - The request body payload with updated data.
    * @return {Promise<Object>} A promise that resolves with the JSON response.
    */
-  put: (options = { id: '', body: {} }) =>
+  static put = (options = { id: '', body: {} }) =>
     new Promise((resolve, reject) =>
       fetch(getApiBaseUrl({ id: options.id, endpoint }), {
         method: 'PUT',
@@ -259,7 +259,7 @@ const CoreService = {
           logger.error(error);
           return reject(error);
         }),
-    ),
+    );
 
   /**
    * Performs a GET request to retrieve a resource.
@@ -269,7 +269,7 @@ const CoreService = {
    * @param {Object} [options.body={}] - Unused, kept for API consistency.
    * @return {Promise<Object>} A promise that resolves with the JSON response.
    */
-  get: (options = { id: '', body: {} }) =>
+  static get = (options = { id: '', body: {} }) =>
     new Promise((resolve, reject) =>
       fetch(getApiBaseUrl({ id: options.id, endpoint }), {
         method: 'GET',
@@ -287,7 +287,7 @@ const CoreService = {
           logger.error(error);
           return reject(error);
         }),
-    ),
+    );
 
   /**
    * Performs a DELETE request to remove a resource.
@@ -297,7 +297,7 @@ const CoreService = {
    * @param {Object} [options.body={}] - Optional request body payload.
    * @return {Promise<Object>} A promise that resolves with the JSON response.
    */
-  delete: (options = { id: '', body: {} }) =>
+  static delete = (options = { id: '', body: {} }) =>
     new Promise((resolve, reject) =>
       fetch(getApiBaseUrl({ id: options.id, endpoint }), {
         method: 'DELETE',
@@ -316,8 +316,8 @@ const CoreService = {
           logger.error(error);
           return reject(error);
         }),
-    ),
-};
+    );
+}
 
 /**
  * Alias for getApiBaseUrl function.

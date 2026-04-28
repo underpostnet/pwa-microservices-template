@@ -2,9 +2,10 @@ import { renderCssAttr } from './Css.js';
 import { append, s } from './VanillaJs.js';
 import { Modal } from './Modal.js';
 
-const ToolTip = {
-  Tokens: {},
-  Render: async function (
+import { BaseComponent } from './WebComponent.js';
+class ToolTip extends BaseComponent {
+  static Tokens = {};
+  static async Render(
     options = { container: '', htmlRender: '', id: '', classList: '', useVisibilityHover: false, useMenuBtn: false },
   ) {
     const { container, htmlRender, id, useVisibilityHover } = options;
@@ -84,7 +85,7 @@ const ToolTip = {
     containerEl.addEventListener('mouseleave', () => {
       tooltipEl.style.opacity = '0';
     });
-  },
-};
+  }
+}
 
 export { ToolTip };

@@ -20,11 +20,12 @@ import { getApiBaseUrl } from '../../services/core/core.service.js';
 import { getProxyPath, setQueryPath, navigateToProfile } from './Router.js';
 import { PublicProfile } from './PublicProfile.js';
 
+import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta);
 
-const Panel = {
-  Tokens: {},
-  Render: async function (
+class Panel extends BaseComponent {
+  static Tokens = {};
+  static async Render(
     options = {
       idPanel: '',
       parentIdModal: '',
@@ -1116,8 +1117,8 @@ const Panel = {
         <div class="in ${idPanel}-render">${render}</div>
       </div>
     `;
-  },
-};
+  }
+}
 
 // Function to generate base styles
 function getBaseStyles(idPanel, scrollClassContainer) {

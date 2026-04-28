@@ -17,6 +17,7 @@ import { Validator } from './Validator.js';
 import { copyData, downloadFile, s } from './VanillaJs.js';
 import { getProxyPath, getQueryParams, setPath, setQueryParams, listenQueryParamsChange } from './Router.js';
 
+import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta);
 
 class LoadFolderRenderer {
@@ -82,9 +83,9 @@ class FolderHeaderComp {
   }
 }
 
-const FileExplorer = {
-  Api: {},
-  Render: async function (options = { idModal: '' }) {
+class FileExplorer extends BaseComponent {
+  static Api = {};
+  static async Render(options = { idModal: '' }) {
     const { idModal } = options;
     FileExplorer.Api[idModal] = options;
     const gridFolderId = 'folder-explorer-grid';
@@ -1478,13 +1479,13 @@ const FileExplorer = {
         </div>
       </form>
     `;
-  },
-  locationFormat: function ({ f }) {
+  }
+  static locationFormat({ f }) {
     if (f.location[0] !== '/') f.location = `/${f.location}`;
     if (f.location !== '/' && f.location[f.location.length - 1] === '/') f.location = f.location.slice(0, -1);
     return f.location;
-  },
-  documentDataFormat: function ({ document, location, searchFilters }) {
+  }
+  static documentDataFormat({ document, location, searchFilters }) {
     let files = document.map((f) => {
       return {
         location: this.locationFormat({ f }),
@@ -1532,7 +1533,7 @@ const FileExplorer = {
         .filter((f) => f.fileCount > 0);
     }
     return { files, documentId, folders };
-  },
-};
+  }
+}
 
 export { FileExplorer };

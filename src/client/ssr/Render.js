@@ -207,6 +207,17 @@ selection
         .gray {
           filter: grayscale(1);
         }
+
+        /* ── iPhone home indicator safe area ── */
+        .bottom-bar {
+          padding-bottom: env(safe-area-inset-bottom, 0px);
+          height: calc(50px + env(safe-area-inset-bottom, 0px));
+        }
+
+        /* Utility: add bottom safe-area padding to any element */
+        .safe-area-padding-bottom {
+          padding-bottom: env(safe-area-inset-bottom, 0px);
+        }
       </style>
       <div class="session">
         <style>

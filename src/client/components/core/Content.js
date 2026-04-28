@@ -10,6 +10,7 @@ import { loggerFactory } from './Logger.js';
 import { imageShimmer, renderChessPattern, renderCssAttr, styleFactory } from './Css.js';
 import { getQueryParams, setPath } from './Router.js';
 
+import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta);
 
 const attachMarkdownLinkHandlers = (containerSelector) => {
@@ -55,8 +56,8 @@ const attachMarkdownLinkHandlers = (containerSelector) => {
   });
 };
 
-const Content = {
-  Render: async function (options = { idModal: '', titleIcon: '' }) {
+class Content extends BaseComponent {
+  static async Render(options = { idModal: '', titleIcon: '' }) {
     const { idModal } = options;
     setTimeout(async () => {
       try {
@@ -164,14 +165,14 @@ const Content = {
         ${imageShimmer()}
       </div>
       <div class="abs center error-${idModal} hide"></div>`;
-  },
+  }
 
   /**
    * Helper function to get file content
    * Supports both legacy format (with buffer data) and new format (metadata only)
    * For new format, fetches content from blob endpoint
    */
-  getFileContent: async function (file, options = {}) {
+  static async getFileContent(file, options = {}) {
     // If custom URL provided, use it
     if (options.url) {
       return await CoreService.getRaw({ url: options.url });
@@ -197,9 +198,9 @@ const Content = {
     }
 
     throw new Error('No file content available');
-  },
+  }
 
-  RenderFile: async function (
+  static async RenderFile(
     options = {
       file: {
         _id: '',
@@ -308,13 +309,13 @@ ${JSON.stringify(JSON.parse(content), null, 4)}</pre
     if (ext === 'md') {
       attachMarkdownLinkHandlers(container);
     }
-  },
+  }
 
   /**
    * Generate appropriate URL for file display
    * Prefers blob endpoint for new metadata-only format
    */
-  urlFactory: async function (options) {
+  static async urlFactory(options) {
     // If custom URL provided, use it
     if (options.url) {
       return options.url;
@@ -340,7 +341,7 @@ ${JSON.stringify(JSON.parse(content), null, 4)}</pre
     }
 
     return null;
-  },
-};
+  }
+}
 
 export { Content, attachMarkdownLinkHandlers };

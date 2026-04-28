@@ -9,7 +9,7 @@ import { SignUpDefault } from './components/default/SignUpDefault.js';
 import { MenuDefault } from './components/default/MenuDefault.js';
 import { RouterDefault } from './components/default/RoutesDefault.js';
 import { TranslateDefault } from './components/default/TranslateDefault.js';
-import { Worker } from './components/core/Worker.js';
+import { AppRunner } from './components/core/AppRunner.js';
 import { Keyboard } from './components/core/Keyboard.js';
 import { SocketIo } from './components/core/SocketIo.js';
 import { SocketIoDefault } from './components/default/SocketIoDefault.js';
@@ -61,7 +61,7 @@ const htmlMainBody = async () => {
 };
 
 window.onload = () =>
-  Worker.instance({
+  AppRunner.run({
     router: RouterDefault,
     render: async () => {
       await Css.loadThemes([CssDefaultLight, CssDefaultDark]);
@@ -69,6 +69,8 @@ window.onload = () =>
       await TranslateDefault.Init();
       await Responsive.Init();
       await MenuDefault.Render({ htmlMainBody });
+    },
+    sessionInit: async () => {
       await SocketIo.Init({
         channels: AppStoreDefault.Data,
         path: `/`,

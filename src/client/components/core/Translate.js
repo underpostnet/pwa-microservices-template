@@ -3,16 +3,17 @@ import { DropDown } from './DropDown.js';
 import { loggerFactory } from './Logger.js';
 import { s, htmls, getLang } from './VanillaJs.js';
 
+import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta);
 
 const textFormatted = (str = '&nbsp &nbsp . . .') => capFirst(str.toLowerCase());
 
-const Translate = {
-  Data: {},
-  Token: {},
-  Event: {},
-  Options: {},
-  Parse: function (lang) {
+class Translate extends BaseComponent {
+  static Data = {};
+  static Token = {};
+  static Event = {};
+  static Options = {};
+  static Parse(lang) {
     s('html').lang = lang;
     Object.keys(this.Token).map((translateHash) => {
       if (translateHash in this.Token && lang in this.Token[translateHash]) {
@@ -30,8 +31,8 @@ const Translate = {
       }
     });
     for (const keyEvent of Object.keys(this.Event)) this.Event[keyEvent]();
-  },
-  Render: function (keyLang, placeholder, options = { disableTextFormat: false }) {
+  }
+  static Render(keyLang, placeholder, options = { disableTextFormat: false }) {
     if (!(keyLang in this.Data)) {
       // TODO: add translate package or library for this case
       // logger.warn('translate key lang does not exist: ', keyLang);
@@ -54,13 +55,13 @@ const Translate = {
     return html`<span class="${translateHash}"
       >${options.disableTextFormat ? keyLang['en'] : textFormatted(keyLang['en'])}</span
     >`;
-  },
-  renderLang: function (language) {
+  }
+  static renderLang(language) {
     localStorage.setItem('lang', language);
     this.Parse(language);
     if (s(`.action-btn-lang-render`)) htmls(`.action-btn-lang-render`, s('html').lang);
-  },
-  RenderSetting: async function (id) {
+  }
+  static async RenderSetting(id) {
     return html` <div class="in section-mp">
       ${await DropDown.Render({
         id: id ?? 'settings-lang',
@@ -75,11 +76,11 @@ const Translate = {
         }),
       })}
     </div>`;
-  },
-};
+  }
+}
 
-const TranslateCore = {
-  Init: async function () {
+class TranslateCore {
+  static async Init() {
     s('html').lang = getLang();
     Translate.Data = {
       ...Translate.Data,
@@ -691,7 +692,7 @@ const TranslateCore = {
       en: 'Filter cleared successfully',
       es: 'Filtro limpiado con éxito',
     };
-  },
-};
+  }
+}
 
 export { Translate, TranslateCore, textFormatted };

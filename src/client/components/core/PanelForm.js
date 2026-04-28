@@ -15,6 +15,7 @@ import { LoadingAnimation } from './LoadingAnimation.js';
 import { loggerFactory } from './Logger.js';
 import { getApiBaseUrl } from '../../services/core/core.service.js';
 
+import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta, { trace: true });
 
 function sanitizeFilename(title, options = {}) {
@@ -79,9 +80,9 @@ const userInfoFactory = (userDoc) => ({
   briefDescription: userDoc.userId.briefDescription,
 });
 
-const PanelForm = {
-  Data: {},
-  instance: async function (
+class PanelForm extends BaseComponent {
+  static Data = {};
+  static async instance(
     options = {
       idPanel: '',
       defaultUrlImage: '',
@@ -1005,7 +1006,7 @@ const PanelForm = {
     }
 
     return await renderSrrPanelData();
-  },
-};
+  }
+}
 
 export { PanelForm };

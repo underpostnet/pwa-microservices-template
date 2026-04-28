@@ -605,23 +605,23 @@ const restoreMfsPath = async (cid, mfsPath) => {
 //  Export
 // ─────────────────────────────────────────────────────────
 
-const IpfsClient = {
-  getIpfsApiUrl,
-  getClusterApiUrl,
-  getGatewayUrl,
-  addToIpfs,
-  addJsonToIpfs,
-  addBufferToIpfs,
-  hashContentForIpfs,
-  hashJsonForIpfs,
-  hashBufferForIpfs,
-  pinCid,
-  unpinCid,
-  getFromIpfs,
-  listClusterPins,
-  listKuboPins,
-  removeMfsPath,
-  restoreMfsPath,
+class IpfsClient {
+  static getIpfsApiUrl = getIpfsApiUrl;
+  static getClusterApiUrl = getClusterApiUrl;
+  static getGatewayUrl = getGatewayUrl;
+  static addToIpfs = addToIpfs;
+  static addJsonToIpfs = addJsonToIpfs;
+  static addBufferToIpfs = addBufferToIpfs;
+  static hashContentForIpfs = hashContentForIpfs;
+  static hashJsonForIpfs = hashJsonForIpfs;
+  static hashBufferForIpfs = hashBufferForIpfs;
+  static pinCid = pinCid;
+  static unpinCid = unpinCid;
+  static getFromIpfs = getFromIpfs;
+  static listClusterPins = listClusterPins;
+  static listKuboPins = listKuboPins;
+  static removeMfsPath = removeMfsPath;
+  static restoreMfsPath = restoreMfsPath;
   /**
    * Check whether a single CID is currently pinned on the local Kubo node.
    * Uses the pin/ls?arg=<cid> endpoint which returns only that one pin
@@ -630,7 +630,7 @@ const IpfsClient = {
    * @param {string} cid - IPFS Content Identifier to check.
    * @returns {Promise<boolean>} true when the CID is pinned.
    */
-  isCidPinned: async (cid) => {
+  static async isCidPinned(cid) {
     const kuboUrl = getIpfsApiUrl();
     try {
       const res = await fetchWithTimeout(
@@ -644,7 +644,7 @@ const IpfsClient = {
     } catch {
       return false;
     }
-  },
-};
+  }
+}
 
 export { IpfsClient };

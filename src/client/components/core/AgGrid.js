@@ -7,10 +7,11 @@ import { getProxyPath } from './Router.js';
 import './Pagination.js';
 import { Modal } from './Modal.js';
 
-const AgGrid = {
-  grids: {},
-  theme: `ag-theme-alpine`, // quartz
-  Render: async function (options) {
+import { BaseComponent } from './WebComponent.js';
+class AgGrid extends BaseComponent {
+  static grids = {};
+  static theme = `ag-theme-alpine`; // quartz
+  static async Render(options) {
     let { id, paginationOptions } = options;
     setTimeout(() => {
       // Normalize rowSelection from deprecated string form to object form (AG Grid v32.2.1+)
@@ -134,8 +135,8 @@ const AgGrid = {
       ></div>
       ${usePagination ? `<ag-pagination id="ag-pagination-${id}" ${limitOptionsAttr}></ag-pagination>` : ''}
     `;
-  },
-  RenderStyle: async function (
+  }
+  static async RenderStyle(
     options = {
       eventThemeId: 'AgGrid',
       style: {
@@ -242,7 +243,7 @@ const AgGrid = {
               </style>`}`,
       );
     };
-  },
-};
+  }
+}
 
 export { AgGrid };

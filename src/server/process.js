@@ -26,13 +26,13 @@ const getRootDirectory = () => process.cwd().replace(/\\/g, '/');
  * Controls and manages process-level events and signals.
  * @namespace ProcessController
  */
-const ProcessController = {
+class ProcessController {
   /**
    * List of signals to listen for for graceful shutdown/handling.
    * @memberof ProcessController
    * @type {string[]}
    */
-  SIG: [
+  static SIG = [
     'SIGPIPE',
     'SIGHUP',
     'SIGTERM',
@@ -45,7 +45,7 @@ const ProcessController = {
     'SIGFPE',
     'SIGSEGV',
     'SIGILL',
-  ],
+  ];
 
   /**
    * Sets up listeners for various process signals defined in {@link ProcessController.SIG}.
@@ -53,7 +53,7 @@ const ProcessController = {
    * @memberof ProcessController
    * @returns {Array<process.Process>} An array of process listener handles.
    */
-  onSigListen: function () {
+  static onSigListen() {
     return this.SIG.map((sig) =>
       process.on(sig, (...args) => {
         this.logger.info(`process on ${sig}`, args);
@@ -66,7 +66,7 @@ const ProcessController = {
         }
       }),
     );
-  },
+  }
 
   /**
    * Initializes the ProcessController.
@@ -75,15 +75,15 @@ const ProcessController = {
    * @param {Object} logger - The logger instance to use for internal logging.
    * @returns {void}
    */
-  init: function (logger) {
+  static init(logger) {
     this.logger = logger;
     process.on('exit', (...args) => {
       this.logger.info(`process on exit`, args);
     });
     this.onSigListen();
     Underpost.env.delete('await-deploy');
-  },
-};
+  }
+}
 
 /**
  * Executes a shell command using shelljs.

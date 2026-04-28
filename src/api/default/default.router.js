@@ -4,9 +4,16 @@ import express from 'express';
 
 const logger = loggerFactory(import.meta);
 
-const DefaultRouter = (options) => {
+class DefaultRouter {
+  /**
+   * Builds and returns the Express Router for this API.
+   * @param {import('../../server/auth.js').RouterOptions} options
+   * @returns {import('express').Router}
+   * @memberof DefaultRouter
+   */
+  static router(options) {
   const router = express.Router();
-  const authMiddleware = options.authMiddleware;
+  const { authMiddleware } = options;
   router.post(`/:id`, async (req, res) => await DefaultController.post(req, res, options));
   router.post(`/`, async (req, res) => await DefaultController.post(req, res, options));
   router.get(
@@ -20,8 +27,9 @@ const DefaultRouter = (options) => {
   router.delete(`/:id`, async (req, res) => await DefaultController.delete(req, res, options));
   router.delete(`/`, async (req, res) => await DefaultController.delete(req, res, options));
   return router;
-};
+  }
+}
 
-const ApiRouter = DefaultRouter;
+const ApiRouter = (options) => DefaultRouter.router(options);
 
 export { ApiRouter, DefaultRouter };

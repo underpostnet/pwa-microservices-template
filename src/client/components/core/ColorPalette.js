@@ -5,6 +5,7 @@ import { NotificationManager } from './NotificationManager.js';
 import { Translate } from './Translate.js';
 import { copyData, s } from './VanillaJs.js';
 
+import { BaseComponent } from './WebComponent.js';
 const colorSRC = [
   {
     name: 'Absolute Zero',
@@ -5236,9 +5237,9 @@ const getDataColors = () =>
 
 const logger = loggerFactory(import.meta);
 
-const ColorPalette = {
-  Palettes: {},
-  Render: async function () {
+class ColorPalette extends BaseComponent {
+  static Palettes = {};
+  static async Render() {
     let render = '';
     for (const colorData of getDataColors()) {
       const idColor = `color-${s4()}-${colorData.number}`;
@@ -5261,7 +5262,7 @@ const ColorPalette = {
       });
     }
     return html` <div class="in" style="width: 100%; height: 100%; overflow: auto;">${render}</div> `;
-  },
-};
+  }
+}
 
 export { colorSRC, colors, getNumberByHex, ColorPalette };

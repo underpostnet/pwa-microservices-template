@@ -2,8 +2,8 @@ import { loggerFactory } from '../../server/logger.js';
 import { DocumentService } from './document.service.js';
 const logger = loggerFactory(import.meta);
 
-const DocumentController = {
-  post: async (req, res, options) => {
+class DocumentController {
+  static async post(req, res, options) {
     try {
       return res.status(200).json({
         status: 'success',
@@ -16,8 +16,8 @@ const DocumentController = {
         message: error.message,
       });
     }
-  },
-  get: async (req, res, options) => {
+  }
+  static async get(req, res, options) {
     try {
       return res.status(200).json({
         status: 'success',
@@ -30,8 +30,8 @@ const DocumentController = {
         message: error.message,
       });
     }
-  },
-  delete: async (req, res, options) => {
+  }
+  static async delete(req, res, options) {
     try {
       const result = await DocumentService.delete(req, res, options);
       return res.status(200).json({
@@ -45,8 +45,8 @@ const DocumentController = {
         message: error.message,
       });
     }
-  },
-  put: async (req, res, options) => {
+  }
+  static async put(req, res, options) {
     try {
       const result = await DocumentService.put(req, res, options);
       return res.status(200).json({
@@ -60,8 +60,8 @@ const DocumentController = {
         message: error.message,
       });
     }
-  },
-  patch: async (req, res, options) => {
+  }
+  static async patch(req, res, options) {
     try {
       const result = await DocumentService.patch(req, res, options);
       return res.status(200).json({
@@ -75,7 +75,7 @@ const DocumentController = {
         message: error.message,
       });
     }
-  },
-};
+  }
+}
 
 export { DocumentController };
