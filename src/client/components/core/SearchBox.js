@@ -11,16 +11,15 @@ import { s, getAllChildNodes, htmls } from './VanillaJs.js';
 import { Translate } from './Translate.js';
 import { darkTheme, ThemeEvents, subThemeManager, lightenHex, darkenHex } from './Css.js';
 
-import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta);
 
 /**
- * SearchBox singleton object providing extensible search functionality.
+ * SearchBox class providing extensible search functionality.
  * Supports default menu/route search and pluggable search providers with
  * custom rendering, click handlers, and result merging.
  * @memberof SearchBoxClient
  */
-class SearchBox extends BaseComponent {
+class SearchBox {
   /**
    * Internal data storage for search state and handlers.
    * @type {object}
@@ -99,13 +98,10 @@ class SearchBox extends BaseComponent {
         return;
       }
 
-      const resultKey = result.targetSelector || result.routerId || result.id;
-
       // Create a clean copy excluding DOM elements (fontAwesomeIcon, imgElement)
       const cleanResult = {
         id: result.id,
         routerId: result.routerId,
-        targetSelector: result.targetSelector,
         type: result.type,
         providerId: result.providerId,
         title: result.title,
@@ -119,9 +115,6 @@ class SearchBox extends BaseComponent {
 
       // Remove duplicate if it exists (based on id and providerId/routerId)
       const filteredRecent = recent.filter((r) => {
-        if (cleanResult.providerId === 'default-routes' && r.providerId === 'default-routes') {
-          return (r.targetSelector || r.routerId || r.id) !== resultKey;
-        }
         if (cleanResult.providerId && r.providerId) {
           return !(r.id === cleanResult.id && r.providerId === cleanResult.providerId);
         } else if (cleanResult.routerId && r.routerId) {
@@ -160,12 +153,8 @@ class SearchBox extends BaseComponent {
         if (providerId) {
           return !(r.id === resultId && r.providerId === providerId);
         } else {
-          // For default route/menu results, match by the most stable stored key.
-          return !(
-            (r.targetSelector || r.routerId || r.id) === resultId ||
-            r.routerId === resultId ||
-            r.id === resultId
-          );
+          // For routes (providerId is null), match by routerId instead
+          return !(r.routerId === resultId);
         }
       });
       this.saveAll(filtered);
@@ -197,7 +186,7 @@ class SearchBox extends BaseComponent {
     this.providers.push({
       id: provider.id,
       search: provider.search,
-      renderResult: provider.renderResult || ((result, index) => this.defaultRenderResult(result, index)),
+      renderResult: provider.renderResult || ((result) => this.defaultRenderResult(result)),
       onClick: provider.onClick || (() => {}),
       priority: provider.priority || 50, // Lower number = higher priority in results
     });
@@ -228,16 +217,15 @@ class SearchBox extends BaseComponent {
    * @param {Array<string>} [result.tags] - Array of tag strings.
    * @param {string} result.type - Result type identifier.
    * @param {string} result.providerId - Provider ID that generated this result.
-   * @param {number} [index] - Result index used for click-handler binding.
    * @returns {string} HTML string for the search result.
    */
-  static defaultRenderResult(result, index) {
+  static defaultRenderResult(result) {
     const icon = result.icon || '<i class="fas fa-file"></i>';
     const title = result.title || result.id || 'Untitled';
     const subtitle = result.subtitle || '';
     const tags = result.tags || [];
 
-    // Render tags if available
+    // instance tags if available
     const tagsHtml =
       tags.length > 0
         ? `<div class="search-result-tags">
@@ -250,7 +238,6 @@ class SearchBox extends BaseComponent {
         class="search-result-item"
         data-result-id="${result.id}"
         data-result-type="${result.type}"
-        data-result-index="${index}"
         data-provider-id="${result.providerId}"
       >
         <div class="search-result-icon">${icon}</div>
@@ -316,169 +303,47 @@ class SearchBox extends BaseComponent {
    * @param {string} [context.options.searchCustomImgClass] - Custom image class to search for.
    * @returns {Array<object>} Array of route search results.
    */
-  static normalizeSearchValue(value) {
-    return `${value ?? ''}`.toLowerCase().replace(/\s+/g, ' ').trim();
-  }
-
-  /**
-   * Collects currently rendered slide-menu buttons so search reflects the live UI.
-   * @returns {HTMLElement[]}
-   */
-  static getSearchableMenuButtons() {
-    if (typeof document === 'undefined') return [];
-
-    return Array.from(
-      document.querySelectorAll(
-        '.menu-btn-container .main-btn-menu, [class*="menu-btn-container-children"] .main-btn-menu',
-      ),
-    ).filter((button) => button && !button.classList.contains('hide'));
-  }
-
-  /**
-   * Builds stable metadata for a rendered menu button.
-   * @param {HTMLElement} button
-   * @returns {object}
-   */
-  static getMenuButtonMetadata(button) {
-    const classList = Array.from(button.classList || []);
-    const routeClass = classList.find(
-      (cls) => cls.startsWith('main-btn-') && cls !== 'main-btn-menu' && cls !== 'main-btn-menu-active',
-    );
-    const routerId = routeClass ? routeClass.slice('main-btn-'.length) : undefined;
-
-    const targetClass = [
-      ...(routeClass ? [routeClass] : []),
-      ...classList.filter(
-        (cls) =>
-          cls.startsWith('btn-') &&
-          ![
-            'btn-docs',
-            'btn-close',
-            'btn-menu',
-            'btn-modal-default',
-            'btn-icon-menu-back',
-            'btn-icon-menu-mode',
-          ].includes(cls),
-      ),
-    ].sort((left, right) => right.length - left.length)[0];
-
-    const labelEl = button.querySelector('.menu-label-text, .main-btn-menu-text');
-    const title = `${labelEl ? labelEl.textContent : button.textContent}`.replace(/\s+/g, ' ').trim();
-    const translationText = routerId ? this.normalizeSearchValue(Translate.Render(routerId)) : '';
-    const searchHaystack = this.normalizeSearchValue(
-      [
-        title,
-        routerId,
-        button.id,
-        button.tagName,
-        classList.join(' '),
-        button.getAttribute('title') || '',
-        button.getAttribute('aria-label') || '',
-        ...Object.values(button.dataset || {}),
-        translationText,
-      ].join(' '),
-    );
-
-    return {
-      routerId,
-      title,
-      targetSelector: button.id ? `#${button.id}` : targetClass ? `.${targetClass}` : null,
-      type: routerId ? 'route' : 'menu',
-      searchHaystack,
-    };
-  }
-
   static searchRoutes(query, context) {
     const results = [];
     const { RouterInstance, options = {} } = context;
-    const lowerQuery = this.normalizeSearchValue(query);
 
-    if (!lowerQuery) return results;
-
-    const pushSearchResult = (result) => {
-      const resultKey = result.targetSelector || result.routerId || result.id;
-      if (!resultKey || results.find((item) => (item.targetSelector || item.routerId || item.id) === resultKey)) return;
-      results.push(result);
-    };
-
-    for (const button of this.getSearchableMenuButtons()) {
-      const metadata = this.getMenuButtonMetadata(button);
-      if (!metadata.searchHaystack.includes(lowerQuery)) continue;
-
-      const buttonChildren = getAllChildNodes(button);
-      const fontAwesomeIcon = buttonChildren.find((node) => {
-        return (
-          node.classList &&
-          Array.from(node.classList).find((cls) => cls.includes('fa-') && !cls.includes('fa-grip-vertical'))
-        );
-      });
-      const imgElement = buttonChildren.find((node) => {
-        return (
-          node.classList &&
-          Array.from(node.classList).find((cls) =>
-            options.searchCustomImgClass
-              ? cls.includes(options.searchCustomImgClass)
-              : cls.includes('img-btn-square-menu'),
-          )
-        );
-      });
-
-      pushSearchResult({
-        id: metadata.routerId || metadata.targetSelector?.replace(/^[.#]/, '') || metadata.title,
-        routerId: metadata.routerId,
-        targetSelector: metadata.targetSelector,
-        fontAwesomeIcon,
-        imgElement,
-        title: metadata.title || (metadata.routerId ? Translate.Render(metadata.routerId) : undefined),
-        type: metadata.type,
-        providerId: 'default-routes',
-      });
-    }
-
-    if (results.length > 0 || !RouterInstance || !RouterInstance.Routes) return results;
+    if (!RouterInstance) return results;
 
     const routerInstance = RouterInstance.Routes();
     for (const _routerId of Object.keys(routerInstance)) {
       const routerId = _routerId.slice(1);
-      if (!routerId) continue;
-      if (!s(`.main-btn-${routerId}`)) continue;
-
-      const idMatches = this.normalizeSearchValue(routerId).includes(lowerQuery);
-      const translationMatches =
-        !idMatches &&
-        Translate.Data[routerId] &&
-        Object.keys(Translate.Data[routerId]).some((keyLang) =>
-          this.normalizeSearchValue(Translate.Data[routerId][keyLang]).includes(lowerQuery),
-        );
-
-      if (!idMatches && !translationMatches) continue;
-
-      const fontAwesomeIcon = getAllChildNodes(s(`.main-btn-${routerId}`)).find((e) => {
-        return (
-          e.classList && Array.from(e.classList).find((cls) => cls.includes('fa-') && !cls.includes('fa-grip-vertical'))
-        );
-      });
-      const imgElement = getAllChildNodes(s(`.main-btn-${routerId}`)).find((e) => {
-        return (
-          e.classList &&
-          Array.from(e.classList).find((cls) =>
-            options.searchCustomImgClass
-              ? cls.includes(options.searchCustomImgClass)
-              : cls.includes('img-btn-square-menu'),
-          )
-        );
-      });
-
-      // Always include matching routes — icon presence is a rendering concern, not a filter
-      pushSearchResult({
-        id: routerId,
-        routerId,
-        targetSelector: `.main-btn-${routerId}`,
-        fontAwesomeIcon,
-        imgElement,
-        type: 'route',
-        providerId: 'default-routes',
-      });
+      if (routerId) {
+        if (
+          s(`.main-btn-${routerId}`) &&
+          (routerId.toLowerCase().match(query.toLowerCase()) ||
+            (Translate.Data[routerId] &&
+              Object.keys(Translate.Data[routerId]).filter((keyLang) =>
+                Translate.Data[routerId][keyLang].toLowerCase().match(query.toLowerCase()),
+              ).length > 0))
+        ) {
+          const fontAwesomeIcon = getAllChildNodes(s(`.main-btn-${routerId}`)).find((e) => {
+            return e.classList && Array.from(e.classList).find((e) => e.match('fa-') && !e.match('fa-grip-vertical'));
+          });
+          const imgElement = getAllChildNodes(s(`.main-btn-${routerId}`)).find((e) => {
+            return (
+              e.classList &&
+              Array.from(e.classList).find((e) =>
+                options.searchCustomImgClass ? e.match(options.searchCustomImgClass) : e.match('img-btn-square-menu'),
+              )
+            );
+          });
+          if (imgElement || fontAwesomeIcon) {
+            results.push({
+              id: routerId,
+              routerId,
+              fontAwesomeIcon,
+              imgElement,
+              type: 'route',
+              providerId: 'default-routes',
+            });
+          }
+        }
+      }
     }
     return results;
   }
@@ -531,7 +396,7 @@ class SearchBox extends BaseComponent {
    * @memberof SearchBoxClient.SearchBox
    * @param {Array<object>} results - Array of search results to render.
    * @param {string} containerId - Results container element ID or class name.
-   * @param {object} [context={}] - Render context passed to renderers and handlers.
+   * @param {object} [context={}] - instance context passed to renderers and handlers.
    * @returns {void}
    */
   static renderResults(results, containerId, context = {}) {
@@ -677,7 +542,7 @@ class SearchBox extends BaseComponent {
    * @param {HTMLElement} [result.fontAwesomeIcon] - FontAwesome icon element.
    * @param {HTMLElement} [result.imgElement] - Image icon element.
    * @param {number} index - The index of this result in the results array.
-   * @param {object} [context={}] - Render context object.
+   * @param {object} [context={}] - instance context object.
    * @param {object} [context.options] - Additional rendering options.
    * @returns {string} HTML string for the route search result.
    */
@@ -686,23 +551,12 @@ class SearchBox extends BaseComponent {
     const routerId = result.routerId;
     const fontAwesomeIcon = result.fontAwesomeIcon;
     const imgElement = result.imgElement;
-    const targetSelector = result.targetSelector;
-
-    // Strip absolute-positioning classes from menu-button icons so they render
-    // in normal flow inside the .search-result-icon flex container.
-    // Menu buttons use class="abs center" (position:absolute + centering transform)
-    // which causes icons to fly outside the search result box when copied via outerHTML.
-    const cleanIconHtml = (el) => {
-      const clone = el.cloneNode(true);
-      clone.classList.remove('abs', 'center');
-      return clone.outerHTML;
-    };
 
     let iconHtml = '';
 
     // For route results from history, reconstruct icons from DOM
-    if (!fontAwesomeIcon && !imgElement) {
-      const routeBtn = (targetSelector && s(targetSelector)) || (routerId ? s(`.main-btn-${routerId}`) : null);
+    if (!fontAwesomeIcon && !imgElement && routerId) {
+      const routeBtn = s(`.main-btn-${routerId}`);
       if (routeBtn) {
         const icon = getAllChildNodes(routeBtn).find((e) => {
           return e.classList && Array.from(e.classList).find((e) => e.match('fa-') && !e.match('fa-grip-vertical'));
@@ -716,29 +570,27 @@ class SearchBox extends BaseComponent {
           );
         });
         if (img) {
-          iconHtml = cleanIconHtml(img);
+          iconHtml = img.outerHTML;
         } else if (icon) {
-          iconHtml = cleanIconHtml(icon);
+          iconHtml = icon.outerHTML;
         }
       }
     } else {
       // For fresh search results, use provided DOM elements
       if (imgElement) {
-        iconHtml = cleanIconHtml(imgElement);
+        iconHtml = imgElement.outerHTML;
       } else if (fontAwesomeIcon) {
-        iconHtml = cleanIconHtml(fontAwesomeIcon);
+        iconHtml = fontAwesomeIcon.outerHTML;
       }
     }
 
-    const translatedText = result.title || (routerId ? Translate.Render(routerId) : result.id);
-    const resultId = result.id || routerId;
-    const resultType = result.type || 'route';
+    const translatedText = Translate.instance(routerId);
 
     return html`
       <div
         class="search-result-item search-result-route"
-        data-result-id="${resultId}"
-        data-result-type="${resultType}"
+        data-result-id="${routerId}"
+        data-result-type="route"
         data-result-index="${index}"
         data-provider-id="default-routes"
       >
@@ -761,11 +613,8 @@ class SearchBox extends BaseComponent {
    * @returns {void}
    */
   static attachClickHandlers(results, containerId, context = {}) {
-    const container = s(`#${containerId}`) || s(`.${containerId}`);
     results.forEach((result, index) => {
-      const element = container
-        ? container.querySelector(`[data-result-index="${index}"]`)
-        : s(`[data-result-index="${index}"]`);
+      const element = s(`[data-result-index="${index}"]`);
       if (!element) return;
 
       element.onclick = (e) => {
@@ -776,10 +625,13 @@ class SearchBox extends BaseComponent {
         this.RecentResults.add(result);
 
         const provider = this.providers.find((p) => p.id === result.providerId);
-        const btnSelector = result.targetSelector || (result.routerId ? `.main-btn-${result.routerId}` : null);
 
-        if (btnSelector && s(btnSelector)) {
-          s(btnSelector).click();
+        if (result.type === 'route') {
+          // Default route behavior - click the menu button
+          const btnSelector = `.main-btn-${result.routerId}`;
+          if (s(btnSelector)) {
+            s(btnSelector).click();
+          }
         } else if (provider && provider.onClick) {
           // Custom provider click handler
           provider.onClick(result, context);
@@ -901,7 +753,7 @@ class SearchBox extends BaseComponent {
    * @memberof SearchBoxClient.SearchBox
    * @returns {string} CSS string containing all base SearchBox styles.
    */
-  static getBaseStyles() {
+  static getBaseStyles = () => {
     // Get theme color from subThemeManager
     const themeColor = darkTheme ? subThemeManager.darkColor : subThemeManager.lightColor;
     const hasThemeColor = themeColor && themeColor !== null;
@@ -954,10 +806,11 @@ class SearchBox extends BaseComponent {
         align-items: center;
         gap: 10px;
         padding: 12px 14px;
+        margin: 4px 0;
         cursor: pointer;
         border-radius: 4px;
         transition: all 0.15s ease;
-        border: 2px solid transparent;
+        border: 1px solid transparent;
         background: transparent;
         min-height: 44px;
         box-sizing: border-box;
@@ -973,13 +826,13 @@ class SearchBox extends BaseComponent {
       .search-result-item.active-search-result,
       .search-result-item.main-btn-menu-active {
         background: ${activeBg} !important;
-        border: 2px solid ${activeBorder} !important;
-        box-shadow: 0 0 0 2px ${activeBorder}66 !important;
+        border: 1px solid ${activeBorder} !important;
+        box-shadow: 0 0 0 1px ${activeBorder}66 !important;
       }
 
       .search-result-route {
         padding: 10px 12px;
-        margin: 2px 0;
+        margin: 2px;
         text-align: left;
         min-height: 40px;
       }
@@ -1115,7 +968,7 @@ class SearchBox extends BaseComponent {
         transition: all 0.2s ease;
       }
     `;
-  }
+  };
 
   /**
    * Injects base SearchBox styles into the document head.

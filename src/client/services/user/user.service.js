@@ -1,13 +1,9 @@
 import { Auth } from '../../components/core/Auth.js';
 import { loggerFactory } from '../../components/core/Logger.js';
 import { getApiBaseUrl, headersFactory, payloadFactory, buildQueryUrl } from '../core/core.service.js';
-
 const logger = loggerFactory(import.meta);
-
 logger.info('Load service');
-
 const endpoint = 'user';
-
 class UserMock {
   static default = {
     username: 'guest',
@@ -15,7 +11,6 @@ class UserMock {
     role: 'guest',
   };
 }
-
 class UserService {
   static post = (options = { id: '', body: {} }) =>
     new Promise((resolve, reject) =>
@@ -37,7 +32,7 @@ class UserService {
           return reject(error);
         }),
     );
-  static get(options = {}) {
+  static get = (options = {}) => {
     const { id = 'all', page, limit, filterModel, sortModel, sort, asc, order } = options;
     const url = buildQueryUrl(getApiBaseUrl({ id, endpoint }), {
       page,
@@ -66,7 +61,7 @@ class UserService {
           return reject(error);
         }),
     );
-  }
+  };
   static delete = (options = { id: '', body: {} }) =>
     new Promise((resolve, reject) =>
       fetch(getApiBaseUrl({ id: options.id, endpoint }), {
@@ -108,5 +103,4 @@ class UserService {
         }),
     );
 }
-
 export { UserService, UserMock };

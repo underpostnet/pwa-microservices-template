@@ -1,29 +1,22 @@
 import { getId } from './CommonJs.js';
 import { loggerFactory } from './Logger.js';
 import { htmls, s } from './VanillaJs.js';
-
-import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta);
-
-class ToggleSwitch extends BaseComponent {
+class ToggleSwitch {
   static Tokens = {};
-  static async Render(options) {
-    const id = options?.id ? options.id : getId(this.Tokens, 'toggle-switch-');
-    this.Tokens[id] = {};
-
+  static async instance(options) {
+    const id = options?.id ? options.id : getId(ToggleSwitch.Tokens, 'toggle-switch-');
+    ToggleSwitch.Tokens[id] = {};
     const widthContent = 60;
     const widthCircle = 20;
-
     setTimeout(() => {
       switch (options.displayMode) {
         case 'checkbox':
           break;
-
         default:
           s(`.${id}-circle`).style.left = `0px`;
           break;
       }
-
       const onToggle = () => {
         switch (options.displayMode) {
           case 'checkbox':
@@ -50,22 +43,17 @@ class ToggleSwitch extends BaseComponent {
         s(`.${id}-checkbox`).checked = false;
         options?.on?.unchecked ? options.on.unchecked() : null;
       };
-
       const onClickEvent = () => {
         s(`.${id}-checkbox`).checked ? offToggle() : onToggle();
         logger.info(id, s(`.${id}-checkbox`).checked);
       };
-
-      this.Tokens[id].click = onClickEvent;
-
+      ToggleSwitch.Tokens[id].click = onClickEvent;
       if (!options.disabledOnClick) s(`.${id}`).onclick = onClickEvent;
-
       setTimeout(() => {
         options?.checked ? onToggle() : null;
         logger.info(id, s(`.${id}-checkbox`).checked);
       });
     });
-
     if (options.type === 'checkbox') {
     }
     const htmlRender = html`
@@ -98,5 +86,4 @@ class ToggleSwitch extends BaseComponent {
     return htmlRender;
   }
 }
-
 export { ToggleSwitch };

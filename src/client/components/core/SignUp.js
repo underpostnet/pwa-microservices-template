@@ -1,20 +1,29 @@
 import { UserService } from '../../services/user/user.service.js';
 import { Auth } from './Auth.js';
 import { BtnIcon } from './BtnIcon.js';
+import { AuthEventType, authSignupEvents } from './ClientEvents.js';
 import { EventsUI } from './EventsUI.js';
 import { Input } from './Input.js';
 import { NotificationManager } from './NotificationManager.js';
 import { Translate } from './Translate.js';
 import { Validator } from './Validator.js';
 import { s } from './VanillaJs.js';
-
-import { BaseComponent } from './WebComponent.js';
-class SignUp extends BaseComponent {
+class SignUp {
   static Event = {};
-  static async Trigger(options) {
-    for (const eventKey of Object.keys(this.Event)) await this.Event[eventKey](options);
+  static onSignup(listener, options = {}) {
+    return authSignupEvents.on(AuthEventType.signup, listener, options);
   }
-  static async Render(options = { bottomRender: async () => '' }) {
+  static offSignup(key) {
+    return authSignupEvents.off(key);
+  }
+  static hasSignupListener(key) {
+    return authSignupEvents.has(key);
+  }
+  static async Trigger(options) {
+    await authSignupEvents.emit(AuthEventType.signup, options);
+    for (const eventKey of Object.keys(SignUp.Event)) await SignUp.Event[eventKey](options);
+  }
+  static async instance(options = { bottomRender: async () => '' }) {
     setTimeout(async () => {
       const formData = [
         {
@@ -34,7 +43,6 @@ class SignUp extends BaseComponent {
         },
       ];
       const validators = await Validator.instance(formData);
-
       EventsUI.onClick(`.btn-sign-up`, async (e) => {
         e.preventDefault();
         const { errorMessage } = await validators();
@@ -48,23 +56,23 @@ class SignUp extends BaseComponent {
           let error = '';
           if (data.message) {
             if (data.message.match('duplicate')) {
-              if (data.message.match('username')) error += Translate.Render('error-username-taken');
-              if (data.message.match('email')) error += Translate.Render('error-email-taken');
+              if (data.message.match('username')) error += Translate.instance('error-username-taken');
+              if (data.message.match('email')) error += Translate.instance('error-email-taken');
             } else {
-              if (data.message.match('username')) error += Translate.Render('error-username-invalid');
-              if (data.message.match('email')) error += Translate.Render('error-email-invalid');
-              if (data.message.match('password')) error += Translate.Render('error-password-invalid');
+              if (data.message.match('username')) error += Translate.instance('error-username-invalid');
+              if (data.message.match('email')) error += Translate.instance('error-email-invalid');
+              if (data.message.match('password')) error += Translate.instance('error-password-invalid');
             }
             return error;
           }
-          return Translate.Render('error-register-user');
+          return Translate.instance('error-register-user');
         };
         NotificationManager.Push({
           html:
             typeof result.data === 'string'
               ? result.data
               : result.status === 'success'
-                ? Translate.Render(`success-register-user`)
+                ? Translate.instance(`success-register-user`)
                 : handleSignUpError(result),
           status: result.status,
         });
@@ -82,58 +90,59 @@ class SignUp extends BaseComponent {
       });
     });
     return html`
-      ${await BtnIcon.Render({
+      ${await BtnIcon.instance({
         class: 'in section-mp form-button btn-sign-up-i-have-account',
-        label: html`<i class="fas fa-sign-in-alt"></i> ${Translate.Render('i-have-account')}<br />${Translate.Render(
+        label: html`<i class="fas fa-sign-in-alt"></i> ${Translate.instance('i-have-account')}<br />${Translate.instance(
             'log-in',
           )}`,
         type: 'button',
       })}
       <form class="in">
         <div class="in">
-          ${await Input.Render({
+          ${await Input.instance({
             id: `sign-up-username`,
             type: 'text',
-            label: html`<i class="fa-solid fa-pen-to-square"></i> ${Translate.Render('username')}`,
+            label: html`<i class="fa-solid fa-pen-to-square"></i> ${Translate.instance('username')}`,
             containerClass: 'inl section-mp width-mini-box input-container',
             placeholder: true,
           })}
         </div>
         <div class="in">
-          ${await Input.Render({
+          ${await Input.instance({
             id: `sign-up-email`,
             type: 'email',
-            label: html`<i class="fa-solid fa-envelope"></i> ${Translate.Render('email')}`,
+            label: html`<i class="fa-solid fa-envelope"></i> ${Translate.instance('email')}`,
             containerClass: 'inl section-mp width-mini-box input-container',
             placeholder: true,
             autocomplete: 'email',
           })}
         </div>
         <div class="in">
-          ${await Input.Render({
+          ${await Input.instance({
             id: `sign-up-password`,
             type: 'password',
             autocomplete: 'new-password',
-            label: html`<i class="fa-solid fa-lock"></i> ${Translate.Render('password')}`,
+            label: html`<i class="fa-solid fa-lock"></i> ${Translate.instance('password')}`,
             containerClass: 'inl section-mp width-mini-box input-container',
             placeholder: true,
           })}
         </div>
         <div class="in">
-          ${await Input.Render({
+          ${await Input.instance({
             id: `sign-up-repeat-password`,
             type: 'password',
             autocomplete: 'new-password',
-            label: html`<i class="fa-solid fa-lock"></i> ${Translate.Render('repeat')} ${Translate.Render('password')}`,
+            label: html`<i class="fa-solid fa-lock"></i> ${Translate.instance('repeat')}
+              ${Translate.instance('password')}`,
             containerClass: 'inl section-mp width-mini-box input-container',
             placeholder: true,
           })}
         </div>
         ${options?.bottomRender ? await options.bottomRender() : ``}
         <div class="in">
-          ${await BtnIcon.Render({
+          ${await BtnIcon.instance({
             class: 'in section-mp form-button btn-sign-up',
-            label: Translate.Render('sign-up'),
+            label: Translate.instance('sign-up'),
             type: 'submit',
           })}
         </div>
@@ -141,5 +150,4 @@ class SignUp extends BaseComponent {
     `;
   }
 }
-
 export { SignUp };

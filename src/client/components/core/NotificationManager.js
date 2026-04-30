@@ -2,12 +2,10 @@ import { getId, getIsoDate } from './CommonJs.js';
 import { Css, Themes } from './Css.js';
 import { Modal } from './Modal.js';
 import { append, prepend, s } from './VanillaJs.js';
-
-import { BaseComponent } from './WebComponent.js';
-class NotificationManager extends BaseComponent {
+class NotificationManager {
   static Types = ['success', 'error', 'warning', 'info'];
   static async RenderBoard(options) {
-    this.options = options;
+    NotificationManager.options = options;
     append(
       'body',
       html`
@@ -37,9 +35,9 @@ class NotificationManager extends BaseComponent {
     barConfig.buttons.minimize.disabled = true;
     barConfig.buttons.restore.disabled = true;
     barConfig.buttons.menu.disabled = true;
-    const idNotification = getId(this.Tokens, 'board-notification-');
-    this.Tokens[idNotification] = {};
-    await Modal.Render({
+    const idNotification = getId(NotificationManager.Tokens, 'board-notification-');
+    NotificationManager.Tokens[idNotification] = {};
+    await Modal.instance({
       title: html`<div class="in notification-manager-date">${getIsoDate(new Date())}</div>
         ${options.html}`,
       html: '',
@@ -67,11 +65,9 @@ class NotificationManager extends BaseComponent {
     badge: '<URL String>',
     dir: "<String of 'auto' | 'ltr' | 'rtl'>",
     timestamp: '<Long>',
-
     // Both visual & behavioral options
     actions: '<Array of Strings>',
     data: '<Anything>',
-
     // Behavioral Options
     tag: '<String>',
     requireInteraction: '<boolean>',
@@ -81,5 +77,4 @@ class NotificationManager extends BaseComponent {
     silent: '<Boolean>',
   };
 }
-
 export { NotificationManager };

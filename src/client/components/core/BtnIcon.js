@@ -2,11 +2,9 @@ import { getId, s4 } from './CommonJs.js';
 import { renderCssAttr } from './Css.js';
 import { ToolTip } from './ToolTip.js';
 import { getAllChildNodes, htmlStrSanitize, s } from './VanillaJs.js';
-
-import { BaseComponent } from './WebComponent.js';
-class BtnIcon extends BaseComponent {
+class BtnIcon {
   static Tokens = {};
-  static async Render(
+  static async instance(
     options = {
       class: '',
       type: '',
@@ -20,9 +18,9 @@ class BtnIcon extends BaseComponent {
       useMenuBtn: false,
     },
   ) {
-    const tokenId = getId(this.Tokens, 'btn-token-');
+    const tokenId = getId(BtnIcon.Tokens, 'btn-token-');
     if (options.useMenuBtn) options.class += ' main-menu-btn-selector';
-    this.Tokens[tokenId] = { ...options };
+    BtnIcon.Tokens[tokenId] = { ...options };
     setTimeout(() => {
       if (s(`.a-${tokenId}`)) s(`.a-${tokenId}`).onclick = (e) => e.preventDefault();
     });
@@ -58,7 +56,7 @@ class BtnIcon extends BaseComponent {
     if (options.tooltipHtml)
       setTimeout(() => {
         if (s(`.${tokenId}`))
-          ToolTip.Render({
+          ToolTip.instance({
             container: `.${tokenId}`,
             id: tokenId,
             htmlRender: options.tooltipHtml,
@@ -72,10 +70,10 @@ class BtnIcon extends BaseComponent {
   static TouchTokens = {};
   static async RenderTouch(options = { id: '', Events: {} }) {
     const { id } = options;
-    this.TouchTokens[id] = { Events: {}, ...options };
+    BtnIcon.TouchTokens[id] = { Events: {}, ...options };
     setTimeout(() => {
       const triggerTouchEvents = () => {
-        for (const event of Object.keys(this.TouchTokens[id].Events)) this.TouchTokens[id].Events[event]();
+        for (const event of Object.keys(BtnIcon.TouchTokens[id].Events)) BtnIcon.TouchTokens[id].Events[event]();
       };
       if (s(`.${id}`)) {
         s(`.${id}`).addEventListener('touchstart', () => {
@@ -108,5 +106,4 @@ class BtnIcon extends BaseComponent {
       return e.classList && Array.from(e.classList).find((e) => e.match('BtnIcon-label'));
     });
 }
-
 export { BtnIcon };

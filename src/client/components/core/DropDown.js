@@ -5,19 +5,16 @@ import { Input } from './Input.js';
 import { ToggleSwitch } from './ToggleSwitch.js';
 import { Translate } from './Translate.js';
 import { s, htmls } from './VanillaJs.js';
-
-import { BaseComponent } from './WebComponent.js';
-class DropDown extends BaseComponent {
+class DropDown {
   static Tokens = {};
-  static async Render(options) {
-    const id = options.id ? options.id : getId(this.Tokens, 'dropdown-');
-    this.Tokens[id] = {
+  static async instance(options) {
+    const id = options.id ? options.id : getId(DropDown.Tokens, 'dropdown-');
+    DropDown.Tokens[id] = {
       onClickEvents: {},
       lastSelectValue: undefined,
       oncheckvalues: {},
       originData: options.data ? newInstance(options.data) : [],
     };
-
     const _renderSelectedBadges = async () => {
       if (options.type !== 'checkbox') return;
       const container = s(`.dropdown-current-${id}`);
@@ -30,7 +27,7 @@ class DropDown extends BaseComponent {
       let badgesHtml = '';
       for (const [key, val] of selected) {
         badgesHtml += html`<span class="inl" style="display:inline-flex;align-items:center;margin:2px;">
-          ${await Badge.Render({
+          ${await Badge.instance({
             text: html`<i class="fa-solid fa-tag" style="margin-right:3px;font-size:9px;"></i>${val.display}`,
             style: {
               background: darkTheme ? '#335' : '#cde',
@@ -68,12 +65,11 @@ class DropDown extends BaseComponent {
       });
     };
     DropDown.Tokens[id]._renderSelectedBadges = _renderSelectedBadges;
-
     options.data.push({
       value: 'reset',
-      display: html`<i class="fa-solid fa-broom"></i> ${Translate.Render('clear')}`,
+      display: html`<i class="fa-solid fa-broom"></i> ${Translate.instance('clear')}`,
       onClick: () => {
-        console.log('DropDown onClick', this.value);
+        console.log('DropDown onClick', DropDown.value);
         if (options && options.resetOnClick) options.resetOnClick();
         if (options && options.type === 'checkbox') {
           DropDown.Tokens[id].oncheckvalues = {};
@@ -94,25 +90,22 @@ class DropDown extends BaseComponent {
               }
             }
           }
-        } else this.Tokens[id].value = undefined;
+        } else DropDown.Tokens[id].value = undefined;
       },
     });
-
     if (!(options && options.disableClose))
       options.data.push({
         value: 'close',
-        display: html`<i class="fa-solid fa-xmark"></i> ${Translate.Render('close')}`,
+        display: html`<i class="fa-solid fa-xmark"></i> ${Translate.instance('close')}`,
         onClick: function () {
-          console.log('DropDown onClick', this.value);
+          console.log('DropDown onClick', DropDown.value);
         },
       });
-
     const switchOptionsPanel = () => {
       if (Array.from(s(`.dropdown-option-${id}`).classList).includes('hide'))
         s(`.dropdown-option-${id}`).classList.remove('hide');
       else s(`.dropdown-option-${id}`).classList.add('hide');
     };
-
     const _render = async (data) => {
       let render = '';
       let index = -1;
@@ -125,20 +118,18 @@ class DropDown extends BaseComponent {
         if (!isGroup) {
           setTimeout(() => {
             const onclick = async (e) => {
-              if (options && options.lastSelectClass && s(`.dropdown-option-${this.Tokens[id].lastSelectValue}`)) {
-                s(`.dropdown-option-${this.Tokens[id].lastSelectValue}`).classList.remove(options.lastSelectClass);
+              if (options && options.lastSelectClass && s(`.dropdown-option-${DropDown.Tokens[id].lastSelectValue}`)) {
+                s(`.dropdown-option-${DropDown.Tokens[id].lastSelectValue}`).classList.remove(options.lastSelectClass);
               }
-              this.Tokens[id].lastSelectValue = valueDisplay;
-              if (options && options.lastSelectClass && s(`.dropdown-option-${this.Tokens[id].lastSelectValue}`)) {
-                s(`.dropdown-option-${this.Tokens[id].lastSelectValue}`).classList.add(options.lastSelectClass);
+              DropDown.Tokens[id].lastSelectValue = valueDisplay;
+              if (options && options.lastSelectClass && s(`.dropdown-option-${DropDown.Tokens[id].lastSelectValue}`)) {
+                s(`.dropdown-option-${DropDown.Tokens[id].lastSelectValue}`).classList.add(options.lastSelectClass);
               }
-
               if (
                 !(options && options.disableClose) &&
                 (options.type !== 'checkbox' || optionData.value === 'close' || optionData.value === 'reset')
               )
                 s(`.dropdown-option-${id}`).classList.add('hide');
-
               if (options.type === 'checkbox' && ToggleSwitch.Tokens[`checkbox-role-${valueDisplay}`])
                 ToggleSwitch.Tokens[`checkbox-role-${valueDisplay}`].click();
               if (optionData.value !== 'close') {
@@ -149,26 +140,20 @@ class DropDown extends BaseComponent {
                     htmls(`.dropdown-current-${id}`, optionData.display);
                   }
                 } else htmls(`.dropdown-current-${id}`, '');
-
-                this.Tokens[id].value =
+                DropDown.Tokens[id].value =
                   options.type === 'checkbox'
                     ? options.serviceProvider
                       ? Object.values(DropDown.Tokens[id].oncheckvalues).map((v) => v.data)
                       : data.filter((d) => d.checked).map((d) => d.data)
                     : optionData.data;
-
-                console.warn('current value dropdown id:' + id, this.Tokens[id].value);
-
-                s(`.${id}`).value = this.Tokens[id].value;
-
+                console.warn('current value dropdown id:' + id, DropDown.Tokens[id].value);
+                s(`.${id}`).value = DropDown.Tokens[id].value;
                 optionData.onClick(e);
               }
             };
-
-            this.Tokens[id].onClickEvents[`dropdown-option-${id}-${i}`] = onclick;
-            this.Tokens[id].onClickEvents[`dropdown-option-${id}-${valueDisplay}`] = onclick;
-            this.Tokens[id].onClickEvents[`dropdown-option-${valueDisplay}`] = onclick;
-
+            DropDown.Tokens[id].onClickEvents[`dropdown-option-${id}-${i}`] = onclick;
+            DropDown.Tokens[id].onClickEvents[`dropdown-option-${id}-${valueDisplay}`] = onclick;
+            DropDown.Tokens[id].onClickEvents[`dropdown-option-${valueDisplay}`] = onclick;
             s(`.dropdown-option-${id}-${i}`).onclick = onclick;
           });
         }
@@ -176,16 +161,14 @@ class DropDown extends BaseComponent {
           <div
             class="in dropdown-option ${isGroup
               ? `dropdown-option-group dropdown-option-group-${id}`
-              : `dropdown-option-${id}-${i} dropdown-option-${id}-${valueDisplay} dropdown-option-${valueDisplay} ${
-                  valueDisplay === 'reset' && options && !(options.resetOption === true) ? 'hide' : ''
-                }`}"
+              : `dropdown-option-${id}-${i} dropdown-option-${id}-${valueDisplay} dropdown-option-${valueDisplay} ${valueDisplay === 'reset' && options && !(options.resetOption === true) ? 'hide' : ''}`}"
             style="${isGroup
               ? 'cursor:default;opacity:.8;font-size:11px;letter-spacing:.08em;text-transform:uppercase;padding-top:8px;padding-bottom:6px;'
               : ''}"
           >
             ${!isGroup && options.type === 'checkbox' && optionData.value !== 'close' && optionData.value !== 'reset'
               ? html`
-                  ${await ToggleSwitch.Render({
+                  ${await ToggleSwitch.instance({
                     id: `checkbox-role-${valueDisplay}`,
                     type: 'checkbox',
                     disabledOnClick: true,
@@ -212,7 +195,6 @@ class DropDown extends BaseComponent {
       }
       return { render, index };
     };
-
     setTimeout(() => {
       if (options.type === 'checkbox')
         options.data.map((optionData) => {
@@ -223,21 +205,16 @@ class DropDown extends BaseComponent {
         const indexValue = options.data.findIndex((t) => t.value === options.value);
         if (indexValue > -1) setTimeout(() => s(`.dropdown-option-${id}-${indexValue}`).click());
       }
-
       s(`.dropdown-label-${id}`).onclick = switchOptionsPanel;
       s(`.dropdown-current-${id}`).onclick = switchOptionsPanel;
       if (options && options.open) switchOptionsPanel();
-
       if (options.type === 'checkbox') {
         ThemeEvents[`dropdown-badge-${id}`] = () => _renderSelectedBadges();
       }
-
       const dropDownSearchHandle = async () => {
         const _data = [];
         if (!s(`.search-box-${id}`)) return;
-
         let _value = s(`.search-box-${id}`).value.toLowerCase();
-
         for (const objData of options.data) {
           if (
             options.excludeSelected &&
@@ -256,7 +233,6 @@ class DropDown extends BaseComponent {
             _data.push(objData);
           }
         }
-
         if (_data.length > 0) {
           const { render, index } = await _render(_data);
           htmls(`.${id}-render-container`, render);
@@ -265,12 +241,11 @@ class DropDown extends BaseComponent {
           htmls(
             `.${id}-render-container`,
             html` <div class="inl" style="padding: 10px; color: red">
-              <i class="fas fa-exclamation-circle"></i> ${Translate.Render('no-result-found')}
+              <i class="fas fa-exclamation-circle"></i> ${Translate.instance('no-result-found')}
             </div>`,
           );
         }
       };
-
       if (options.serviceProvider) {
         let serviceSearchTimeout = null;
         s(`.search-box-${id}`).oninput = () => {
@@ -302,7 +277,7 @@ class DropDown extends BaseComponent {
                 htmls(
                   `.${id}-render-container`,
                   html` <div class="inl" style="padding: 10px; color: red">
-                    <i class="fas fa-exclamation-circle"></i> ${Translate.Render('no-result-found')}
+                    <i class="fas fa-exclamation-circle"></i> ${Translate.instance('no-result-found')}
                   </div>`,
                 );
               }
@@ -314,13 +289,10 @@ class DropDown extends BaseComponent {
       } else {
         s(`.search-box-${id}`).oninput = dropDownSearchHandle;
       }
-
       // Not use onblur generate bug on input toggle
       // s(`.search-box-${id}`).onblur = dropDownSearchHandle;
     });
-
     const { render, index } = await _render(options.data);
-
     return html`
       <div class="inl dropdown-container ${id} ${options?.containerClass ? options.containerClass : ''}">
         <div class="in dropdown-option dropdown-label-${id} ${options && options.disableSelectLabel ? 'hide' : ''}">
@@ -333,9 +305,9 @@ class DropDown extends BaseComponent {
         ></div>
         <div class="in dropdown-option-${id} hide">
           <div class="in dropdown-option ${options && options.disableSearchBox ? 'hide' : ''}">
-            ${await Input.Render({
+            ${await Input.instance({
               id: `search-box-${id}`,
-              label: html`<i class="fa-solid fa-magnifying-glass"></i> ${Translate.Render('search')}`,
+              label: html`<i class="fa-solid fa-magnifying-glass"></i> ${Translate.instance('search')}`,
               containerClass: 'in',
               placeholder: true,
             })}
@@ -346,5 +318,4 @@ class DropDown extends BaseComponent {
     `;
   }
 }
-
 export { DropDown };

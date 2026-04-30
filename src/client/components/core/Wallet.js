@@ -8,43 +8,34 @@ import { EventsUI } from './EventsUI.js';
 import { NotificationManager } from './NotificationManager.js';
 import { Translate } from './Translate.js';
 import { copyData, htmls, s } from './VanillaJs.js';
-
-import { BaseComponent } from './WebComponent.js';
-class Wallet extends BaseComponent {
+class Wallet {
   static Data = {};
-  static async Render(options) {
-    const id = getId(this.Data, 'wallet-');
+  static async instance(options) {
+    const id = getId(Wallet.Data, 'wallet-');
     setTimeout(async () => {
       EventsUI.onClick(`.btn-generate-keys-${id}`, async (e) => {
         e.preventDefault();
-
         const algorithm = {
           name: 'ECDSA',
           namedCurve: 'P-384',
           hash: 'SHA-256',
         };
         const format = 'jwk';
-
         (async () => {
           return;
           const { data: payload } = await UserService.get({ id: 'public-key-sign-token' });
-
           const signature = await window.crypto.subtle.sign(
             algorithm,
             keyPair.privateKey,
-            new TextEncoder().encode(payload), // Encode data to Uint8Array,
+            new TextEncoder().encode(payload),
           );
-
           const base64Signature = btoa(String.fromCharCode(...new Uint8Array(signature)));
         })();
-
         const keyPair = await window.crypto.subtle.generateKey(algorithm, true, ['sign', 'verify']);
         const privateKey = await window.crypto.subtle.exportKey(format, keyPair.privateKey);
         const publicKey = await window.crypto.subtle.exportKey(format, keyPair.publicKey);
-
         const displayKeys = JSON.stringify({ privateKey, publicKey }, null, 4);
         htmls('.keys-display', displayKeys);
-
         if (Auth.getToken()) {
           const result = await CryptoService.post({
             body: {
@@ -54,19 +45,17 @@ class Wallet extends BaseComponent {
             },
           });
         }
-
         NotificationManager.Push({
-          // html: Translate.Render(`${result.status}-generate-keys`),
-          html: Translate.Render(`success-generate-keys`),
+          // html: Translate.instance(`${result.status}-generate-keys`),
+          html: Translate.instance(`success-generate-keys`),
           // status: result.status,
           status: 'success',
         });
-
         EventsUI.onClick(`.btn-copy-keys-${id}`, async (e) => {
           e.preventDefault();
           await copyData(displayKeys);
           NotificationManager.Push({
-            html: Translate.Render('success-copy-data'),
+            html: Translate.instance('success-copy-data'),
             status: 'success',
           });
         });
@@ -83,14 +72,14 @@ class Wallet extends BaseComponent {
               based on elliptic curve digital signature,
               <a href="https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto">more info</a>.
             </div>
-            ${await BtnIcon.Render({
+            ${await BtnIcon.instance({
               class: `inl section-mp btn-custom btn-generate-keys-${id}`,
-              label: html`<i class="fa-solid fa-arrows-rotate"></i> ${Translate.Render('generate')}
-                ${Translate.Render('keys')}`,
+              label: html`<i class="fa-solid fa-arrows-rotate"></i> ${Translate.instance('generate')}
+                ${Translate.instance('keys')}`,
             })}
-            ${await BtnIcon.Render({
+            ${await BtnIcon.instance({
               class: `inl section-mp btn-custom btn-copy-keys-${id}`,
-              label: html`<i class="fas fa-copy"></i> ${Translate.Render('copy')} ${Translate.Render('keys')}`,
+              label: html`<i class="fas fa-copy"></i> ${Translate.instance('copy')} ${Translate.instance('keys')}`,
             })}
           </div>
         </div>
@@ -103,5 +92,4 @@ class Wallet extends BaseComponent {
     `;
   }
 }
-
 export { Wallet };

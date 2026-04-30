@@ -7,16 +7,9 @@ import { DataBaseProvider } from '../../db/DataBaseProvider.js';
 
 const logger = loggerFactory(import.meta);
 
-class UserRouter {
-  /**
-   * Builds and returns the Express Router for this API.
-   * @param {import('../../server/auth.js').RouterOptions} options
-   * @returns {import('express').Router}
-   * @memberof UserRouter
-   */
-  static router(options) {
+const UserRouter = (options) => {
   const router = express.Router();
-  const { authMiddleware } = options;
+  const authMiddleware = options.authMiddleware;
 
   (async () => {
     // admin user seed
@@ -358,9 +351,8 @@ class UserRouter {
   });
 
   return router;
-  }
-}
+};
 
-const ApiRouter = (options) => UserRouter.router(options);
+const ApiRouter = UserRouter;
 
 export { ApiRouter, UserRouter };

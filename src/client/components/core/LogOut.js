@@ -1,17 +1,26 @@
 import { Auth } from './Auth.js';
 import { BtnIcon } from './BtnIcon.js';
+import { AuthEventType, authLogoutEvents } from './ClientEvents.js';
 import { LogIn } from './LogIn.js';
 import { Translate } from './Translate.js';
 import { htmls, s } from './VanillaJs.js';
 import { WebhookProvider } from './Webhook.js';
 import { NotificationManager } from './NotificationManager.js';
-
-import { BaseComponent } from './WebComponent.js';
-class LogOut extends BaseComponent {
+class LogOut {
   static Event = {};
+  static onLogout(listener, options = {}) {
+    return authLogoutEvents.on(AuthEventType.logout, listener, options);
+  }
+  static offLogout(key) {
+    return authLogoutEvents.off(key);
+  }
+  static hasLogoutListener(key) {
+    return authLogoutEvents.has(key);
+  }
   static async Trigger(options) {
     await WebhookProvider.unregister();
-    for (const eventKey of Object.keys(this.Event)) await this.Event[eventKey](options);
+    await authLogoutEvents.emit(AuthEventType.logout, options);
+    for (const eventKey of Object.keys(LogOut.Event)) await LogOut.Event[eventKey](options);
     if (s(`.session`))
       htmls(
         `.session`,
@@ -37,28 +46,27 @@ class LogOut extends BaseComponent {
         </style>`,
       );
   }
-  static async Render() {
+  static async instance() {
     setTimeout(() => {
       s('.btn-log-out').onclick = async (e) => {
         e.preventDefault();
         await Auth.sessionOut();
         NotificationManager.Push({
-          html: Translate.Render(`success-logout`),
+          html: Translate.instance(`success-logout`),
           status: 'success',
         });
       };
     });
-    // Translate.Render('confirm-logout')
+    // Translate.instance('confirm-logout')
     return html` <form class="in">
       <div class="in">
-        ${await BtnIcon.Render({
+        ${await BtnIcon.instance({
           class: 'inl section-mp btn-custom btn-log-out',
-          label: html`<i class="fa-solid fa-power-off"></i> ${Translate.Render('log-out')}`,
+          label: html`<i class="fa-solid fa-power-off"></i> ${Translate.instance('log-out')}`,
           type: 'submit',
         })}
       </div>
     </form>`;
   }
 }
-
 export { LogOut };

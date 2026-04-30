@@ -4,18 +4,15 @@ import { darkTheme, renderCssAttr, subThemeManager } from './Css.js';
 import { loggerFactory } from './Logger.js';
 import { append, htmls, s } from './VanillaJs.js';
 import { getProxyPath } from './Router.js';
-
-import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta);
-
-class LoadingAnimation extends BaseComponent {
+class LoadingAnimation {
   static bar = {
     tokens: {},
     getId: (id) => `bar-progress-${id.slice(1)}`,
     play: async function (container) {
-      const id = this.getId(container);
+      const id = LoadingAnimation.bar.getId(container);
       const idEvent = s4() + s4() + s4();
-      this.tokens[container] = `${idEvent}`;
+      LoadingAnimation.bar.tokens[container] = `${idEvent}`;
       // diagonal-bar-background-animation
       // #6d68ff #790079
       append(
@@ -40,15 +37,15 @@ class LoadingAnimation extends BaseComponent {
         { time: 5000, value: 1 },
       ])
         setTimeout(() => {
-          if (this.tokens[container] === idEvent && s(`.${id}`)) {
+          if (LoadingAnimation.bar.tokens[container] === idEvent && s(`.${id}`)) {
             s(`.${id}`).style.left = `-${frame.value}%`;
             // const percentageRender = html`${100 - frame.value}%`;
           }
         }, frame.time);
     },
     stop: function (container) {
-      const id = this.getId(container);
-      delete this.tokens[container];
+      const id = LoadingAnimation.bar.getId(container);
+      delete LoadingAnimation.bar.tokens[container];
       if (!s(`.${id}`)) return;
       s(`.${id}`).style.left = '0%';
       s(`.${id}`).style.opacity = 1;
@@ -60,8 +57,7 @@ class LoadingAnimation extends BaseComponent {
     getId: (id) => `spinner-progress-${id.slice(1)}`,
     play: async function (container, spinner, options = { append: '', prepend: '' }) {
       if (!s(container)) return;
-      const id = this.getId(container);
-
+      const id = LoadingAnimation.spinner.getId(container);
       let render;
       switch (spinner) {
         case 'dual-ring':
@@ -72,11 +68,9 @@ class LoadingAnimation extends BaseComponent {
           render = html`<div class="lds-dual-ring-mini"></div>`;
           break;
       }
-
       const style = {
         'text-align': 'center',
       };
-
       append(
         container,
         html`
@@ -94,7 +88,7 @@ class LoadingAnimation extends BaseComponent {
       if (label) label.classList.add('hide');
     },
     stop: function (container) {
-      const id = this.getId(container);
+      const id = LoadingAnimation.spinner.getId(container);
       if (!s(`.${id}`)) return;
       s(`.${id}`).remove();
       const label = BtnIcon.findLabel(s(container));
@@ -104,15 +98,15 @@ class LoadingAnimation extends BaseComponent {
   static img = {
     tokens: {},
     load: function ({ key, src, classes, style }) {
-      this.tokens[key] = { src, classes, style };
+      LoadingAnimation.img.tokens[key] = { src, classes, style };
     },
     play: function (container, key) {
       append(
         container,
         html`<img
-          ${this.tokens[key].classes ? `class="${this.tokens[key].classes}"` : ''}
-          ${this.tokens[key].style ? `style="${this.tokens[key].style}"` : ''}
-          src="${getProxyPath()}${this.tokens[key].src}"
+          ${LoadingAnimation.img.tokens[key].classes ? `class="${LoadingAnimation.img.tokens[key].classes}"` : ''}
+          ${LoadingAnimation.img.tokens[key].style ? `style="${LoadingAnimation.img.tokens[key].style}"` : ''}
+          src="${getProxyPath()}${LoadingAnimation.img.tokens[key].src}"
         />`,
       );
     },
@@ -135,7 +129,6 @@ class LoadingAnimation extends BaseComponent {
       if (callBack) callBack();
     }
   }
-
   static RenderCurrentSrcLoad(event) {
     if (s(`.ssr-loading-info`)) {
       let nameSrcLoad = event.data.path;

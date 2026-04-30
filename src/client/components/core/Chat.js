@@ -5,13 +5,11 @@ import { Modal } from './Modal.js';
 import { SocketIo } from './SocketIo.js';
 import { Translate } from './Translate.js';
 import { s, append } from './VanillaJs.js';
-
-import { BaseComponent } from './WebComponent.js';
-class Chat extends BaseComponent {
+class Chat {
   static Data = {};
-  static async Render(options) {
+  static async instance(options) {
     const { idModal } = options;
-    this.Data[idModal] = {};
+    Chat.Data[idModal] = {};
     setTimeout(() => {
       Modal.Data[idModal].onObserverListener[`chat-${idModal}`] = (options) => {
         const { height } = options;
@@ -20,7 +18,7 @@ class Chat extends BaseComponent {
       s(`.btn-send-chat-${idModal}`).onclick = (e) => {
         e.preventDefault();
         if (!s(`.input-chat-${idModal}`).value) return;
-        this.appendChatBox({ id: SocketIo.socket.id, idModal, message: s(`.input-chat-${idModal}`).value });
+        Chat.appendChatBox({ id: SocketIo.socket.id, idModal, message: s(`.input-chat-${idModal}`).value });
         SocketIo.Emit('chat', {
           message: s(`.input-chat-${idModal}`).value,
         });
@@ -30,16 +28,16 @@ class Chat extends BaseComponent {
     return html`
       <form>
         <div class="in section-mp chat-box ${idModal}-chat-box"></div>
-        ${await Input.Render({
+        ${await Input.instance({
           id: `input-chat-${idModal}`,
-          label: html`<i class="fa-solid fa-pen-to-square"></i> ${Translate.Render('write')}`,
+          label: html`<i class="fa-solid fa-pen-to-square"></i> ${Translate.instance('write')}`,
           containerClass: 'in section-mp width-mini-box-hover input-container-width',
           placeholder: true,
         })}
         <div class="in">
-          ${await BtnIcon.Render({
+          ${await BtnIcon.instance({
             class: `btn-send-chat-${idModal}`,
-            label: Translate.Render('send'),
+            label: Translate.instance('send'),
             type: 'submit',
           })}
         </div>
@@ -61,5 +59,4 @@ class Chat extends BaseComponent {
     s(`.${idModal}-chat-box`).scrollTop = s(`.${idModal}-chat-box`).scrollHeight;
   }
 }
-
 export { Chat };

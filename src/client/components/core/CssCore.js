@@ -3,7 +3,6 @@ import { borderChar, boxShadow, scrollBarDarkRender, scrollBarLightRender } from
 import { LoadingAnimation } from './LoadingAnimation.js';
 import { append, s } from './VanillaJs.js';
 import { getProxyPath } from './Router.js';
-
 const CssCommonCore = async () => {
   if (!s(`.fa-link`))
     append(
@@ -239,7 +238,6 @@ const CssCommonCore = async () => {
     ${boxShadow({ selector: '.account-profile-image' })}
     <div class="ag-grid-style"></div>`;
 };
-
 class CssCoreDark {
   static theme = 'core-dark';
   static dark = true;
@@ -554,7 +552,6 @@ class CssCoreDark {
       ${scrollBarDarkRender()} ${borderChar(1, 'black', ['.main-body-btn-container'])}
     `;
 }
-
 class CssCoreLight {
   static theme = 'core-light';
   static dark = false;
@@ -881,5 +878,4 @@ class CssCoreLight {
       ${scrollBarLightRender()} ${borderChar(1, 'white', ['.main-body-btn-container'])}
     `;
 }
-
 export { CssCoreDark, CssCoreLight };

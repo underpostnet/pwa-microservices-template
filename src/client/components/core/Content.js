@@ -10,7 +10,6 @@ import { loggerFactory } from './Logger.js';
 import { imageShimmer, renderChessPattern, renderCssAttr, styleFactory } from './Css.js';
 import { getQueryParams, setPath } from './Router.js';
 
-import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta);
 
 const attachMarkdownLinkHandlers = (containerSelector) => {
@@ -33,7 +32,7 @@ const attachMarkdownLinkHandlers = (containerSelector) => {
         id: `external-link-${s4()}`,
         html: async () => html`
           <div class="in section-mp" style="text-align: center; padding: 20px;">
-            <p>${Translate.Render('external-link-warning')}</p>
+            <p>${Translate.instance('external-link-warning')}</p>
             <p style="word-break: break-all; margin-top: 10px;"><strong>${href}</strong></p>
           </div>
         `,
@@ -56,8 +55,8 @@ const attachMarkdownLinkHandlers = (containerSelector) => {
   });
 };
 
-class Content extends BaseComponent {
-  static async Render(options = { idModal: '', titleIcon: '' }) {
+class Content {
+  static async instance(options = { idModal: '', titleIcon: '' }) {
     const { idModal } = options;
     setTimeout(async () => {
       try {
@@ -141,12 +140,15 @@ class Content extends BaseComponent {
         htmls(`.content-render-${idModal}`, ``);
 
         // Pass file IDs to RenderFile - it will fetch blobs as needed
-        if (md) await this.RenderFile({ idModal, file: md, id: md._id });
-        if (file) await this.RenderFile({ idModal, file, id: file._id });
+        if (md) await Content.RenderFile({ idModal, file: md, id: md._id });
+        if (file) await Content.RenderFile({ idModal, file, id: file._id });
         Modal.Data[idModal].onObserverListener[`main-content-observer`]();
       } catch (error) {
         htmls(`.content-render-${idModal}`, '');
-        htmls(`.error-${idModal}`, html`<i class="fas fa-exclamation-circle"></i> ${Translate.Render(error.message)}`);
+        htmls(
+          `.error-${idModal}`,
+          html`<i class="fas fa-exclamation-circle"></i> ${Translate.instance(error.message)}`,
+        );
         s(`.error-${idModal}`).classList.remove('hide');
       }
       s(`.ssr-shimmer-content-${idModal}`).classList.add('hide');

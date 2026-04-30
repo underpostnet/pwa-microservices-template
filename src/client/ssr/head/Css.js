@@ -75,6 +75,7 @@ SrrComponent = () => html`
       width: -ms-max-content;
       width: -o-max-content;
     }
+
     .ssr-negative-color {
       filter: invert(1);
       -webkit-filter: invert(1);

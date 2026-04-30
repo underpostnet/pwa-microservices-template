@@ -1,13 +1,9 @@
 import { Auth } from '../../components/core/Auth.js';
 import { loggerFactory } from '../../components/core/Logger.js';
 import { getApiBaseUrl, headersFactory, payloadFactory } from '../core/core.service.js';
-
 const logger = loggerFactory(import.meta);
-
 logger.info('Load service');
-
 const endpoint = 'file';
-
 class FileService {
   static post = (options = { id: '', body: {}, headerId: 'file' }) =>
     new Promise((resolve, reject) =>
@@ -95,5 +91,4 @@ class FileService {
         }),
     );
 }
-
 export { FileService };

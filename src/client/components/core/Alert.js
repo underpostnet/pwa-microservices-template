@@ -1,6 +1,4 @@
 import { Translate } from './Translate.js';
-import { BaseComponent } from './WebComponent.js';
-
 const maintenance = async () => {
   const icon = html`<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 24 24">
     <path
@@ -15,10 +13,9 @@ const maintenance = async () => {
   return html` <div class="abs center" style="top: 45%">
     ${icon}
     <br />
-    <br />${Translate.Render('server-maintenance')}
+    <br />${Translate.instance('server-maintenance')}
   </div>`;
 };
-
 const noInternet = async () => {
   const icon = html`<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 20 20">
     <path
@@ -29,10 +26,9 @@ const noInternet = async () => {
   return html` <div class="abs center" style="top: 45%">
     ${icon}
     <br />
-    <br />${Translate.Render('no-internet-connection')}
+    <br />${Translate.instance('no-internet-connection')}
   </div>`;
 };
-
 const e404 = async () => {
   const icon = html`
     <svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 24 24">
@@ -48,12 +44,11 @@ const e404 = async () => {
     <br />
     <span class="bold">404</span>
     <br />
-    <br />${Translate.Render('page-not-found')} <br />
+    <br />${Translate.instance('page-not-found')} <br />
     <br />
-    <a target="_top" href="${location.origin}">${Translate.Render('back')}</a>
+    <a target="_top" href="${location.origin}">${Translate.instance('back')}</a>
   </div>`;
 };
-
 const e500 = async () => {
   const icon = html`<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 20 20">
     <path
@@ -67,17 +62,15 @@ const e500 = async () => {
     <br />
     <span class="bold">500</span>
     <br />
-    <br />${Translate.Render('page-broken')} <br />
+    <br />${Translate.instance('page-broken')} <br />
     <br />
-    <a target="_top" href="${location.origin}">${Translate.Render('back')}</a>
+    <a target="_top" href="${location.origin}">${Translate.instance('back')}</a>
   </div>`;
 };
-
-class Alert extends BaseComponent {
+class Alert {
   static maintenance = maintenance;
   static noInternet = noInternet;
   static e404 = e404;
   static e500 = e500;
 }
-
 export { Alert };

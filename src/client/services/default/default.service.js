@@ -1,13 +1,9 @@
 import { Auth } from '../../components/core/Auth.js';
 import { loggerFactory } from '../../components/core/Logger.js';
 import { getApiBaseUrl, headersFactory, payloadFactory, buildQueryUrl } from '../core/core.service.js';
-
 const logger = loggerFactory(import.meta);
-
 logger.info('Load service');
-
 const endpoint = 'default';
-
 class DefaultService {
   static post = (options = { id: '', body: {} }) =>
     new Promise((resolve, reject) =>
@@ -49,7 +45,7 @@ class DefaultService {
           return reject(error);
         }),
     );
-  static get(options = {}) {
+  static get = (options = {}) => {
     const { id, page, limit, filterModel, sortModel, sort, asc, order } = options;
     const url = buildQueryUrl(getApiBaseUrl({ id, endpoint }), {
       page,
@@ -60,7 +56,6 @@ class DefaultService {
       asc,
       order,
     });
-
     return new Promise((resolve, reject) =>
       fetch(url.toString(), {
         method: 'GET',
@@ -79,7 +74,7 @@ class DefaultService {
           return reject(error);
         }),
     );
-  }
+  };
   static delete = (options = { id: '', body: {} }) =>
     new Promise((resolve, reject) =>
       fetch(getApiBaseUrl({ id: options.id, endpoint }), {
@@ -101,5 +96,4 @@ class DefaultService {
         }),
     );
 }
-
 export { DefaultService };

@@ -4,16 +4,9 @@ import express from 'express';
 import fs from 'fs-extra';
 const logger = loggerFactory(import.meta);
 
-class DocumentRouter {
-  /**
-   * Builds and returns the Express Router for this API.
-   * @param {import('../../server/auth.js').RouterOptions} options
-   * @returns {import('express').Router}
-   * @memberof DocumentRouter
-   */
-  static router(options) {
+const DocumentRouter = (options) => {
   const router = express.Router();
-  const { authMiddleware } = options;
+  const authMiddleware = options.authMiddleware;
   router.post(`/:id`, authMiddleware, async (req, res) => await DocumentController.post(req, res, options));
   router.post(`/`, authMiddleware, async (req, res) => await DocumentController.post(req, res, options));
   router.get(`/public/high`, async (req, res) => await DocumentController.get(req, res, options));
@@ -31,9 +24,8 @@ class DocumentRouter {
   router.delete(`/:id`, authMiddleware, async (req, res) => await DocumentController.delete(req, res, options));
   router.delete(`/`, authMiddleware, async (req, res) => await DocumentController.delete(req, res, options));
   return router;
-  }
-}
+};
 
-const ApiRouter = (options) => DocumentRouter.router(options);
+const ApiRouter = DocumentRouter;
 
 export { ApiRouter, DocumentRouter };

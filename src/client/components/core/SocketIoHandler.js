@@ -28,14 +28,14 @@ class SocketIoHandlerProvider {
    *
    * @static
    * @param {import('./AppStore.js').AppStore} appStore - The app-specific AppStore instance.
-   * @returns {{ Init: function(): Promise<void> }} An object with an `Init` method for SocketIo event registration.
+   * @returns {{ instance: function(): Promise<void> }} An object with an `instance` method for SocketIo event registration.
    */
   static create(appStore) {
     return {
-      Init() {
+      instance() {
         return new Promise((resolve) => {
           for (const type of Object.keys(appStore.Data)) {
-            SocketIo.Event[type][s4()] = async (args) => {
+            SocketIo.onChannel(type, async ({ args }) => {
               args = JSON.parse(args[0]);
               switch (type) {
                 case 'chat':
@@ -61,10 +61,10 @@ class SocketIoHandlerProvider {
                 default:
                   break;
               }
-            };
+            }, { key: s4() });
           }
-          SocketIo.Event.connect[s4()] = async (reason) => {};
-          SocketIo.Event.disconnect[s4()] = async (reason) => {};
+          SocketIo.onConnect(async ({ id }) => {}, { key: s4() });
+          SocketIo.onDisconnect(async ({ reason }) => {}, { key: s4() });
           return resolve();
         });
       },

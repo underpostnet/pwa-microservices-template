@@ -13,11 +13,30 @@ import { Worker } from './Worker.js';
 const logger = loggerFactory(import.meta, { trace: true });
 
 /**
+ * @type {function | null}
+ * @description The active routes function registered by the current app router.
+ * Replaces the former `window.Routes` global so `getProxyPath` can resolve
+ * sub-directory proxy paths without polluting the global scope.
+ * @memberof PwaRouter
+ */
+let _activeRoutes = null;
+
+/**
+ * Registers the active routes function for the current app.
+ * Called automatically by `LoadRouter`; should not be called manually.
+ * @param {function} routesFn - A function returning the routes object.
+ * @memberof PwaRouter
+ */
+const registerRoutes = (routesFn) => {
+  _activeRoutes = routesFn;
+};
+
+/**
  * @type {Object.<string, function>}
  * @description Holds event listeners for router changes.
  * @memberof PwaRouter
  */
-class RouterEvents {}
+const RouterEvents = {};
 
 /**
  * @type {Object.<string, function>}\n
@@ -71,15 +90,15 @@ const setRouterReady = () => {
 
 /**
  * Determines the base path for the application, often used for routing within a sub-directory.
- * It checks the current URL's pathname and `window.Routes` to return the appropriate proxy path.
+ * It checks the current URL's pathname and the active registered routes to return the appropriate proxy path.
  *
  * @returns {string} The calculated proxy path. Returns `/<first-segment>/` if a segment exists,
- *          otherwise `/`. If `window.Routes` indicates the path is a root route, it returns `/`.
+ *          otherwise `/`. If the registered routes indicate the path is a root route, it returns `/`.
  * @memberof PwaRouter
  */
 const getProxyPath = () => {
   let path = location.pathname.split('/')[1] ? `/${location.pathname.split('/')[1]}/` : '/';
-  if (window.Routes && path !== '/' && path.slice(0, -1) in window.Routes()) path = '/';
+  if (_activeRoutes && path !== '/' && path.slice(0, -1) in _activeRoutes()) path = '/';
   return path;
 };
 
@@ -241,22 +260,9 @@ const Router = function (options = { Routes: () => {}, e: new PopStateEvent() })
  */
 const LoadRouter = async function (RouterInstance) {
   await RouterReady;
+  if (RouterInstance.Routes) registerRoutes(RouterInstance.Routes);
   Router(RouterInstance);
-  // Track the last full path that was actually routed, so we can detect
-  // Chrome-specific spurious popstate events fired when a same-origin iframe
-  // navigates (hash change or link click). In Chrome, iframe navigation creates
-  // a joint session history entry and fires popstate in the parent window even
-  // though the parent's URL has not changed.
-  let lastRoutedFullPath = window.location.pathname + window.location.search;
   window.onpopstate = (e) => {
-    const currentFullPath = window.location.pathname + window.location.search;
-    if (currentFullPath === lastRoutedFullPath) {
-      // Path did not change — this is almost certainly an iframe-induced popstate
-      // (Chrome propagates same-origin iframe hash navigation to the parent history).
-      // Skip routing to prevent unintended modal re-renders and position resets.
-      return;
-    }
-    lastRoutedFullPath = currentFullPath;
     Router({ ...RouterInstance, e });
     // Notify query params listeners on browser back/forward navigation
     const updatedParams = getQueryParams();
@@ -492,6 +498,7 @@ const setQueryParams = (newParams, options = { replace: true }) => {
 
 export {
   RouterEvents,
+  registerRoutes,
   navigateToProfile,
   closeModalRouteChangeEvents,
   coreUI,

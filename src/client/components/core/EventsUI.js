@@ -3,12 +3,9 @@ import { loggerFactory } from '../core/Logger.js';
 import { cssEffect } from './Css.js';
 import { NotificationManager } from './NotificationManager.js';
 import { s, isActiveElement } from './VanillaJs.js';
-
-import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta);
-
-class EventsUI extends BaseComponent {
-  static on(id = '', logic = function (e) {}, type = 'onclick', options = {}) {
+class EventsUI {
+  static on = (id = '', logic = function (e) {}, type = 'onclick', options = {}) => {
     const { loadingContainer } = options;
     if (!s(id)) return;
     let complete = true;
@@ -61,12 +58,12 @@ class EventsUI extends BaseComponent {
       if (e && e.preventDefault) e.preventDefault();
       logger.warn('in process', id);
     };
-  }
+  };
   static async onClick(id = '', logic = async function (e) {}, options = { loadingContainer: '' }) {
-    return await this.on(id, logic, 'onclick', options);
+    return await EventsUI.on(id, logic, 'onclick', options);
   }
   static async onChange(id = '', logic = async function (e) {}, options = { loadingContainer: '' }) {
-    return await this.on(id, logic, 'onchange', options);
+    return await EventsUI.on(id, logic, 'onchange', options);
   }
   // Shared hover/focus controller extracted from Modal
   static HoverFocusController({ inputSelector, panelSelector, activeElementId, onDismiss } = {}) {
@@ -130,5 +127,4 @@ class EventsUI extends BaseComponent {
     return () => document.removeEventListener('click', handler, true);
   }
 }
-
 export { EventsUI };

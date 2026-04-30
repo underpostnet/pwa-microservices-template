@@ -4,21 +4,17 @@ import { Css, darkTheme, renderCssAttr, simpleIconsRender, ThemeEvents, Themes }
 import { buildBadgeToolTipMenuOption, Modal, renderViewTitle } from './Modal.js';
 import { listenQueryPathInstance, setQueryPath, closeModalRouteChangeEvent, getProxyPath } from './Router.js';
 import { htmls, s, sIframe } from './VanillaJs.js';
-
-import { BaseComponent } from './WebComponent.js';
 // https://mintlify.com/docs/quickstart
-
-class Docs extends BaseComponent {
+class Docs {
   static async RenderModal(type) {
-    const docData = this.Data.find((d) => d.type === type);
+    const docData = Docs.Data.find((d) => d.type === type);
     const ModalId = `modal-docs-${docData.type}`;
     const { barConfig } = await Themes[Css.currentTheme]();
     const parentBarMode =
       Modal.Data['modal-docs'] && Modal.Data['modal-docs'].options.barMode
         ? Modal.Data['modal-docs'].options.barMode
         : undefined;
-
-    await Modal.Render({
+    await Modal.instance({
       barConfig,
       title: renderViewTitle(docData),
       id: ModalId,
@@ -61,7 +57,6 @@ class Docs extends BaseComponent {
         setTimeout(sync, 120);
         setTimeout(sync, 400);
       };
-
       iframeEl.addEventListener('load', () => {
         try {
           const iframeWin = iframeEl.contentWindow;
@@ -81,7 +76,6 @@ class Docs extends BaseComponent {
           const iframeDoc = iframeEl.contentDocument || iframeEl.contentWindow?.document;
           if (iframeDoc) {
             if (unbindIframeLayoutSync) unbindIframeLayoutSync();
-
             const onIframeAnchorClick = (e) => {
               if (e.target && e.target.closest && e.target.closest('a')) {
                 scheduleViewLayoutSync();
@@ -89,7 +83,6 @@ class Docs extends BaseComponent {
             };
             const onIframeHashChange = () => scheduleViewLayoutSync();
             const onIframePopState = () => scheduleViewLayoutSync();
-
             iframeDoc.addEventListener('click', onIframeAnchorClick, true);
             if (iframeWin) {
               iframeWin.addEventListener('hashchange', onIframeHashChange);
@@ -102,7 +95,6 @@ class Docs extends BaseComponent {
                 iframeWin.removeEventListener('popstate', onIframePopState);
               }
             };
-
             iframeDoc.addEventListener('keydown', (e) => {
               if (e.shiftKey && e.key.toLowerCase() === 'k') {
                 e.preventDefault();
@@ -121,13 +113,10 @@ class Docs extends BaseComponent {
         } catch (e) {
           // cross-origin or security restriction — safe to ignore
         }
-
         scheduleViewLayoutSync();
       });
-
       if (type === 'src') {
         swaggerThemeEventKey = `jsdocs-iframe-${ModalId}`;
-
         const applyJsDocsTheme = (isDark) => {
           try {
             const iframeDoc = iframeEl.contentDocument || iframeEl.contentWindow?.document;
@@ -139,19 +128,15 @@ class Docs extends BaseComponent {
             // cross-origin or security restriction — safe to ignore
           }
         };
-
         // Apply current theme as soon as the iframe content is ready
         iframeEl.addEventListener('load', () => applyJsDocsTheme(darkTheme));
-
         // Keep in sync whenever the parent page theme changes
         ThemeEvents[swaggerThemeEventKey] = () => {
           if (s(`.iframe-${ModalId}`)) applyJsDocsTheme(darkTheme);
         };
       }
-
       if (type === 'api') {
         swaggerThemeEventKey = `swagger-iframe-${ModalId}`;
-
         const applySwaggerTheme = (isDark) => {
           try {
             const iframeDoc = iframeEl.contentDocument || iframeEl.contentWindow?.document;
@@ -168,10 +153,8 @@ class Docs extends BaseComponent {
             // cross-origin or security restriction — safe to ignore
           }
         };
-
         // Apply current theme as soon as the iframe content is ready
         iframeEl.addEventListener('load', () => applySwaggerTheme(darkTheme));
-
         // Keep in sync whenever the parent page theme changes
         ThemeEvents[swaggerThemeEventKey] = () => {
           if (s(`.iframe-${ModalId}`)) applySwaggerTheme(darkTheme);
@@ -184,7 +167,6 @@ class Docs extends BaseComponent {
         const barHeight = barEl ? barEl.offsetHeight : Modal.headerTitleHeight;
         s(`.iframe-${ModalId}`).style.height = `${s(`.${ModalId}`).offsetHeight - barHeight}px`;
       }
-
       if (type.match('coverage')) {
         simpleIconsRender(`.doc-icon-coverage`);
         simpleIconsRender(`.doc-icon-coverage-link`);
@@ -266,36 +248,34 @@ class Docs extends BaseComponent {
     },
   ];
   static Tokens = {};
-  static async Init(options = {}) {
+  static async instance(options = {}) {
     const { idModal } = options;
-    this.Tokens[idModal] = options;
+    Docs.Tokens[idModal] = options;
     setTimeout(() => {
       s(`.btn-docs-src`).onclick = async () => {
         setQueryPath({ path: 'docs', queryPath: 'src' });
-        await this.RenderModal('src');
+        await Docs.RenderModal('src');
       };
       s(`.btn-docs-api`).onclick = async () => {
         setQueryPath({ path: 'docs', queryPath: 'api' });
-        await this.RenderModal('api');
+        await Docs.RenderModal('api');
       };
       s(`.btn-docs-coverage`).onclick = async () => {
         setQueryPath({ path: 'docs', queryPath: 'coverage' });
-        await this.RenderModal('coverage');
+        await Docs.RenderModal('coverage');
       };
-
       s(`.btn-docs-coverage-link`).onclick = () => {
-        const docData = this.Data.find((d) => d.type === 'coverage-link');
+        const docData = Docs.Data.find((d) => d.type === 'coverage-link');
         location.href = docData.url();
       };
       s(`.btn-docs-repo`).onclick = () => {
-        const docData = this.Data.find((d) => d.type === 'repo');
+        const docData = Docs.Data.find((d) => d.type === 'repo');
         location.href = docData.url();
       };
       s(`.btn-docs-demo`).onclick = () => {
-        const docData = this.Data.find((d) => d.type === 'demo');
+        const docData = Docs.Data.find((d) => d.type === 'demo');
         location.href = docData.url();
       };
-
       listenQueryPathInstance({
         id: options.idModal,
         routeId: 'docs',
@@ -310,7 +290,7 @@ class Docs extends BaseComponent {
       });
     });
     let docMenuRender = '';
-    for (const docData of this.Data) {
+    for (const docData of Docs.Data) {
       if (docData.themeEvent) {
         ThemeEvents[`doc-icon-${docData.type}`] = docData.themeEvent;
         setTimeout(ThemeEvents[`doc-icon-${docData.type}`]);
@@ -322,7 +302,6 @@ class Docs extends BaseComponent {
           style = renderCssAttr({ style: { height: '45px' } });
           labelStyle = renderCssAttr({ style: { top: '8px', left: '9px' } });
           break;
-
         default:
           break;
       }
@@ -332,21 +311,19 @@ class Docs extends BaseComponent {
           ? options.subMenuIcon(docData.type)
           : docData.icon;
       docMenuRender += html`
-        ${await BtnIcon.Render({
+        ${await BtnIcon.instance({
           class: `in wfa main-btn-menu submenu-btn btn-docs btn-docs-${docData.type}`,
           label: html`<span class="inl menu-btn-icon">${subMenuIcon}</span
             ><span class="menu-label-text menu-label-text-docs"> ${docData.text} </span>`,
           tabHref,
-          tooltipHtml: await Badge.Render(buildBadgeToolTipMenuOption(docData.text, 'right')),
+          tooltipHtml: await Badge.instance(buildBadgeToolTipMenuOption(docData.text, 'right')),
           useMenuBtn: true,
         })}
       `;
     }
     // s(`.menu-btn-container-children`).classList.remove('hide');
     // htmls(`.nav-path-display-${'modal-menu'}`, location.pathname);
-
     htmls('.menu-btn-container-children-docs', docMenuRender);
-
     {
       const docsData = [
         {
@@ -386,7 +363,6 @@ class Docs extends BaseComponent {
           description: 'Join our developer community',
         },
       ];
-
       return html`
         <style>
           .docs-landing {
@@ -527,5 +503,4 @@ class Docs extends BaseComponent {
     }
   }
 }
-
 export { Docs };

@@ -1,62 +1,47 @@
 import { cap, getId } from './CommonJs.js';
-import { BaseComponent } from './WebComponent.js';
-
-/**
- * Keyboard input manager.
- *
- * Tracks which keys are currently held down and dispatches registered
- * callbacks at a fixed polling interval.
- *
- * Uses `addEventListener` (not `window.onkeydown = ...`) so that other
- * modules can also listen for key events without being silently overridden.
- *
- * @namespace Keyboard
- */
-class Keyboard extends BaseComponent {
-  /** @type {Object.<string, true>} Map of currently pressed key names. */
+import { KeyboardEventType, keyboardEvents } from './ClientEvents.js';
+class Keyboard {
   static ActiveKey = {};
-
-  /**
-   * Registered key-event handlers.
-   * Structure: `{ [eventGroupId]: { [keyName]: callbackFn } }`
-   * @type {Object.<string, Object.<string, function>>}
-   */
   static Event = {};
-
-  /**
-   * Initialises keyboard listeners and starts the polling interval.
-   * Safe to call multiple times — handler registration is idempotent on
-   * the singleton object.
-   * @returns {Promise<void>}
-   */
-  static async Init() {
+  static onPressed(listener, options = {}) {
+    return keyboardEvents.on(KeyboardEventType.pressed, listener, options);
+  }
+  static offPressed(key) {
+    return keyboardEvents.off(key);
+  }
+  static hasPressedListener(key) {
+    return keyboardEvents.has(key);
+  }
+  static async instance() {
     const callBackTime = 45;
-
-    // addEventListener ensures we do not overwrite handlers registered by
-    // third-party libraries or other modules.
-    window.addEventListener('keydown', (e) => {
-      this.ActiveKey[e.key] = true;
-    });
-    window.addEventListener('keyup', (e) => {
-      delete this.ActiveKey[e.key];
-    });
-
+    window.onkeydown = (e = new KeyboardEvent()) => {
+      Keyboard.ActiveKey[e.key] = true;
+      keyboardEvents.emit(KeyboardEventType.pressed, { key: e.key, activeKeys: { ...Keyboard.ActiveKey }, event: e });
+      // e.composedPath()
+      // if (['Tab'].includes(e.key)) {
+      //   e.preventDefault();
+      //   e.stopPropagation();
+      //   e.stopImmediatePropagation();
+      // }
+    };
+    window.onkeyup = (e = new KeyboardEvent()) => {
+      delete Keyboard.ActiveKey[e.key];
+    };
     setInterval(() => {
-      Object.keys(this.Event).map((key) => {
-        Object.keys(this.ActiveKey).map((activeKey) => {
-          if (activeKey in this.Event[key]) this.Event[key][activeKey]();
+      Object.keys(Keyboard.Event).map((key) => {
+        Object.keys(Keyboard.ActiveKey).map((activeKey) => {
+          if (activeKey in Keyboard.Event[key]) Keyboard.Event[key][activeKey]();
         });
       });
     }, callBackTime);
   }
   static instanceMultiPressKeyTokens = {};
-  static instanceMultiPressKey(options = { keys: [], id, timePressDelay, eventCallBack: () => {} }) {
+  static instanceMultiPressKey = (options = { keys: [], id, timePressDelay, eventCallBack: () => {} }) => {
     if (typeof options.keys[0] === 'string') options.keys[0] = [options.keys[0]];
     if (!options.id) options.id = getId(Keyboard.instanceMultiPressKeyTokens, 'key-press-');
     if (!options.timePressDelay) options.timePressDelay = 500;
     const { id, timePressDelay, keys, eventCallBack } = options;
     Keyboard.instanceMultiPressKeyTokens[id] = { ...options };
-
     let indexCombined = -1;
     for (const combinedKeys of keys) {
       indexCombined++;
@@ -82,7 +67,6 @@ class Keyboard extends BaseComponent {
             }
           },
         };
-
         Keyboard.Event[`instanceMultiPressKey-${id}-${privateIndexCombined}`][key] = multiPressKey[key].trigger;
         Keyboard.Event[`instanceMultiPressKey-${id}-${privateIndexCombined}`][key.toLowerCase()] =
           multiPressKey[key].trigger;
@@ -91,7 +75,6 @@ class Keyboard extends BaseComponent {
         Keyboard.Event[`instanceMultiPressKey-${id}-${privateIndexCombined}`][cap(key)] = multiPressKey[key].trigger;
       }
     }
-  }
+  };
 }
-
 export { Keyboard };

@@ -7,7 +7,7 @@
 'use strict';
 
 import fs from 'fs-extra';
-import { transformClientJs, transformSwBundle, JSONweb } from './client-formatted.js';
+import { transformClientJs, JSONweb } from './client-formatted.js';
 import { loggerFactory } from './logger.js';
 import {
   getCapVariableName,
@@ -711,21 +711,14 @@ const buildClient = async (
       const Render = await ssrFactory();
 
       if (views) {
-        // Prefer the Workbox SW, then a client-specific SW, then the legacy default.
         const jsSrcPath = fs.existsSync(`./src/client/sw/${publicClientId}.sw.js`)
           ? `./src/client/sw/${publicClientId}.sw.js`
-          : fs.existsSync('./src/client/sw/workbox.sw.js')
-            ? './src/client/sw/workbox.sw.js'
-            : `./src/client/sw/default.sw.js`;
+          : `./src/client/sw/default.sw.js`;
 
         const jsPublicPath = `${rootClientPath}/sw.js`;
 
         if (!(enableLiveRebuild && !options.liveClientBuildPaths.find((p) => p.srcBuildPath === jsSrcPath))) {
-          // SW files must be fully bundled (Workbox modules inlined) rather than
-          // rewritten as external URLs — use transformSwBundle, not transformClientJs.
-          const jsSrc = jsSrcPath.endsWith('workbox.sw.js')
-            ? await transformSwBundle(jsSrcPath, { minify: minifyBuild })
-            : await transformClientJs(jsSrcPath, { dists, proxyPath: path, baseHost, minify: minifyBuild });
+          const jsSrc = await transformClientJs(jsSrcPath, { dists, proxyPath: path, baseHost, minify: minifyBuild });
 
           fs.writeFileSync(jsPublicPath, jsSrc, 'utf8');
         }

@@ -8,8 +8,8 @@ import { FileCleanup } from '../file/file.service.js';
 
 const logger = loggerFactory(import.meta);
 
-class DocumentService {
-  static async post(req, res, options) {
+const DocumentService = {
+  post: async (req, res, options) => {
     /** @type {import('./document.model.js').DocumentModel} */
     const Document = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.models.Document;
 
@@ -25,8 +25,8 @@ class DocumentService {
 
         return await new Document(req.body).save();
     }
-  }
-  static async get(req, res, options) {
+  },
+  get: async (req, res, options) => {
     /** @type {import('./document.model.js').DocumentModel} */
     const Document = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.models.Document;
     /** @type {import('../user/user.model.js').UserModel} */
@@ -436,8 +436,8 @@ class DocumentService {
         };
       }
     }
-  }
-  static async delete(req, res, options) {
+  },
+  delete: async (req, res, options) => {
     /** @type {import('./document.model.js').DocumentModel} */
     const Document = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.models.Document;
     /** @type {import('../file/file.model.js').FileModel} */
@@ -460,8 +460,8 @@ class DocumentService {
         return await Document.findByIdAndDelete(req.params.id);
       }
     }
-  }
-  static async put(req, res, options) {
+  },
+  put: async (req, res, options) => {
     /** @type {import('./document.model.js').DocumentModel} */
     const Document = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.models.Document;
     /** @type {import('../file/file.model.js').FileModel} */
@@ -500,8 +500,8 @@ class DocumentService {
         return await Document.findByIdAndUpdate(req.params.id, req.body, { returnDocument: 'after' });
       }
     }
-  }
-  static async patch(req, res, options) {
+  },
+  patch: async (req, res, options) => {
     /** @type {import('./document.model.js').DocumentModel} */
     const Document = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.models.Document;
 
@@ -550,7 +550,7 @@ class DocumentService {
     }
 
     throw new Error('Invalid patch endpoint');
-  }
-}
+  },
+};
 
 export { DocumentService };

@@ -1,15 +1,12 @@
 import { renderCssAttr } from './Css.js';
 import { append, s } from './VanillaJs.js';
 import { Modal } from './Modal.js';
-
-import { BaseComponent } from './WebComponent.js';
-class ToolTip extends BaseComponent {
+class ToolTip {
   static Tokens = {};
-  static async Render(
+  static async instance(
     options = { container: '', htmlRender: '', id: '', classList: '', useVisibilityHover: false, useMenuBtn: false },
   ) {
     const { container, htmlRender, id, useVisibilityHover } = options;
-
     if (useVisibilityHover) {
       const tooltipId = 'tooltip-' + id;
       append(
@@ -28,10 +25,8 @@ class ToolTip extends BaseComponent {
       );
       return;
     }
-
     const containerEl = s(container);
     if (!containerEl) return;
-
     const tooltipId = `tooltip-${id}`;
     const tooltip = html`
       <div
@@ -50,9 +45,7 @@ class ToolTip extends BaseComponent {
       </div>
     `;
     append('body', tooltip);
-
     const tooltipEl = s(`.${tooltipId}`);
-
     containerEl.addEventListener('mouseenter', () => {
       if (
         options.useMenuBtn &&
@@ -61,13 +54,10 @@ class ToolTip extends BaseComponent {
         ).classList.contains('hide')
       )
         return;
-
       const containerRect = containerEl.getBoundingClientRect();
       const tooltipRect = tooltipEl.getBoundingClientRect();
-
       let top = containerRect.bottom + window.scrollY + 5;
       let left = containerRect.left + window.scrollX + containerRect.width / 2 - tooltipRect.width / 2;
-
       // Adjust if it goes off-screen
       if (left < 0) left = 5;
       if (left + tooltipRect.width > window.innerWidth) {
@@ -76,16 +66,13 @@ class ToolTip extends BaseComponent {
       if (top + tooltipRect.height > window.innerHeight) {
         top = containerRect.top + window.scrollY - tooltipRect.height - 5;
       }
-
       tooltipEl.style.top = `${top}px`;
       tooltipEl.style.left = `${left}px`;
       tooltipEl.style.opacity = '1';
     });
-
     containerEl.addEventListener('mouseleave', () => {
       tooltipEl.style.opacity = '0';
     });
   }
 }
-
 export { ToolTip };

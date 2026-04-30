@@ -6,13 +6,13 @@ import { getYouTubeID, validatePassword } from '../../client/components/core/Com
 const logger = loggerFactory(import.meta);
 
 class TestService {
-  static async post(req, res, options) {
+  static post = async (req, res, options) => {
     switch (req.params.id) {
       default:
         break;
     }
-  }
-  static async get(req, res, options) {
+  };
+  static get = async (req, res, options) => {
     switch (req.params.id) {
       case 'verify-email':
         return validator.isEmail(req.query.email);
@@ -23,13 +23,13 @@ class TestService {
 
       default:
     }
-  }
-  static async delete(req, res, options) {
+  };
+  static delete = async (req, res, options) => {
     switch (req.params.id) {
       default:
         break;
     }
-  }
+  };
 }
 
 export { TestService };

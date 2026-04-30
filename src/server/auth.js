@@ -193,49 +193,12 @@ const getBearerToken = (req) => {
 const isRefreshTokenReq = (req) => req.method === 'GET' && req.params.id === 'auth';
 
 // ---------- Middleware ----------
-
-/**
- * Options object passed to every API router's static `router(options)` method.
- * Assembled by the Express runtime in `src/runtime/express/Express.js` and forwarded
- * to each `ApiRouter` before it is mounted.
- *
- * The `authMiddleware` property is produced by {@link authMiddlewareFactory} bound to the
- * same `{ host, path }` pair, so routes are always validated against the correct
- * multi-tenant JWT issuer/audience — routers never need to construct their own middleware.
- *
- * @typedef {object} RouterOptions
- * @property {import('express').Application} app
- *   The Express application instance for this site.
- * @property {string} host
- *   Hostname for this site (e.g. `'example.com'`).
- * @property {string} path
- *   URL path prefix for this site (e.g. `'/'` or `'/portal'`).
- * @property {string} apiPath
- *   Full API base path (`<path>/<BASE_API>`, e.g. `'/api'`).
- * @property {import('express').RequestHandler} authMiddleware
- *   JWT Bearer middleware pre-bound to `{ host, path }` via {@link authMiddlewareFactory}.
- *   On success it attaches `req.auth.user` (decoded JWT payload) and calls `next()`.
- *   On failure it responds with HTTP 401.
- * @property {object|null} [mailer]
- *   Mailer provider config/instance for this site, or `null` if not configured.
- * @property {object|null} [db]
- *   Database config/instance for this site, or `null` if not configured.
- * @property {string[]} [origins]
- *   Allowed CORS origins for this site.
- * @memberof Auth
- */
-
 /**
  * Creates a middleware to authenticate requests using a JWT Bearer token.
- * The returned handler validates the JWT Bearer token on every request,
- * checking IP, User-Agent, and active session against the database.
- * On success it attaches `req.auth.user` (decoded JWT payload) and calls `next()`.
- * The `{ host, path }` pair is captured in the closure and used as JWT
- * `issuer`/`audience`, so each tenant gets its own isolated middleware instance.
  * @param {object} options The options object.
  * @param {string} options.host The host name.
  * @param {string} options.path The path name.
- * @returns {import('express').RequestHandler} The middleware function.
+ * @returns {function} The middleware function.
  * @memberof Auth
  */
 const authMiddlewareFactory = (options = { host: '', path: '' }) => {

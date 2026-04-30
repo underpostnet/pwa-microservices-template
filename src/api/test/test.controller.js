@@ -4,7 +4,7 @@ import { TestService } from './test.service.js';
 const logger = loggerFactory(import.meta);
 
 class TestController {
-  static async post(req, res, options) {
+  static post = async (req, res, options) => {
     try {
       return res.status(200).json({
         status: 'success',
@@ -17,8 +17,8 @@ class TestController {
         message: error.message,
       });
     }
-  }
-  static async get(req, res, options) {
+  };
+  static get = async (req, res, options) => {
     try {
       const result = await TestService.get(req, res, options);
       if (result)
@@ -37,8 +37,8 @@ class TestController {
         message: error.message,
       });
     }
-  }
-  static async delete(req, res, options) {
+  };
+  static delete = async (req, res, options) => {
     try {
       const result = await TestService.delete(req, res, options);
 
@@ -53,7 +53,7 @@ class TestController {
         message: error.message,
       });
     }
-  }
+  };
 }
 
 export { TestController };

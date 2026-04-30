@@ -1,48 +1,61 @@
 import { newInstance, getId, cap, capFirst } from './CommonJs.js';
+import { TranslateEventType, translateEvents } from './ClientEvents.js';
 import { DropDown } from './DropDown.js';
 import { loggerFactory } from './Logger.js';
 import { s, htmls, getLang } from './VanillaJs.js';
-
-import { BaseComponent } from './WebComponent.js';
 const logger = loggerFactory(import.meta);
-
 const textFormatted = (str = '&nbsp &nbsp . . .') => capFirst(str.toLowerCase());
-
-class Translate extends BaseComponent {
+class Translate {
   static Data = {};
   static Token = {};
   static Event = {};
   static Options = {};
   static Parse(lang) {
     s('html').lang = lang;
-    Object.keys(this.Token).map((translateHash) => {
-      if (translateHash in this.Token && lang in this.Token[translateHash]) {
-        if (!('placeholder' in this.Options[translateHash]) && s(`.${translateHash}`))
+    Object.keys(Translate.Token).map((translateHash) => {
+      if (translateHash in Translate.Token && lang in Translate.Token[translateHash]) {
+        if (!('placeholder' in Translate.Options[translateHash]) && s(`.${translateHash}`))
           htmls(
             `.${translateHash}`,
-            this.Options[translateHash]?.disableTextFormat
-              ? this.Token[translateHash][lang]
-              : textFormatted(this.Token[translateHash][lang]),
+            Translate.Options[translateHash]?.disableTextFormat
+              ? Translate.Token[translateHash][lang]
+              : textFormatted(Translate.Token[translateHash][lang]),
           );
-        else if ('placeholder' in this.Token[translateHash] && s(this.Token[translateHash].placeholder))
-          s(this.Token[translateHash].placeholder).placeholder = this.Options[translateHash]?.disableTextFormat
-            ? this.Token[translateHash][lang]
-            : textFormatted(this.Token[translateHash][lang]);
+        else if ('placeholder' in Translate.Token[translateHash] && s(Translate.Token[translateHash].placeholder))
+          s(Translate.Token[translateHash].placeholder).placeholder = Translate.Options[translateHash]
+            ?.disableTextFormat
+            ? Translate.Token[translateHash][lang]
+            : textFormatted(Translate.Token[translateHash][lang]);
       }
     });
-    for (const keyEvent of Object.keys(this.Event)) this.Event[keyEvent]();
+    Translate.emitChanged({ lang });
+    for (const keyEvent of Object.keys(Translate.Event)) Translate.Event[keyEvent]();
   }
-  static Render(keyLang, placeholder, options = { disableTextFormat: false }) {
-    if (!(keyLang in this.Data)) {
+  static onChanged(listener, options = {}) {
+    if (options.key) Translate.Event[options.key] = listener;
+    return translateEvents.on(TranslateEventType.changed, listener, options);
+  }
+  static offChanged(key) {
+    delete Translate.Event[key];
+    return translateEvents.off(key);
+  }
+  static hasChangedListener(key) {
+    return translateEvents.has(key);
+  }
+  static async emitChanged(detail) {
+    await translateEvents.emit(TranslateEventType.changed, detail);
+  }
+  static instance(keyLang, placeholder, options = { disableTextFormat: false }) {
+    if (!(keyLang in Translate.Data)) {
       // TODO: add translate package or library for this case
       // logger.warn('translate key lang does not exist: ', keyLang);
       return options.disableTextFormat ? keyLang : textFormatted(keyLang);
     }
-    if (placeholder) this.Data[keyLang].placeholder = placeholder;
-    keyLang = this.Data[keyLang];
-    const translateHash = getId(this.Token, 'trans');
-    this.Options[translateHash] = options;
-    this.Token[translateHash] = newInstance(keyLang);
+    if (placeholder) Translate.Data[keyLang].placeholder = placeholder;
+    keyLang = Translate.Data[keyLang];
+    const translateHash = getId(Translate.Token, 'trans');
+    Translate.Options[translateHash] = options;
+    Translate.Token[translateHash] = newInstance(keyLang);
     if ('placeholder' in keyLang) {
       if (s('html').lang in keyLang)
         return options.disableTextFormat ? keyLang[s('html').lang] : textFormatted(keyLang[s('html').lang]);
@@ -58,18 +71,18 @@ class Translate extends BaseComponent {
   }
   static renderLang(language) {
     localStorage.setItem('lang', language);
-    this.Parse(language);
+    Translate.Parse(language);
     if (s(`.action-btn-lang-render`)) htmls(`.action-btn-lang-render`, s('html').lang);
   }
   static async RenderSetting(id) {
     return html` <div class="in section-mp">
-      ${await DropDown.Render({
+      ${await DropDown.instance({
         id: id ?? 'settings-lang',
         value: s('html').lang ? s('html').lang : 'en',
-        label: html`${Translate.Render('lang')}`,
+        label: html`${Translate.instance('lang')}`,
         data: ['en', 'es'].map((language) => {
           return {
-            display: html`<i class="fa-solid fa-language"></i> ${Translate.Render(language)}`,
+            display: html`<i class="fa-solid fa-language"></i> ${Translate.instance(language)}`,
             value: language,
             onClick: () => Translate.renderLang(language),
           };
@@ -78,9 +91,8 @@ class Translate extends BaseComponent {
     </div>`;
   }
 }
-
 class TranslateCore {
-  static async Init() {
+  static async instance() {
     s('html').lang = getLang();
     Translate.Data = {
       ...Translate.Data,
@@ -222,11 +234,9 @@ class TranslateCore {
     Translate.Data['confirm-logout'] = { en: 'Confirm Logout', es: 'Confirmar cierre de sesión' };
     Translate.Data['success-logout'] = { en: 'Successful session logout', es: 'Cierre de sesión exitoso' };
     Translate.Data['account'] = { en: 'Account', es: 'Cuenta' };
-
     Translate.Data['update'] = { en: 'Update', es: 'Actualizar' };
     Translate.Data['success-update-user'] = { en: 'user update successfully', es: 'usuario actualizado correctamente' };
     Translate.Data['error-update-user'] = { en: 'error update user', es: 'error al actualizar el usuario' };
-
     Translate.Data['edit'] = { en: 'Edit', es: 'Editar' };
     Translate.Data['copy-share-link'] = { en: 'Copy share link', es: 'Copiar enlace compartido' };
     Translate.Data['link-copied'] = { en: 'Link copied to clipboard', es: 'Enlace copiado al portapapeles' };
@@ -236,17 +246,12 @@ class TranslateCore {
     Translate.Data['confirm'] = { en: 'confirm', es: 'confirmar' };
     Translate.Data['cancel'] = { en: 'cancel', es: 'cancelar' };
     Translate.Data['verify-email'] = { en: 'Verify email', es: 'email de verificacion' };
-
     Translate.Data[`email send`] = { en: 'email send', es: 'email enviado' };
-
     Translate.Data['success-generate-keys'] = { en: 'Keys generated successfully.', es: 'Llaves generadas con éxito.' };
     Translate.Data['error-generate-keys'] = { en: 'Error generating keys.', es: 'Error al generar las llaves.' };
-
     Translate.Data['copy'] = { en: 'Copy', es: 'Copiar' };
     Translate.Data['keys'] = { en: 'Keys', es: 'Llaves' };
-
     Translate.Data['success-copy-data'] = { es: '¡Datos copiados con éxito!', en: 'Data copied successfully!' };
-
     Translate.Data['character'] = { es: 'Personaje', en: 'Character' };
     Translate.Data['file-path'] = { en: 'file path', es: 'ruta de archivo' };
     Translate.Data['drop-file'] = { en: 'drop file', es: 'soltar archivo' };
@@ -259,7 +264,6 @@ class TranslateCore {
     Translate.Data['calendar'] = { es: 'Calendario', en: 'Calendar' };
     Translate.Data['docs'] = { es: 'Documentacion', en: 'Documentation' };
     Translate.Data['clean-cache'] = { es: 'Limpiar caché', en: 'Clean cache' };
-
     Translate.Data['add'] = { es: 'Agregar', en: 'Add' };
     Translate.Data['mode'] = { es: 'Modo', en: 'Mode' };
     Translate.Data['result'] = { es: 'Resultado', en: 'Result' };
@@ -273,7 +277,6 @@ class TranslateCore {
       es: 'Vista previa no disponible',
     };
     Translate.Data['recent'] = { es: 'Reciente', en: 'recent' };
-
     Translate.Data = {
       ...Translate.Data,
       ...{
@@ -339,7 +342,6 @@ class TranslateCore {
       es: 'No se pudo conectar al dispositivo de transmisión.',
       en: 'Unable to connect to the stream device.',
     };
-
     Translate.Data['equip'] = {
       es: 'Equipar',
       en: 'Equip',
@@ -348,7 +350,6 @@ class TranslateCore {
       es: 'Desequipar',
       en: 'Unequip',
     };
-
     Translate.Data['i-have-account'] = {
       en: 'I have an account',
       es: 'Tengo una cuenta',
@@ -399,7 +400,6 @@ class TranslateCore {
     };
     Translate.Data['resend'] = { en: 'Resend', es: 'Reenviar' };
     Translate.Data['delete-account'] = { en: 'Delete Account', es: 'Borrar cuenta' };
-
     Translate.Data['doc-title'] = {
       en: 'Doc Title',
       es: 'Título del documento',
@@ -456,7 +456,6 @@ class TranslateCore {
       en: 'Error deleting account.',
       es: 'Error al borrar la cuenta.',
     };
-
     Translate.Data['confirm-delete-account'] = {
       en: 'Are you sure you want to delete your account?',
       es: '¿Estás seguro de que deseas borrar tu cuenta?',
@@ -572,7 +571,6 @@ class TranslateCore {
     Translate.Data['next'] = { es: 'Siguiente', en: 'Next' };
     Translate.Data['buy'] = { es: 'comprar', en: 'Buy' };
     Translate.Data['sell'] = { es: 'Vender', en: 'sell' };
-
     Translate.Data['monday'] = { es: 'Lunes', en: 'Monday' };
     Translate.Data['tuesday'] = { es: 'Martes', en: 'Tuesday' };
     Translate.Data['wednesday'] = { es: 'Miércoles', en: 'Wednesday' };
@@ -580,7 +578,6 @@ class TranslateCore {
     Translate.Data['friday'] = { es: 'Viernes', en: 'Friday' };
     Translate.Data['saturday'] = { es: 'Sábado', en: 'Saturday' };
     Translate.Data['sunday'] = { es: 'Domingo', en: 'Sunday' };
-
     Translate.Data['description'] = { es: 'Descripción', en: 'Description' };
     Translate.Data['daysOfWeek'] = { es: 'Días de la semana', en: 'Days of the week' };
     Translate.Data['startTime'] = { es: 'Hora de inicio', en: 'Start time' };
@@ -694,5 +691,4 @@ class TranslateCore {
     };
   }
 }
-
 export { Translate, TranslateCore, textFormatted };

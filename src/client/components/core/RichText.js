@@ -1,13 +1,11 @@
 import { getId, newInstance } from './CommonJs.js';
 import { Modal } from './Modal.js';
 import { s } from './VanillaJs.js';
-
-import { BaseComponent } from './WebComponent.js';
-class RichText extends BaseComponent {
+class RichText {
   static Tokens = {};
-  static async Render(options = { id: '', parentIdModal: '' }) {
-    const id = options?.id ? options.id : getId(this.Tokens, 'rich-text-');
-    this.Tokens[id] = {};
+  static async instance(options = { id: '', parentIdModal: '' }) {
+    const id = options?.id ? options.id : getId(RichText.Tokens, 'rich-text-');
+    RichText.Tokens[id] = {};
     setTimeout(() => {
       const easyMDE = new EasyMDE({
         element: s(`.${id}`),
@@ -24,7 +22,7 @@ class RichText extends BaseComponent {
           }
         },
       });
-      this.Tokens[id].easyMDE = easyMDE;
+      RichText.Tokens[id].easyMDE = easyMDE;
       // easyMDE.value();
       // easyMDE.value(val);
     });
@@ -32,5 +30,4 @@ class RichText extends BaseComponent {
       <div class="in md-container"><textarea class="${id}"></textarea></div>`;
   }
 }
-
 export { RichText };

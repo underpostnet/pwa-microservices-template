@@ -5,16 +5,9 @@ import express from 'express';
 
 const logger = loggerFactory(import.meta);
 
-class CoreRouter {
-  /**
-   * Builds and returns the Express Router for this API.
-   * @param {import('../../server/auth.js').RouterOptions} options
-   * @returns {import('express').Router}
-   * @memberof CoreRouter
-   */
-  static router(options) {
+const CoreRouter = (options) => {
   const router = express.Router();
-  const { authMiddleware } = options;
+  const authMiddleware = options.authMiddleware;
   router.post(`/:id`, authMiddleware, adminGuard, async (req, res) => await CoreController.post(req, res, options));
   router.post(`/`, authMiddleware, adminGuard, async (req, res) => await CoreController.post(req, res, options));
   router.get(`/:id`, authMiddleware, adminGuard, async (req, res) => await CoreController.get(req, res, options));
@@ -24,9 +17,8 @@ class CoreRouter {
   router.delete(`/:id`, authMiddleware, adminGuard, async (req, res) => await CoreController.delete(req, res, options));
   router.delete(`/`, authMiddleware, adminGuard, async (req, res) => await CoreController.delete(req, res, options));
   return router;
-  }
-}
+};
 
-const ApiRouter = (options) => CoreRouter.router(options);
+const ApiRouter = CoreRouter;
 
 export { ApiRouter, CoreRouter };

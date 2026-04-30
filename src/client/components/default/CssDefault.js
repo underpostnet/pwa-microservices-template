@@ -11,17 +11,17 @@ const CssCommonDefault = async () => {
 class CssDefaultDark {
   static theme = 'default-dark';
   static dark = true;
-  static async render() {
+  static render = async () => {
     return (await CssCommonDefault()) + html``;
-  }
+  };
 }
 
 class CssDefaultLight {
   static theme = 'default-light';
   static dark = false;
-  static async render() {
+  static render = async () => {
     return (await CssCommonDefault()) + html``;
-  }
+  };
 }
 
 export { CssDefaultDark, CssCommonDefault, CssDefaultLight };

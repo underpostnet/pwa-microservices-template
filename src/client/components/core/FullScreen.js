@@ -4,27 +4,23 @@
  * @module src/client/components/core/FullScreen.js
  * @namespace FullScreenClient
  */
-
 import { Responsive } from './Responsive.js';
 import { ToggleSwitch } from './ToggleSwitch.js';
 import { Translate } from './Translate.js';
 import { checkFullScreen, fullScreenIn, fullScreenOut, s } from './VanillaJs.js';
-
-import { BaseComponent } from './WebComponent.js';
 /**
  * Manages fullscreen mode state, event handling, and UI synchronization.
  * Supports all major browsers and PWA/Nativefier environments with comprehensive
  * vendor-prefixed API detection.
  * @memberof FullScreenClient
  */
-class FullScreen extends BaseComponent {
+class FullScreen {
   /**
    * Internal state flag tracking the intended fullscreen mode.
    * @type {boolean}
    * @private
    */
   static _fullScreenSwitch = false;
-
   /**
    * Flag indicating whether event listeners have been attached.
    * Prevents duplicate event listener registration.
@@ -32,7 +28,6 @@ class FullScreen extends BaseComponent {
    * @private
    */
   static _eventListenersAdded = false;
-
   /**
    * Flag preventing concurrent sync operations.
    * Ensures state synchronization happens sequentially.
@@ -40,7 +35,6 @@ class FullScreen extends BaseComponent {
    * @private
    */
   static _syncInProgress = false;
-
   /**
    * Checks if the browser is currently in fullscreen mode.
    * Supports all vendor-prefixed fullscreen APIs for maximum compatibility:
@@ -63,7 +57,6 @@ class FullScreen extends BaseComponent {
       document.mozFullScreen
     );
   }
-
   /**
    * Synchronizes the toggle switch UI state with the actual fullscreen state.
    * Prevents race conditions using the _syncInProgress flag.
@@ -73,15 +66,12 @@ class FullScreen extends BaseComponent {
    * @returns {void}
    */
   static _syncToggleState() {
-    if (this._syncInProgress) return;
-    this._syncInProgress = true;
-
-    const actualFullScreen = this._isFullScreen();
-
+    if (FullScreen._syncInProgress) return;
+    FullScreen._syncInProgress = true;
+    const actualFullScreen = FullScreen._isFullScreen();
     // Only update if there's a mismatch
-    if (this._fullScreenSwitch !== actualFullScreen) {
-      this._fullScreenSwitch = actualFullScreen;
-
+    if (FullScreen._fullScreenSwitch !== actualFullScreen) {
+      FullScreen._fullScreenSwitch = actualFullScreen;
       // Update toggle switch UI if it exists
       const toggle = s('.fullscreen');
       if (toggle && ToggleSwitch.Tokens[`fullscreen`]) {
@@ -91,12 +81,10 @@ class FullScreen extends BaseComponent {
         }
       }
     }
-
     setTimeout(() => {
-      this._syncInProgress = false;
+      FullScreen._syncInProgress = false;
     }, 100);
   }
-
   /**
    * Event handler for fullscreen change events.
    * Triggers UI state synchronization when fullscreen mode changes.
@@ -105,9 +93,8 @@ class FullScreen extends BaseComponent {
    * @returns {void}
    */
   static _handleFullScreenChange() {
-    this._syncToggleState();
+    FullScreen._syncToggleState();
   }
-
   /**
    * Attaches all necessary event listeners for fullscreen mode detection.
    * Handles multiple scenarios:
@@ -120,37 +107,31 @@ class FullScreen extends BaseComponent {
    * @returns {void}
    */
   static _addEventListeners() {
-    if (this._eventListenersAdded) return;
-
+    if (FullScreen._eventListenersAdded) return;
     const events = ['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange', 'MSFullscreenChange'];
-
     events.forEach((eventName) => {
-      document.addEventListener(eventName, () => this._handleFullScreenChange(), false);
+      document.addEventListener(eventName, () => FullScreen._handleFullScreenChange(), false);
     });
-
     // Additional check for PWA/Nativefier window resize events
     window.addEventListener(
       'resize',
       () => {
-        setTimeout(() => this._syncToggleState(), 150);
+        setTimeout(() => FullScreen._syncToggleState(), 150);
       },
       false,
     );
-
     // ESC key detection fallback
     document.addEventListener(
       'keydown',
       (e) => {
         if (e.key === 'Escape' || e.keyCode === 27) {
-          setTimeout(() => this._syncToggleState(), 100);
+          setTimeout(() => FullScreen._syncToggleState(), 100);
         }
       },
       false,
     );
-
-    this._eventListenersAdded = true;
+    FullScreen._eventListenersAdded = true;
   }
-
   /**
    * Enters fullscreen mode if not already in fullscreen.
    * Updates internal state and triggers fullscreen API.
@@ -160,15 +141,12 @@ class FullScreen extends BaseComponent {
    * @returns {void}
    */
   static _enterFullScreen() {
-    if (this._isFullScreen()) return;
-
-    this._fullScreenSwitch = true;
+    if (FullScreen._isFullScreen()) return;
+    FullScreen._fullScreenSwitch = true;
     fullScreenIn();
-
     // Verify after attempt
-    setTimeout(() => this._syncToggleState(), 300);
+    setTimeout(() => FullScreen._syncToggleState(), 300);
   }
-
   /**
    * Exits fullscreen mode if currently in fullscreen.
    * Updates internal state and triggers fullscreen exit API.
@@ -178,15 +156,12 @@ class FullScreen extends BaseComponent {
    * @returns {void}
    */
   static _exitFullScreen() {
-    if (!this._isFullScreen()) return;
-
-    this._fullScreenSwitch = false;
+    if (!FullScreen._isFullScreen()) return;
+    FullScreen._fullScreenSwitch = false;
     fullScreenOut();
-
     // Verify after attempt
-    setTimeout(() => this._syncToggleState(), 300);
+    setTimeout(() => FullScreen._syncToggleState(), 300);
   }
-
   /**
    * Renders the fullscreen toggle setting UI component.
    * Initializes fullscreen state detection, sets up event listeners,
@@ -197,34 +172,30 @@ class FullScreen extends BaseComponent {
    */
   static async RenderSetting() {
     // Initialize state from actual fullscreen status
-    this._fullScreenSwitch = this._isFullScreen();
-
+    FullScreen._fullScreenSwitch = FullScreen._isFullScreen();
     // Setup event listeners once
-    this._addEventListeners();
-
+    FullScreen._addEventListeners();
     // Update responsive event
-    Responsive.Event['full-screen-settings'] = () => {
-      this._syncToggleState();
-    };
-
+    Responsive.onChanged(() => {
+      FullScreen._syncToggleState();
+    }, { key: 'full-screen-settings' });
     return html`<div class="in section-mp">
-      ${await ToggleSwitch.Render({
+      ${await ToggleSwitch.instance({
         wrapper: true,
-        wrapperLabel: html`<i class="fa-solid fa-expand"></i> ${Translate.Render('fullscreen')}`,
+        wrapperLabel: html`<i class="fa-solid fa-expand"></i> ${Translate.instance('fullscreen')}`,
         id: 'fullscreen',
         disabledOnClick: true,
-        checked: this._fullScreenSwitch,
+        checked: FullScreen._fullScreenSwitch,
         on: {
           unchecked: () => {
-            this._exitFullScreen();
+            FullScreen._exitFullScreen();
           },
           checked: () => {
-            this._enterFullScreen();
+            FullScreen._enterFullScreen();
           },
         },
       })}
     </div>`;
   }
 }
-
 export { FullScreen };

@@ -12,9 +12,15 @@ import { EventsUI } from './EventsUI.js';
 import { LoadingAnimation } from './LoadingAnimation.js';
 import { loggerFactory } from './Logger.js';
 import { LoadRouter } from './Router.js';
+import { registerRoutes } from './Router.js';
 import { Translate } from './Translate.js';
 import { s } from './VanillaJs.js';
 import { getProxyPath } from './Router.js';
+import { Css } from './Css.js';
+import { TranslateCore } from './Translate.js';
+import { Responsive } from './Responsive.js';
+import { SocketIo } from './SocketIo.js';
+import { Keyboard } from './Keyboard.js';
 const logger = loggerFactory(import.meta);
 
 /**
@@ -71,52 +77,49 @@ class PwaWorker {
     return window.renderPayload.dev || location.origin.match('localhost') || location.origin.match('127.0.0.1');
   }
 
+  async runComponentInit(component, options) {
+    if (!component) return;
+    if (Array.isArray(component)) {
+      for (const item of component) await this.runComponentInit(item, options);
+      return;
+    }
+    if (typeof component.instance === 'function') {
+      await component.instance(options);
+      return;
+    }
+    if (typeof component === 'function') {
+      await component(options);
+    }
+  }
+
   /**
-   * Initializes the PWA worker, registers global/worker event listeners,
-   * checks service worker status, and renders the initial content.
-   * This is the main entry point for the worker setup.
-   * @memberof PwaWorker
-   * @param {object} options - Configuration options.
-   * @param {function(): object} options.router - Function to get the router instance.
-   * @param {function(): Promise<void>} options.render - Function to render the application's UI.
+   * Bootstraps the app with a declarative options object.
+   * Shared core inits (Css, TranslateCore, Responsive, SocketIo, Keyboard) run
+   * internally in the correct order so index entrypoints only list app-specific components.
+   *
+   * @param {object} options
+   * @param {function(): object}          options.router       - Function returning the router instance.
+   * @param {function(): Promise<string>} [options.template]   - Async function returning the landing HTML body.
+   * @param {Array}                       [options.themes]     - CSS theme array passed to Css.loadThemes().
+   * @param {object|Array}                [options.translate]  - App translate class(es) with static instance().
+   * @param {object}                      [options.render]     - AppShell class with static instance().
+   * @param {string}                      [options.socketPath] - Socket.IO path override.
+   * @param {object}                      [options.appStore]   - AppStore whose .Data is used for socket channels.
+   * @param {object}                      [options.session]    - Session components: { socket, login, signout, signup }.
+   * @param {function(): Promise<void>}   [options.render]     - Legacy raw render callback (backward-compat).
    * @returns {Promise<void>}
    */
-  /**
-   * Initializes the PWA worker, registers global/worker event listeners,
-   * checks service worker status, and renders the initial content.
-   *
-   * Boot sequence (designed for minimum Time-To-Interactive):
-   *   1. Register online/offline listeners.
-   *   2. Wire up SW message listeners (non-blocking).
-   *   3. **Kick off SW registration in the background** — does not block
-   *      the first paint.
-   *   4. `render()` — paint the app shell.
-   *   5. `LoadRouter` — route to the current URL.
-   *   6. Remove the splash screen → user sees the app.
-   *   7. `sessionInit()` — session verification runs after first paint so it
-   *      never delays the splash-screen removal.
-   *   8. Settle SW registration promise.
-   *
-   * @memberof PwaWorker
-   * @param {object} options - Configuration options.
-   * @param {function(): object} options.router - Returns the router instance.
-   * @param {function(): Promise<void>} options.render - Renders the app shell (CSS, layout, menu).
-   * @param {function(): Promise<void>} [options.sessionInit] - Performs session / auth / socket
-   *   initialisation.  Runs **after** the splash screen is removed so it never
-   *   blocks the first paint.  When omitted the old inline behaviour is preserved
-   *   for backward compatibility.
-   * @returns {Promise<void>}
-   */
-  async instance({ router, render, sessionInit }) {
-    // --- Online / offline event bridge ---
-    window.addEventListener('online', () => logger.warn('ononline'));
-    window.addEventListener('offline', () => logger.warn('onoffline'));
-    // Fire ononline immediately when we already have connectivity.
+  async instance({ router, template, themes, translate, render, socketPath, appStore, session }) {
+    window.ononline = async () => {
+      logger.warn('ononline');
+    };
+    window.onoffline = async () => {
+      logger.warn('onoffline');
+    };
     setTimeout(() => {
-      if ('onLine' in navigator && navigator.onLine) window.dispatchEvent(new Event('online'));
+      if ('onLine' in navigator && navigator.onLine) window.ononline();
     });
 
-    // --- Service worker message bridge ---
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.addEventListener('controllerchange', () => {
         logger.info('The controller of current browsing context has changed.');
@@ -124,36 +127,84 @@ class PwaWorker {
       navigator.serviceWorker.ready.then((worker) => {
         logger.info('Service Worker Ready', worker);
 
+        // event message listener
         navigator.serviceWorker.addEventListener('message', (event) => {
           logger.info('Received event message', event.data);
           const { status } = event.data;
-          if (status === 'loader') LoadingAnimation.RenderCurrentSrcLoad(event);
+
+          switch (status) {
+            case 'loader':
+              {
+                LoadingAnimation.RenderCurrentSrcLoad(event);
+              }
+              break;
+
+            default:
+              break;
+          }
         });
+
+        // if (navigator.serviceWorker.controller)
+        //   navigator.serviceWorker.controller.postMessage({
+        //     title: 'Hello from Client event message',
+        //   });
+
+        // broadcast message
+        // const channel = new BroadcastChannel('sw-messages');
+        // channel.addEventListener('message', (event) => {
+        //   logger.info('Received broadcast message', event.data);
+        // });
+        // channel.postMessage({ title: 'Hello from Client broadcast message' });
+        // channel.close();
       });
     }
 
-    this.RouterInstance = router();
+    this.RouterInstance = typeof router?.instance === 'function' ? router.instance() : router();
+    if (this.RouterInstance?.Routes) registerRoutes(this.RouterInstance.Routes);
+    const isInstall = await this.status();
+    if (!isInstall) await this.install();
 
-    // Kick off SW registration in the background so it never blocks the
-    // first render.  We settle the promise later (step 8).
-    const swReady = this.status()
-      .then((isInstall) => {
-        if (!isInstall) return this.install();
-      })
-      .catch((err) => logger.error('SW init error (non-fatal):', err));
-
-    // --- Paint the app shell ---
-    await render();
+    // ── declarative bootstrap path ──────────────────────────────────────────
+    if (typeof render !== 'function' || render.instance) {
+      // shared core inits
+      if (themes) await Css.loadThemes(themes);
+      await this.runComponentInit(TranslateCore);
+      await this.runComponentInit(translate);
+      await this.runComponentInit(Responsive);
+      // app shell render
+      if (render && typeof render.instance === 'function') {
+        const htmlMainBody = typeof template === 'function' ? template : undefined;
+        await this.runComponentInit(render, htmlMainBody ? { htmlMainBody } : undefined);
+      }
+      // socket init
+      const channels = appStore ? appStore.Data : (session && session.socket && session.socket.Data) || undefined;
+      await this.runComponentInit(SocketIo, { channels, path: socketPath });
+      if (session) {
+        await this.runComponentInit(session.socket);
+        await this.runComponentInit(session.login);
+        await this.runComponentInit(session.logout || session.signout);
+        await this.runComponentInit(session.signup);
+        await this.runComponentInit(session.account);
+      }
+      await this.runComponentInit(Keyboard);
+    } else {
+      // ── legacy raw render callback (backward-compat) ─────────────────────
+      await render();
+    }
+    // ────────────────────────────────────────────────────────────────────────
     await LoadRouter(this.RouterInstance);
     LoadingAnimation.removeSplashScreen();
-
-    // --- Session / auth / socket — runs after the splash is gone ---
-    if (typeof sessionInit === 'function') {
-      await sessionInit();
+    if (this.devMode()) {
+      // const delayLiveReload = 1250;
+      // window.addEventListener('visibilitychange', () => {
+      //   if (document.visibilityState === 'visible') {
+      //     this.reload(delayLiveReload);
+      //   }
+      // });
+      // window.addEventListener('focus', () => {
+      //   this.reload(delayLiveReload);
+      // });
     }
-
-    // --- Settle SW ---
-    await swReady;
     window.serviceWorkerReady = true;
   }
 
@@ -185,15 +236,8 @@ class PwaWorker {
   }
 
   /**
-   * Updates the application by deleting **all** caches and triggering a
-   * service worker update check.
-   *
-   * The previous implementation matched cache names against path fragments
-   * ('components/', 'services/', '.index.js') which never matched the flat
-   * CACHE_NAME string used at runtime, making the method a no-op.  This
-   * version deletes every cache unconditionally so a clean precache is built
-   * on the next install event.
-   *
+   * Updates the application by clearing specific caches and running the service worker update logic.
+   * Cache names matching 'components/', 'services/', or '.index.js' are deleted.
    * @memberof PwaWorker
    * @returns {Promise<void>}
    */
@@ -201,7 +245,11 @@ class PwaWorker {
     const isInstall = await this.status();
     if (isInstall) {
       const cacheNames = await caches.keys();
-      await Promise.all(cacheNames.map((name) => caches.delete(name)));
+      for (const cacheName of cacheNames) {
+        if (cacheName.match('components/') || cacheName.match('services/') || cacheName.match('.index.js')) {
+          await caches.delete(cacheName);
+        }
+      }
       await this.updateServiceWorker();
     }
   }
@@ -356,21 +404,21 @@ class PwaWorker {
       });
     });
     return html` <div class="in">
-      ${await BtnIcon.Render({
+      ${await BtnIcon.instance({
         class: 'inl section-mp btn-custom btn-install-service-controller hide',
-        label: html`<i class="fas fa-download"></i> ${Translate.Render('Install control service')}`,
+        label: html`<i class="fas fa-download"></i> ${Translate.instance('Install control service')}`,
       })}
-      ${await BtnIcon.Render({
+      ${await BtnIcon.instance({
         class: 'inl section-mp btn-custom btn-uninstall-service-controller hide',
-        label: html`<i class="far fa-trash-alt"></i> ${Translate.Render('Uninstall control service')}`,
+        label: html`<i class="far fa-trash-alt"></i> ${Translate.instance('Uninstall control service')}`,
       })}
-      ${await BtnIcon.Render({
+      ${await BtnIcon.instance({
         class: 'inl section-mp btn-custom btn-clean-cache',
-        label: html`<i class="fa-solid fa-broom"></i> ${Translate.Render('clean-cache')}`,
+        label: html`<i class="fa-solid fa-broom"></i> ${Translate.instance('clean-cache')}`,
       })}
-      ${await BtnIcon.Render({
+      ${await BtnIcon.instance({
         class: 'inl section-mp btn-custom btn-reload hide',
-        label: html`<i class="fas fa-sync-alt"></i> ${Translate.Render('Reload')}`,
+        label: html`<i class="fas fa-sync-alt"></i> ${Translate.instance('Reload')}`,
       })}
     </div>`;
   }

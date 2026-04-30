@@ -7,10 +7,10 @@ import { Modal } from './Modal.js';
 import { getId } from './CommonJs.js';
 import { setPath, getProxyPath, getQueryParams, extractUsernameFromPath, RouterEvents } from './Router.js';
 
-import { BaseComponent } from './WebComponent.js';
-class PublicProfile extends BaseComponent {
+class PublicProfile {
   static Data = {};
-  static currentUsername = null; // Track the currently displayed username for back/forward navigation
+  /** @type {string|null} Track the currently displayed username for back/forward navigation */
+  static currentUsername = null;
 
   static async Update(options = { idModal: '', user: {} }) {
     const { idModal, user } = options;
@@ -18,7 +18,7 @@ class PublicProfile extends BaseComponent {
 
     // Check if modal exists and is registered in Modal.Data
     if (!Modal.Data[idModal]) {
-      return await this.Render(options);
+      return await this.instance(options);
     }
 
     try {
@@ -36,7 +36,7 @@ class PublicProfile extends BaseComponent {
       this._cleanupProfileData({ idModal });
 
       // Re-render the profile content with new user
-      const newContent = await this.Render({ ...options, disableUpdate: true });
+      const newContent = await this.instance({ ...options, disableUpdate: true });
 
       // Update modal content using Modal.writeHTML with smooth transition
       Modal.writeHTML({ idModal, html: newContent });
@@ -187,7 +187,10 @@ class PublicProfile extends BaseComponent {
     }
   }
 
-  static async Render(
+  /**
+   * @param {{ idModal?: string, user: { _id?: string, username?: string } }} options
+   */
+  static async instance(
     options = {
       idModal: '',
       user: {},
@@ -437,7 +440,7 @@ class PublicProfile extends BaseComponent {
               onmouseout="this.style.transform='translateY(0)'; this.style.boxShadow='0 4px 12px ${colors.buttonShadow}';"
             >
               <i class="fa-solid fa-home"></i>
-              ${Translate.Render('go-home')}
+              ${Translate.instance('go-home')}
             </a>
             <a
               href="javascript:history.back()"
@@ -460,7 +463,7 @@ class PublicProfile extends BaseComponent {
               onmouseout="this.style.background='transparent'; this.style.borderColor='${colors.primaryColor}40';"
             >
               <i class="fa-solid fa-arrow-left"></i>
-              ${Translate.Render('go-back')}
+              ${Translate.instance('go-back')}
             </a>
           </div>
         </div>
@@ -469,7 +472,7 @@ class PublicProfile extends BaseComponent {
 
     if (!userId && !username) {
       return renderErrorState(
-        Translate.Render('user-not-found'),
+        Translate.instance('user-not-found'),
         'fa-user-slash',
         "The user you're looking for could not be found. Please check the username and try again.",
       );
@@ -504,13 +507,13 @@ class PublicProfile extends BaseComponent {
       } else {
         if (result.message && result.message.toLowerCase().match('private'))
           return renderErrorState(
-            Translate.Render('profile-is-private'),
+            Translate.instance('profile-is-private'),
             'fa-lock',
             'This user has chosen to keep their profile private. Respect their privacy and check back later if they change their settings.',
           );
         else
           return renderErrorState(
-            Translate.Render('user-not-found'),
+            Translate.instance('user-not-found'),
             'fa-user-slash',
             'This user profile does not exist or has been removed. Please verify the username.',
           );
@@ -518,7 +521,7 @@ class PublicProfile extends BaseComponent {
     } catch (error) {
       console.error('Error fetching public profile:', error);
       return renderErrorState(
-        Translate.Render('error-loading-profile'),
+        Translate.instance('error-loading-profile'),
         'fa-circle-exclamation',
         'We encountered an issue loading this profile. Please try again in a moment or contact support if the problem persists.',
       );
@@ -527,7 +530,7 @@ class PublicProfile extends BaseComponent {
     // If user doesn't have public profile enabled
     if (!userData.publicProfile) {
       return renderErrorState(
-        Translate.Render('profile-is-private'),
+        Translate.instance('profile-is-private'),
         'fa-lock',
         'This user has chosen to keep their profile private. Respect their privacy and check back later if they change their settings.',
       );
@@ -766,7 +769,7 @@ class PublicProfile extends BaseComponent {
                       transition: color 0.3s ease-in-out;
                     "
                   >
-                    ${Translate.Render('no-description')}
+                    ${Translate.instance('no-description')}
                   </p>`}
             </div>
 
@@ -793,7 +796,7 @@ class PublicProfile extends BaseComponent {
                 "
               >
                 <i class="fa-solid fa-calendar" style="margin-right: 6px;"></i>
-                ${Translate.Render('member-since')}: ${new Date(userData.createdAt).toLocaleDateString()}
+                ${Translate.instance('member-since')}: ${new Date(userData.createdAt).toLocaleDateString()}
               </span>
             </div>
 
@@ -818,7 +821,7 @@ class PublicProfile extends BaseComponent {
               <a
                 class="${profileId}-button"
                 href="javascript:void(0)"
-                title="${Translate.Render('view-profile')}"
+                title="${Translate.instance('view-profile')}"
                 style="
                   display: inline-flex;
                   align-items: center;
@@ -853,6 +856,9 @@ class PublicProfile extends BaseComponent {
     `;
   }
 
+  /**
+   * @param {{ idModal?: string }} options
+   */
   static async Router(options = { idModal: '' }) {
     const idModal = options.idModal || 'modal-public-profile';
     // Register RouterEvents listener for back/forward navigation between profiles
