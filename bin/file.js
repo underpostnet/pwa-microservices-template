@@ -104,6 +104,8 @@ try {
           './src/server/semantic-layer-generator-resource.js',
           './src/server/besu-genesis-generator.js',
           './src/grpc/cyberia',
+          './src/runtime/cyberia-server',
+          './src/runtime/cyberia-client',
           './test/shape-generator.test.js',
           'bin/cyberia.js',
         ]) {
@@ -121,6 +123,8 @@ try {
           `./.github/workflows/gitlab.ci.yml`,
           `./.github/workflows/publish.ci.yml`,
           `./.github/workflows/release.cd.yml`,
+          `./src/client/services/user/guest.service.js`,
+          './src/api/user/guest.service.js',
           './src/ws/IoInterface.js',
           './src/ws/IoServer.js',
         ])

@@ -1,6 +1,6 @@
 FROM rockylinux:9
 
-# Update and install required packages
+# System packages 
 RUN dnf -y update && \
     dnf -y install epel-release && \
     dnf -y install --allowerasing \
@@ -20,13 +20,14 @@ RUN dnf -y update && \
     perl && \
     dnf clean all
 
-# --- Download and install XAMPP (PHP 8.2)
+
+# Download and install XAMPP (PHP 8.2)
 RUN curl -L -o /tmp/xampp-linux-installer.run "https://sourceforge.net/projects/xampp/files/XAMPP%20Linux/8.2.12/xampp-linux-x64-8.2.12-0-installer.run" && \
     chmod +x /tmp/xampp-linux-installer.run && \
     bash -c "/tmp/xampp-linux-installer.run --mode unattended" && \
     ln -sf /opt/lampp/lampp /usr/bin/lampp
 
-# --- Create /xampp/htdocs (static root) and set permissions
+# Create /xampp/htdocs (static root) and set permissions
 RUN mkdir -p /opt/lampp/htdocs && \
     chown -R root:root /opt/lampp/htdocs && \
     chmod -R a+rX /opt/lampp/htdocs
@@ -47,11 +48,11 @@ RUN dnf clean all
 RUN node --version
 RUN npm --version
 
-# Create non-root user for secure container execution (cron jobs, init containers)
-# Deployment containers override to root via securityContext when npm install -g is needed
-RUN useradd -m -u 1000 -s /bin/bash dd
+# Install underpost CLI 
+RUN npm install -g underpost
+RUN underpost --version
 
-# Set working directory
+# Runtime root expected by startup/build scripts.
 WORKDIR /home/dd
 
 EXPOSE 22

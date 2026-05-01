@@ -120,7 +120,7 @@ class UnderpostRelease {
         `./manifests/deployment/dd-default-development/deployment.yaml`,
         fs
           .readFileSync(`./manifests/deployment/dd-default-development/deployment.yaml`, 'utf8')
-          .replaceAll(`underpost:v${version}`, `underpost:v${newVersion}`),
+          .replaceAll(`underpost-engine:v${version}`, `underpost-engine:v${newVersion}`),
         'utf8',
       );
 
@@ -132,6 +132,52 @@ class UnderpostRelease {
             .replaceAll(`underpost-engine:v${version}`, `underpost-engine:v${newVersion}`),
           'utf8',
         );
+
+      // Update version tag in all runtime docker image workflows (type=raw,value=v<version>).
+      for (const wf of fs.readdirSync(`./.github/workflows`)) {
+        if (!wf.match(/^docker-image\..+\.ci\.yml$/) || wf === 'docker-image.ci.yml') continue;
+        const wfPath = `./.github/workflows/${wf}`;
+        fs.writeFileSync(
+          wfPath,
+          fs.readFileSync(wfPath, 'utf8').replaceAll(`type=raw,value=v${version}`, `type=raw,value=v${newVersion}`),
+          'utf8',
+        );
+      }
+
+      // Update image version in all conf.instances.json files for underpost/* images.
+      if (fs.existsSync(`./engine-private/conf`)) {
+        const confFiles = await fs.readdir(`./engine-private/conf`, { recursive: true });
+        for (const relativePath of confFiles) {
+          const filePath = `./engine-private/conf/${relativePath.replaceAll('\\', '/')}`;
+          if (filePath.split('/').pop() !== 'conf.instances.json' || !fs.existsSync(filePath)) continue;
+
+          let instances;
+          try {
+            instances = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+          } catch {
+            logger.warn(`Skipping invalid JSON file: ${filePath}`);
+            continue;
+          }
+
+          if (!Array.isArray(instances)) continue;
+
+          let updated = false;
+          for (const instance of instances) {
+            if (!instance || typeof instance !== 'object') continue;
+            if (!instance.image || typeof instance.image !== 'string') continue;
+            if (!instance.image.startsWith('underpost/')) continue;
+
+            const baseImage = instance.image.split('@')[0].split(':')[0];
+            const nextImage = `${baseImage}:v${newVersion}`;
+            if (instance.image !== nextImage) {
+              instance.image = nextImage;
+              updated = true;
+            }
+          }
+
+          if (updated) fs.writeFileSync(filePath, JSON.stringify(instances, null, 2), 'utf8');
+        }
+      }
 
       fs.writeFileSync(
         `./src/index.js`,

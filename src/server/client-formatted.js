@@ -27,6 +27,13 @@ const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  */
 const srcFormatted = (src) => src.replace(/(?<=[\s({[,;=+!?:^])(html|css)`/g, '`');
 
+const resolveBrowserImportPath = (basePrefix, relativePath) => {
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(basePrefix)) {
+    return new URL(relativePath, basePrefix.endsWith('/') ? basePrefix : `${basePrefix}/`).toString();
+  }
+  return path.posix.normalize(`${basePrefix}${relativePath}`);
+};
+
 /**
  * Converts a JavaScript object into a string that can be embedded in client-side code
  * and parsed back into an object (e.g., 'JSON.parse(`{...}`)').
@@ -52,7 +59,14 @@ const JSONweb = (data) => {
  * @returns {import('esbuild').Plugin}
  * @memberof clientFormatted
  */
-const importRewritePlugin = ({ dists = [], proxyPath, basePath = '', module = '', baseHost = '' }) => ({
+const importRewritePlugin = ({
+  dists = [],
+  proxyPath,
+  basePath = '',
+  module = '',
+  baseHost = '',
+  externalizeBareImports = true,
+}) => ({
   name: 'import-rewrite',
   setup(build) {
     const prefix = `${baseHost}${proxyPath !== '/' ? `${proxyPath}/` : '/'}`;
@@ -69,26 +83,35 @@ const importRewritePlugin = ({ dists = [], proxyPath, basePath = '', module = ''
       }
     }
 
-    // Rewrite relative imports to absolute paths based on proxy path and module
+    // Rewrite app-relative imports to absolute paths based on proxy path and module.
+    // Do not touch node_modules relative imports so esbuild can bundle package internals.
     build.onResolve({ filter: /^\.\.?\// }, (args) => {
-      const basePrefix = `${prefix}${basePath ? `${basePath}/` : ''}`;
-      if (args.path.startsWith('./')) {
-        return {
-          path: `${basePrefix}${module ? `${module}/` : ''}${args.path.slice(2)}`,
-          external: true,
-        };
+      const normalizedImporter = (args.importer || '').replace(/\\/g, '/');
+      if (!normalizedImporter.includes('/src/client/')) {
+        return;
       }
-      if (args.path.startsWith('../')) {
-        return {
-          path: `${basePrefix}${args.path.slice(3)}`,
-          external: true,
-        };
+
+      // Extract the path relative to /src/client/
+      // Handle cases where the path might have duplicates or be in various formats
+      const srcClientIndex = normalizedImporter.lastIndexOf('/src/client/');
+      if (srcClientIndex === -1) {
+        return;
       }
+      const importerFromClientRoot = normalizedImporter.substring(srcClientIndex + '/src/client/'.length);
+      const importerDir = path.posix.dirname(importerFromClientRoot);
+      const resolvedFromClientRoot = path.posix.normalize(path.posix.join(importerDir, args.path));
+      const result = resolveBrowserImportPath(prefix, resolvedFromClientRoot);
+
+      return {
+        path: result,
+        external: true,
+      };
     });
 
-    // Mark any remaining imports as external
+    // For client app modules we externalize bare imports; for SW builds we let esbuild bundle them.
     build.onResolve({ filter: /.*/ }, (args) => {
       if (args.kind === 'entry-point') return;
+      if (!externalizeBareImports) return;
       return { path: args.path, external: true };
     });
   },
@@ -111,7 +134,15 @@ const importRewritePlugin = ({ dists = [], proxyPath, basePath = '', module = ''
  */
 const transformClientJs = async (
   srcPath,
-  { dists = [], proxyPath, basePath = '', module = '', baseHost = '', minify: shouldMinify = false } = {},
+  {
+    dists = [],
+    proxyPath,
+    basePath = '',
+    module = '',
+    baseHost = '',
+    minify: shouldMinify = false,
+    externalizeBareImports = true,
+  } = {},
 ) => {
   const src = fs.readFileSync(srcPath, 'utf8');
   const stripped = srcFormatted(src);
@@ -130,7 +161,7 @@ const transformClientJs = async (
     target: 'esnext',
     minify: shouldMinify,
     logLevel: 'warning',
-    plugins: [importRewritePlugin({ dists, proxyPath, basePath, module, baseHost })],
+    plugins: [importRewritePlugin({ dists, proxyPath, basePath, module, baseHost, externalizeBareImports })],
   });
 
   return result.outputFiles[0].text;

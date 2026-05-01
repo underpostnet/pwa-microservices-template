@@ -668,10 +668,18 @@ const buildClient = async (
         for (const module of services) {
           if (!fs.existsSync(`${rootClientPath}/services/${module}`))
             fs.mkdirSync(`${rootClientPath}/services/${module}`, { recursive: true });
+          const moduleDir = `./src/client/services/${module}`;
+          if (!fs.existsSync(moduleDir)) continue;
 
-          if (fs.existsSync(`./src/client/services/${module}/${module}.service.js`)) {
-            const jsSrcPath = `./src/client/services/${module}/${module}.service.js`;
-            const jsPublicPath = `${rootClientPath}/services/${module}/${module}.service.js`;
+          const serviceFiles = fs
+            .readdirSync(moduleDir)
+            .filter((name) => name.endsWith('.service.js') || name.endsWith('.management.js'))
+            .sort();
+
+          for (const serviceFile of serviceFiles) {
+            const jsSrcPath = `${moduleDir}/${serviceFile}`;
+            const jsPublicPath = `${rootClientPath}/services/${module}/${serviceFile}`;
+
             if (enableLiveRebuild && !options.liveClientBuildPaths.find((p) => p.srcBuildPath === jsSrcPath)) continue;
 
             const jsSrc = await transformClientJs(jsSrcPath, {
@@ -684,23 +692,29 @@ const buildClient = async (
             });
             fs.writeFileSync(jsPublicPath, jsSrc, 'utf8');
           }
-        }
 
-        for (const module of services) {
-          if (fs.existsSync(`./src/client/services/${module}/${module}.management.js`)) {
-            const jsSrcPath = `./src/client/services/${module}/${module}.management.js`;
-            const jsPublicPath = `${rootClientPath}/services/${module}/${module}.management.js`;
-            if (enableLiveRebuild && !options.liveClientBuildPaths.find((p) => p.srcBuildPath === jsSrcPath)) continue;
+          // Auto-build guest module files when user module is processed
+          if (module === 'user') {
+            const guestModuleDir = './src/client/services/user';
+            const guestServicePath = `${guestModuleDir}/guest.service.js`;
+            if (fs.existsSync(guestServicePath)) {
+              if (!fs.existsSync(`${rootClientPath}/services/user`))
+                fs.mkdirSync(`${rootClientPath}/services/user`, { recursive: true });
 
-            const jsSrc = await transformClientJs(jsSrcPath, {
-              dists,
-              proxyPath: path,
-              basePath: 'services',
-              module,
-              baseHost,
-              minify: minifyBuild,
-            });
-            fs.writeFileSync(jsPublicPath, jsSrc, 'utf8');
+              const guestJsPublicPath = `${rootClientPath}/services/user/guest.service.js`;
+
+              if (!enableLiveRebuild || options.liveClientBuildPaths.find((p) => p.srcBuildPath === guestServicePath)) {
+                const guestJsSrc = await transformClientJs(guestServicePath, {
+                  dists,
+                  proxyPath: path,
+                  basePath: 'services',
+                  module: 'user',
+                  baseHost,
+                  minify: minifyBuild,
+                });
+                fs.writeFileSync(guestJsPublicPath, guestJsSrc, 'utf8');
+              }
+            }
           }
         }
       }
@@ -711,14 +725,18 @@ const buildClient = async (
       const Render = await ssrFactory();
 
       if (views) {
-        const jsSrcPath = fs.existsSync(`./src/client/sw/${publicClientId}.sw.js`)
-          ? `./src/client/sw/${publicClientId}.sw.js`
-          : `./src/client/sw/default.sw.js`;
+        const jsSrcPath = `./src/client/sw/core.sw.js`;
 
         const jsPublicPath = `${rootClientPath}/sw.js`;
 
         if (!(enableLiveRebuild && !options.liveClientBuildPaths.find((p) => p.srcBuildPath === jsSrcPath))) {
-          const jsSrc = await transformClientJs(jsSrcPath, { dists, proxyPath: path, baseHost, minify: minifyBuild });
+          const jsSrc = await transformClientJs(jsSrcPath, {
+            dists,
+            proxyPath: path,
+            baseHost,
+            minify: minifyBuild,
+            externalizeBareImports: false,
+          });
 
           fs.writeFileSync(jsPublicPath, jsSrc, 'utf8');
         }
@@ -951,16 +969,18 @@ Sitemap: ${sitemapBaseUrl}/sitemap.xml`,
       if (client) {
         let PRE_CACHED_RESOURCES = [];
 
-        if (views && fs.existsSync(`${rootClientPath}/sw.js`)) {
-          PRE_CACHED_RESOURCES = await fs.readdir(rootClientPath, { recursive: true });
-          PRE_CACHED_RESOURCES = views
-            .map((view) => `${path === '/' ? '' : path}${view.path}`)
-            .concat(
-              PRE_CACHED_RESOURCES.map((p) => `/${p}`).filter(
-                (p) => p[1] !== '.' && !fs.statSync(`${rootClientPath}${p}`).isDirectory(),
-              ),
-            );
-        }
+        const normalizePrecacheRoutePath = (candidatePath) => {
+          const routePath =
+            typeof candidatePath === 'string' && candidatePath.trim().length > 0 ? candidatePath.trim() : '/offline';
+          const withLeadingSlash = routePath.startsWith('/') ? routePath : `/${routePath}`;
+          const withoutTrailingSlash = withLeadingSlash.replace(/\/+$/, '');
+          return withoutTrailingSlash.length > 0 ? withoutTrailingSlash : '/';
+        };
+
+        const toPrecacheIndexUrl = (routePath) => {
+          const normalizedRoutePath = normalizePrecacheRoutePath(routePath);
+          return `${path === '/' ? '' : path}${normalizedRoutePath === '/' ? '' : normalizedRoutePath}/index.html`;
+        };
 
         for (const pageType of ['offline', 'pages']) {
           if (confSSR[getCapVariableName(client)] && confSSR[getCapVariableName(client)][pageType]) {
@@ -988,7 +1008,11 @@ Sitemap: ${sitemapBaseUrl}/sitemap.xml`,
                 rootClientPath[rootClientPath.length - 1] === '/' ? rootClientPath.slice(0, -1) : rootClientPath
               }${page.path === '/' ? page.path : `${page.path}/`}`;
 
-              PRE_CACHED_RESOURCES.push(`${path === '/' ? '' : path}${page.path === '/' ? '' : page.path}/index.html`);
+              // Install-time precache is intentionally restricted to SSR offline pages.
+              // All other routes/assets are loaded lazily at runtime.
+              if (pageType === 'offline') {
+                PRE_CACHED_RESOURCES.push(toPrecacheIndexUrl(page.path));
+              }
 
               if (!fs.existsSync(buildPath)) fs.mkdirSync(buildPath, { recursive: true });
 
@@ -1014,13 +1038,47 @@ Sitemap: ${sitemapBaseUrl}/sitemap.xml`,
         }
 
         {
+          const cacheScope = path === '/' ? 'root' : path.replaceAll('/', '_');
+          const ssrClientConf = confSSR[getCapVariableName(client)] || {};
+          const ssrOfflinePages = Array.isArray(ssrClientConf.offline) ? ssrClientConf.offline : [];
+          const normalizeSsrRoutePath = (candidatePath, fallbackPath) => {
+            const value =
+              typeof candidatePath === 'string' && candidatePath.trim().length > 0
+                ? candidatePath.trim()
+                : fallbackPath;
+            const withLeadingSlash = value.startsWith('/') ? value : `/${value}`;
+            const withoutTrailingSlash = withLeadingSlash.replace(/\/+$/, '');
+            return withoutTrailingSlash.length > 0 ? withoutTrailingSlash : '/';
+          };
+
+          const offlineSsrPage =
+            ssrOfflinePages.find(
+              (page) =>
+                page?.client === 'NoNetworkConnection' ||
+                /no\s*network|offline/i.test(`${page?.title || ''} ${page?.client || ''} ${page?.path || ''}`),
+            ) || ssrOfflinePages[0];
+
+          const maintenanceSsrPage =
+            ssrOfflinePages.find(
+              (page) =>
+                page?.client === 'Maintenance' ||
+                /maintenance/i.test(`${page?.title || ''} ${page?.client || ''} ${page?.path || ''}`),
+            ) || ssrOfflinePages[1];
+
+          const offlinePath = normalizeSsrRoutePath(offlineSsrPage?.path, '/offline');
+          const maintenancePath = normalizeSsrRoutePath(maintenanceSsrPage?.path, '/maintenance');
+
           const renderPayload = {
             PRE_CACHED_RESOURCES: uniqueArray(PRE_CACHED_RESOURCES),
             PROXY_PATH: path,
+            CACHE_PREFIX: `engine-core-v3-${cacheScope}`,
+            OFFLINE_PATH: offlinePath,
+            MAINTENANCE_PATH: maintenancePath,
           };
           fs.writeFileSync(
             `${rootClientPath}/sw.js`,
             `self.renderPayload = ${JSONweb(renderPayload)};
+self.__WB_DISABLE_DEV_LOGS = true;
 ${fs.readFileSync(`${rootClientPath}/sw.js`, 'utf8')}`,
             'utf8',
           );
