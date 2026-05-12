@@ -1789,6 +1789,12 @@ class Modal {
             if (options.onCollapseMenu) options.onCollapseMenu();
             s(`.sub-menu-title-container-${'modal-menu'}`).classList.add('hide');
             s(`.nav-path-container-${'modal-menu'}`).classList.add('hide');
+            // Shrink any already-open submenu containers to icon-only width
+            Object.keys(Modal.subMenuBtnClass).forEach((subMenuId) => {
+              const container = s(`.menu-btn-container-children-${subMenuId}`);
+              if (container && container.style.height && container.style.height !== '0px')
+                container.style.width = `${collapseSlideMenuWidth}px`;
+            });
             Object.keys(this.Data[idModal].onCollapseMenuListener).map((keyListener) =>
               this.Data[idModal].onCollapseMenuListener[keyListener](),
             );
@@ -1806,6 +1812,12 @@ class Modal {
             if (options.onExtendMenu) options.onExtendMenu();
             s(`.sub-menu-title-container-${'modal-menu'}`).classList.remove('hide');
             s(`.nav-path-container-${'modal-menu'}`).classList.remove('hide');
+            // Expand any already-open submenu containers back to full width
+            Object.keys(Modal.subMenuBtnClass).forEach((subMenuId) => {
+              const container = s(`.menu-btn-container-children-${subMenuId}`);
+              if (container && container.style.height && container.style.height !== '0px')
+                container.style.width = `${originSlideMenuWidth}px`;
+            });
             Object.keys(this.Data[idModal].onExtendMenuListener).map((keyListener) =>
               this.Data[idModal].onExtendMenuListener[keyListener](),
             );
@@ -2464,6 +2476,47 @@ class Modal {
     }
   };
 
+  /**
+   * Builds submenu item HTML using the canonical BtnIcon pattern.
+   * Centralises the item-rendering contract so individual submenu owners (e.g. Docs)
+   * only need to supply data — not layout concerns.
+   * @param {string} subMenuId - Submenu identifier (e.g. 'docs')
+   * @param {Array<{type:string, icon:string, text:string, url:function|string}>} items
+   * @param {Object} [options]
+   * @param {function} [options.subMenuIcon] - Optional icon override per item type
+   * @returns {Promise<string>} Rendered HTML string
+   */
+  static buildSubMenuItemsHtml = async (subMenuId, items = [], options = {}) => {
+    let result = '';
+    for (const item of items) {
+      const tabHref = typeof item.url === 'function' ? item.url() : item.url || '';
+      const icon =
+        options.subMenuIcon && typeof options.subMenuIcon === 'function' ? options.subMenuIcon(item.type) : item.icon;
+      result += html`${await BtnIcon.instance({
+        class: `in wfa main-btn-menu submenu-btn btn-${subMenuId} btn-${subMenuId}-${item.type}`,
+        label: html`<span class="inl menu-btn-icon">${icon}</span
+          ><span class="menu-label-text menu-label-text-${subMenuId}"> ${item.text} </span>`,
+        tabHref,
+        tooltipHtml: await Badge.instance(buildBadgeToolTipMenuOption(item.text)),
+        useMenuBtn: true,
+      })} `;
+    }
+    return result;
+  };
+
+  /**
+   * Injects pre-built submenu item HTML into the submenu container and syncs
+   * the collapse state so labels are hidden when the menu is icon-only.
+   * @param {string} subMenuId
+   * @param {string} itemsHtml
+   */
+  static subMenuPopulate = (subMenuId, itemsHtml) => {
+    htmls(`.menu-btn-container-children-${subMenuId}`, itemsHtml);
+    if (s('.btn-icon-menu-mode-right') && !s('.btn-icon-menu-mode-right').classList.contains('hide')) {
+      sa(`.menu-label-text-${subMenuId}`).forEach((el) => el.classList.add('hide'));
+    }
+  };
+
   // Move modal title element into the bar's render container so it aligns with control buttons
   /**
    * Position a modal relative to an anchor element.
@@ -2769,9 +2822,12 @@ const subMenuRender = async (subMenuId) => {
     setTimeout(() => {
       Modal.menuTextLabelAnimation('modal-menu', subMenuId);
     });
-    // Open animation
+    // Open animation — match the current menu width (collapsed = 50px, extended = 320px)
+    const _isMenuCollapsed =
+      s(`.btn-icon-menu-mode-right`) && !s(`.btn-icon-menu-mode-right`).classList.contains('hide');
+    const _menuContainerWidth = _isMenuCollapsed ? 50 : 320;
     setTimeout(top, 360);
-    menuContainer.style.width = '320px';
+    menuContainer.style.width = `${_menuContainerWidth}px`;
     menuContainer.style.overflow = null;
     menuContainer.style.height = '0px';
     menuContainer.style.height = `${_hBtn * 6}px`;
