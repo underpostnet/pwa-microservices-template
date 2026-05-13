@@ -1307,6 +1307,44 @@ EOF
     },
 
     /**
+     * @method install-crio
+     * @description Installs and configures CRI-O as the container runtime for kubeadm clusters.
+     * Adds the stable v1.33 CRI-O yum repository, installs the `cri-o` package, configures
+     * the systemd cgroup driver, enables the `crio` service, and writes `/etc/crictl.yaml`
+     * so that `crictl` targets the CRI-O socket by default.
+     * @param {string} path - Unused.
+     * @param {Object} options - The default underpost runner options for customizing workflow.
+     * @memberof UnderpostRun
+     */
+    'install-crio': (path, options = DEFAULT_OPTION) => {
+      logger.info('Installing CRI-O...');
+      shellExec(`cat <<EOF | sudo tee /etc/yum.repos.d/cri-o.repo
+[cri-o]
+name=CRI-O
+baseurl=https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.33/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.33/rpm/repodata/repomd.xml.key
+EOF`);
+      shellExec(`sudo dnf -y install cri-o`);
+      // crictl is in the kubernetes repo but excluded by default — install it explicitly
+      shellExec(`sudo yum install -y cri-tools --disableexcludes=kubernetes`);
+      // Ensure CRI-O uses systemd cgroup driver (matches kubelet default)
+      shellExec(
+        `sudo sed -i 's/^#\?cgroup_manager =.*/cgroup_manager = "systemd"/' /etc/crio/crio.conf 2>/dev/null || true`,
+      );
+      shellExec(`sudo systemctl enable --now crio`);
+      logger.info('CRI-O installed and started.');
+      // Write crictl config so all crictl calls default to the CRI-O socket
+      shellExec(`cat <<EOF | sudo tee /etc/crictl.yaml
+runtime-endpoint: unix:///var/run/crio/crio.sock
+image-endpoint: unix:///var/run/crio/crio.sock
+timeout: 10
+debug: false
+EOF`);
+    },
+
+    /**
      * @method dd-container
      * @description Deploys a development or debug container tasks jobs, setting up necessary volumes and images, and running specified commands within the container.
      * @param {string} path - The input value, identifier, or path for the operation (used as the command to run inside the container).
@@ -1448,6 +1486,9 @@ EOF
     /**
      * @method promote
      * @description Switches traffic between blue/green deployments for a specified deployment ID(s) (uses `dd.router` for 'dd', or a specific ID).
+     * When `--tls` is set, rebuilds the proxy manifest with `--cert` so the HTTPProxy includes
+     * TLS config, deletes stale Certificate resources, then reapplies the proxy and secret.yaml
+     * (cert-manager Certificate resources) for each affected deployment.
      * @param {string} path - The input value, identifier, or path for the operation (used as a comma-separated string: `deployId,env,replicas`).
      * @param {Object} options - The default underpost runner options for customizing workflow
      * @memberof UnderpostRun
@@ -1456,11 +1497,34 @@ EOF
       let [inputDeployId, inputEnv, inputReplicas] = path.split(',');
       if (!inputEnv) inputEnv = 'production';
       if (!inputReplicas) inputReplicas = 1;
+      // TODO: normalize: --tls maps to --cert for deploy.js isValidTLSContext compatibility
+      if (options.tls) options.cert = true;
+
+      const applyCerts = (deployId, targetTraffic) => {
+        if (!options.tls) return;
+        // Rebuild proxy.yaml with --cert so the HTTPProxy includes TLS virtualhost config
+        shellExec(
+          `node bin deploy --build-manifest --cert --traffic ${targetTraffic} --replicas ${inputReplicas} --namespace ${options.namespace} ${deployId} ${inputEnv}`,
+        );
+        // Delete stale Certificate resources before reapplying
+        const confServerPath = `./engine-private/conf/${deployId}/conf.server.json`;
+        if (fs.existsSync(confServerPath)) {
+          for (const host of Object.keys(JSON.parse(fs.readFileSync(confServerPath, 'utf8'))))
+            shellExec(`sudo kubectl delete Certificate ${host} -n ${options.namespace} --ignore-not-found`);
+        }
+        shellExec(
+          `sudo kubectl apply -f ./engine-private/conf/${deployId}/build/${inputEnv}/proxy.yaml -n ${options.namespace}`,
+        );
+        const secretPath = `./engine-private/conf/${deployId}/build/${inputEnv}/secret.yaml`;
+        if (fs.existsSync(secretPath)) shellExec(`kubectl apply -f ${secretPath} -n ${options.namespace}`);
+      };
+
       if (inputDeployId === 'dd') {
         for (const deployId of fs.readFileSync(`./engine-private/deploy/dd.router`, 'utf8').split(',')) {
           const currentTraffic = Underpost.deploy.getCurrentTraffic(deployId, { namespace: options.namespace });
           const targetTraffic = currentTraffic === 'blue' ? 'green' : 'blue';
           Underpost.deploy.switchTraffic(deployId, inputEnv, targetTraffic, inputReplicas, options.namespace, options);
+          applyCerts(deployId, targetTraffic);
         }
       } else {
         const currentTraffic = Underpost.deploy.getCurrentTraffic(inputDeployId, { namespace: options.namespace });
@@ -1473,6 +1537,7 @@ EOF
           options.namespace,
           options,
         );
+        applyCerts(inputDeployId, targetTraffic);
       }
     },
     /**
