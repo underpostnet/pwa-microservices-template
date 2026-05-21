@@ -16,17 +16,46 @@
 
 <div align="center">
 
-[![Node.js CI](https://github.com/underpostnet/engine/actions/workflows/docker-image.ci.yml/badge.svg?branch=master)](https://github.com/underpostnet/engine/actions/workflows/docker-image.ci.yml) [![Test](https://github.com/underpostnet/engine/actions/workflows/coverall.ci.yml/badge.svg?branch=master)](https://github.com/underpostnet/engine/actions/workflows/coverall.ci.yml) [![Downloads](https://img.shields.io/npm/dm/underpost.svg)](https://www.npmjs.com/package/underpost) [![Socket Badge](https://socket.dev/api/badge/npm/package/underpost/3.2.9)](https://socket.dev/npm/package/underpost/overview/3.2.9) [![Coverage Status](https://coveralls.io/repos/github/underpostnet/engine/badge.svg?branch=master)](https://coveralls.io/github/underpostnet/engine?branch=master) [![Version](https://img.shields.io/npm/v/underpost.svg)](https://www.npmjs.org/package/underpost) [![License](https://img.shields.io/npm/l/underpost.svg)](https://www.npmjs.com/package/underpost)
+[![Node.js CI](https://github.com/underpostnet/engine/actions/workflows/docker-image.ci.yml/badge.svg?branch=master)](https://github.com/underpostnet/engine/actions/workflows/docker-image.ci.yml) [![Test](https://github.com/underpostnet/engine/actions/workflows/coverall.ci.yml/badge.svg?branch=master)](https://github.com/underpostnet/engine/actions/workflows/coverall.ci.yml) [![Downloads](https://img.shields.io/npm/dm/underpost.svg)](https://www.npmjs.com/package/underpost) [![](https://data.jsdelivr.com/v1/package/npm/underpost/badge)](https://www.jsdelivr.com/package/npm/underpost) [![Socket Badge](https://socket.dev/api/badge/npm/package/underpost/3.2.9)](https://socket.dev/npm/package/underpost/overview/3.2.9) [![Coverage Status](https://coveralls.io/repos/github/underpostnet/engine/badge.svg?branch=master)](https://coveralls.io/github/underpostnet/engine?branch=master) [![Version](https://img.shields.io/npm/v/underpost.svg)](https://www.npmjs.org/package/underpost) [![License](https://img.shields.io/npm/l/underpost.svg)](https://www.npmjs.com/package/underpost)
 
 </div>
-
-<div align="center">
 
 #### Base template for pwa/api-rest projects.
 
-<div style="font-size: 20px;"><em>End2end</em> continuous integration and continuous deployment cloud applications toolchain. Develop, build, deploy, test, monitor, and manage multiple runtime applications on virtual machines or container instances.</div>
+## Underpost Platform
 
-</div>
+**Underpost** is an platform for application delivery, from infrastructure to runtime. The `underpost` npm package is its CLI toolchain surface.
+
+The project covers:
+
+- **Bare metal provisioning** on Rocky Linux 9.
+- **Kubernetes / K3s / kubeadm / LXD** workflows for production, edge, and isolated workloads.
+- **GitHub OSS repository flow** — clone, pull, push, commit, release, and CI integrations as first-class CLI subcommands.
+- **CI/CD orchestration** — GitHub Actions integrations, container builds, multi-environment deployments.
+- **Static build + PWA delivery** — every deploy ships as an installable Progressive Web App with Workbox-based offline support.
+- **Cloudinary-backed static asset flow** for image/asset delivery.
+- **ERP/CRM-style PWA base applications** as the default workload.
+- **Cyberia** — a dedicated MMO extension built on top of the platform, with its own content backend (`engine-cyberia`), authoritative simulation runtime (`cyberia-server`), and presentation runtime (`cyberia-client`).
+
+<a target="_top" href="Https://github.com/underpostnet/engine/blob/master/src/client/public/cyberia-docs/UNDERPOST-PLATFORM.md">See Detailed platform doc.</a>
+
+### Architectural roles (Cyberia stack)
+
+When the platform is hosting the Cyberia MMO extension, three runtime processes participate. Their boundaries are non-overlapping and their startup order is **strictly sequential** — not parallel.
+
+| Process                              | Role                                                                                                                                                                       |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **engine-cyberia** (Node.js)         | Content authority: maps, object layers, atlas/asset metadata, world configuration, persistence, validation, gRPC + REST data services, editor backend, asset distribution. |
+| **cyberia-server** (Go)              | Authoritative simulation runtime: tick advancement, AOI replication, input command processing, snapshot generation.                                                        |
+| **cyberia-client** (C → WebAssembly) | Presentation runtime: rendering, UI, input capture, prediction, reconciliation, interpolation, client-side presentation defaults.                                          |
+
+**Startup order — sequential, in order:**
+
+1. **Persistent backend / sidecar data layer** — databases, content backend (engine-cyberia), static asset backend, config and data services.
+2. **cyberia-server** — authoritative Go simulation runtime; dials engine-cyberia gRPC at boot to load world configuration.
+3. **cyberia-client** — rendering, UI, prediction, interpolation, reconciliation; connects to cyberia-server via WebSocket.
+
+<a target="_top" href="https://github.com/underpostnet/engine-cyberia/blob/master/src/client/public/cyberia-docs/ARCHITECTURE.md">See Detailed architecture.</a>
 
 ## Create a new project
 
@@ -58,49 +87,52 @@ Run dev client server
 npm run dev
 ```
 
-<a target="_top" href="https://www.nexodev.org/docs?cid=src">See Docs here.</a>
+<a target="_top" href="https://www.nexodev.org/docs?cid=src">See Docs.</a>
 
 <!-- cli-index-start -->
+
 ## underpost ci/cd cli v3.2.9
 
 ### Usage: `underpost [options] [command]`
-  ```
- Options:
-  -V, --version                                              output the version number
-  -h, --help                                                 display help for command
+
+```
+Options:
+-V, --version                                              output the version number
+-h, --help                                                 display help for command
 
 Commands:
-  new [options] [app-name]                                   Initializes a new Underpost project, service, or configuration.
-  client [options] [deploy-id] [sub-conf] [host] [path]      Builds client assets, single replicas, and/or syncs environment ports.
-  start [options] <deploy-id> [env]                          Initiates application servers, build pipelines, or other defined services based on the deployment ID.
-  clone [options] <uri>                                      Clones a specified GitHub repository into the current directory.
-  pull [options] <path> <uri>                                Pulls the latest changes from a specified GitHub repository.
-  cmt [options] [path] [commit-type] [module-tag] [message]  Manages commits to a GitHub repository, supporting various commit types and options.
-  push [options] <path> <uri>                                Pushes committed changes from a local repository to a remote GitHub repository.
-  env [deploy-id] [env] [subConf]                            Sets environment variables and configurations related to a specific deployment ID.
-  static [options]                                           Manages static build of page, bundles, and documentation with comprehensive customization options.
-  config [options] <operator> [key] [value]                  Manages Underpost configurations using various operators.
-  root                                                       Displays the root path of the npm installation.
-  ip [options] [ips]                                         Displays the current public machine IP addresses.
-  cluster [options] [pod-name]                               Manages Kubernetes clusters, defaulting to Kind cluster initialization.
-  deploy [options] [deploy-list] [env]                       Manages application deployments, defaulting to deploying development pods.
-  secret [options] <platform>                                Manages secrets for various platforms.
-  image [options]                                            Manages Docker images, including building, saving, and loading into Kubernetes clusters.
-  install                                                    Quickly imports Underpost npm dependencies by copying them.
-  db [options] [deploy-list]                                 Manages database operations with support for MariaDB and MongoDB, including import/export, multi-pod targeting, and Git integration.
-  metadata [options] [deploy-id] [host] [path]               Manages cluster metadata operations, including import and export.
-  cron [options] [deploy-list] [job-list]                    Manages cron jobs: execute jobs directly or generate and apply K8s CronJob manifests.
-  fs [options] [path]                                        Manages file storage, defaulting to file upload operations.
-  test [options] [deploy-list]                               Manages and runs tests, defaulting to the current Underpost default test suite.
-  monitor [options] <deploy-id> [env]                        Manages health server monitoring for specified deployments.
-  ssh [options]                                              Manages SSH credentials and sessions for remote access to cluster nodes or services.
-  run [options] <runner-id> [path]                           Runs specified scripts using various runners.
-  lxd [options]                                              Manages LXD virtual machines as K3s nodes (control plane or workers).
-  baremetal [options] [workflow-id]                          Manages baremetal server operations, including installation, database setup, commissioning, and user management.
-  release [options] [version]                                Release orchestrator for building new versions and deploying releases of the Underpost CLI.
-  help [command]                                             display help for command
- 
+new [options] [app-name]                                   Initializes a new Underpost project, service, or configuration.
+client [options] [deploy-id] [sub-conf] [host] [path]      Builds client assets, single replicas, and/or syncs environment ports.
+start [options] <deploy-id> [env]                          Initiates application servers, build pipelines, or other defined services based on the deployment ID.
+clone [options] <uri>                                      Clones a specified GitHub repository into the current directory.
+pull [options] <path> <uri>                                Pulls the latest changes from a specified GitHub repository.
+cmt [options] [path] [commit-type] [module-tag] [message]  Manages commits to a GitHub repository, supporting various commit types and options.
+push [options] <path> <uri>                                Pushes committed changes from a local repository to a remote GitHub repository.
+env [deploy-id] [env] [subConf]                            Sets environment variables and configurations related to a specific deployment ID.
+static [options]                                           Manages static build of page, bundles, and documentation with comprehensive customization options.
+config [options] <operator> [key] [value]                  Manages Underpost configurations using various operators.
+root                                                       Displays the root path of the npm installation.
+ip [options] [ips]                                         Displays the current public machine IP addresses.
+cluster [options] [pod-name]                               Manages Kubernetes clusters, defaulting to Kind cluster initialization.
+deploy [options] [deploy-list] [env]                       Manages application deployments, defaulting to deploying development pods.
+secret [options] <platform>                                Manages secrets for various platforms.
+image [options]                                            Manages Docker images, including building, saving, and loading into Kubernetes clusters.
+install                                                    Quickly imports Underpost npm dependencies by copying them.
+db [options] [deploy-list]                                 Manages database operations with support for MariaDB and MongoDB, including import/export, multi-pod targeting, and Git integration.
+metadata [options] [deploy-id] [host] [path]               Manages cluster metadata operations, including import and export.
+cron [options] [deploy-list] [job-list]                    Manages cron jobs: execute jobs directly or generate and apply K8s CronJob manifests.
+fs [options] [path]                                        Manages file storage, defaulting to file upload operations.
+test [options] [deploy-list]                               Manages and runs tests, defaulting to the current Underpost default test suite.
+monitor [options] <deploy-id> [env]                        Manages health server monitoring for specified deployments.
+ssh [options]                                              Manages SSH credentials and sessions for remote access to cluster nodes or services.
+run [options] <runner-id> [path]                           Runs specified scripts using various runners.
+lxd [options]                                              Manages LXD virtual machines as K3s nodes (control plane or workers).
+baremetal [options] [workflow-id]                          Manages baremetal server operations, including installation, database setup, commissioning, and user management.
+release [options] [version]                                Release orchestrator for building new versions and deploying releases of the Underpost CLI.
+help [command]                                             display help for command
+
 ```
+
 <!-- cli-index-end -->
 
-<a target="_top" href="https://github.com/underpostnet/pwa-microservices-template/blob/master/CLI-HELP.md">See CLI Docs here.</a>
+<a target="_top" href="https://github.com/underpostnet/pwa-microservices-template/blob/master/CLI-HELP.md">See CLI Docs.</a>

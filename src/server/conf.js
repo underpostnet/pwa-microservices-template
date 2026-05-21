@@ -1250,14 +1250,8 @@ const validateTemplatePath = (absolutePath = '') => {
     return false;
   }
   if (
-    absolutePath.match('src/client/ssr/offline') &&
-    !confSsr.offline.find((p) => absolutePath.match(`src/client/ssr/offline/${p.client}.js`))
-  ) {
-    return false;
-  }
-  if (
-    absolutePath.match('src/client/ssr/pages') &&
-    !confSsr.pages.find((p) => absolutePath.match(`src/client/ssr/pages/${p.client}.js`))
+    absolutePath.match('src/client/ssr/views') &&
+    !(confSsr.views || []).find((p) => absolutePath.match(`src/client/ssr/views/${p.client}.js`))
   ) {
     return false;
   }
@@ -1377,8 +1371,7 @@ const getPathsSSR = (conf) => {
   for (const o of conf.head) paths.push(`src/client/ssr/head/${o}.js`);
   for (const o of conf.body) paths.push(`src/client/ssr/body/${o}.js`);
   for (const o of Object.keys(conf.mailer)) paths.push(`src/client/ssr/mailer/${conf.mailer[o]}.js`);
-  for (const o of conf.offline) paths.push(`src/client/ssr/mailer/${o.client}.js`);
-  for (const o of conf.pages) paths.push(`src/client/ssr/pages/${o.client}.js`);
+  for (const o of conf.views || []) paths.push(`src/client/ssr/views/${o.client}.js`);
   return paths;
 };
 
