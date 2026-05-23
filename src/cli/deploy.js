@@ -1202,32 +1202,31 @@ ${renderHosts}`,
           logger.error(
             `${iteratorTag} | Deployment check ready status timeout. Max iterations reached: ${maxIterations}`,
           );
-          // Surface a non-zero exit so CI workflows (GitHub Actions) fail
-          // deterministically when the deployment never goes Ready. Without
-          // this the monitor returns ready:false silently and the workflow
-          // step shows green while the rollout is broken.
           throw new Error(
             `monitorReadyRunner timeout: ${deploymentId} did not become Ready within ${maxIterations}*${checkStatusIterationMsDelay}ms`,
           );
         }
         result = await Underpost.deploy.checkDeploymentReadyStatus(deployId, env, targetTraffic, ignorePods, namespace);
-        if (result.ready === true) {
-          readyOk++;
-          logger.info(`${iteratorTag} | Deployment ready. Verification number: ${readyOk}`);
 
-          // Orchestrator-side status stamp. The runtime no longer stamps
-          // its own `running` status (READY_CMD was removed); instead the
-          // orchestrator observes the K8S Ready condition and writes the
-          // canonical marker once stably ready. Wrapped in try/catch so a
-          // missing underpost-config secret never blocks the rollout.
-          if (readyOk === minReadyOk) {
-            try {
-              Underpost.env.set(`container-status`, `${deployId}-${env}-running-deployment`);
-              logger.info(`${iteratorTag} | container-status → ${deployId}-${env}-running-deployment`);
-            } catch (err) {
-              logger.warn(`${iteratorTag} | container-status stamp failed (non-fatal):`, err?.message || err);
-            }
+        // Read current container-status from the pod to stream progress
+        let containerStatusValue = '(no pod)';
+        let podName = '(unknown)';
+        if (result.readyPods.length > 0) {
+          podName = result.readyPods[0].NAME;
+          try {
+            const raw = shellExec(
+              `sudo kubectl exec ${podName} -n ${namespace} -- sh -c 'env | grep -E "^container-status=" | cut -d= -f2' 2>/dev/null`,
+              { silent: true, disableLog: true, stdout: true, silentOnError: true },
+            );
+            containerStatusValue = raw ? raw.toString().trim() : '(not set)';
+          } catch (_) {
+            containerStatusValue = '(unreachable)';
           }
+        }
+
+        if (result.ready === true && containerStatusValue === `${deployId}-${env}-running-deployment`) {
+          readyOk++;
+          logger.info(`${iteratorTag} | Deployment ready. Verification number: ${readyOk} | container-status: ${containerStatusValue}`);
 
           for (const pod of result.readyPods) {
             const { NAME } = pod;
@@ -1237,17 +1236,20 @@ ${renderHosts}`,
               NAME[NAME.match('green') ? 'bgGreen' : 'bgBlue'].bold.black,
               '| Status:',
               lastMsg[NAME].bold.magenta,
+              `| container-status: ${containerStatusValue}`.bold.cyan,
             );
           }
-        }
+        } else {
+          // Reset readyOk if either K8S Ready or container-status does not match
+          if (readyOk > 0) {
+            readyOk = 0;
+            logger.info(`${iteratorTag} | Ready check reset — waiting for container-status: ${containerStatusValue}`);
+          }
 
-        {
-          // not-ready summary. `pod.out` is the JSON we stamped in
-          // checkDeploymentReadyStatus: { k8sReady, condition }. The
-          // Ready condition's `reason` / `message` fields (set by kubelet)
-          // are the canonical explanation for why a pod is not Ready —
-          // PodScheduled, ContainersNotReady, CrashLoopBackOff, etc.
+          // Stream container-status progress on not-ready pods
           for (const pod of result.notReadyPods) {
+            // Try to get container-status even from not-ready pods (if process is running)
+            let podContainerStatus = containerStatusValue !== '(no pod)' ? containerStatusValue : '(not set)';
             const { NAME, out } = pod;
             let parsed = null;
             try {
@@ -1267,6 +1269,7 @@ ${renderHosts}`,
               NAME[NAME.match('green') ? 'bgGreen' : 'bgBlue'].bold.black,
               '| Status:',
               lastMsg[NAME].bold.magenta,
+              `| container-status: ${podContainerStatus}`.bold.cyan,
             );
           }
         }
