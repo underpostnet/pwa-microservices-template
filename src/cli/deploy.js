@@ -1171,9 +1171,10 @@ ${renderHosts}`,
       env === 'production' &&
       options.cert === true &&
       (!options.certHosts || options.certHosts.split(',').includes(host)),
-
     /**
      * Monitors the ready status of a deployment.
+     * Waits until ALL pods are K8s-ready AND ALL pods have container-status = ready-deployment.
+     *
      * @param {string} deployId - Deployment ID for which the ready status is being monitored.
      * @param {string} env - Environment for which the ready status is being monitored.
      * @param {string} targetTraffic - Target traffic status for the deployment.
@@ -1183,106 +1184,95 @@ ${renderHosts}`,
      * @memberof UnderpostDeploy
      */
     async monitorReadyRunner(deployId, env, targetTraffic, ignorePods = [], namespace = 'default') {
-      let checkStatusIteration = 0;
-      const checkStatusIterationMsDelay = 1000;
+      const delayMs = 1000;
       const maxIterations = 3000;
       const deploymentId = `${deployId}-${env}-${targetTraffic}`;
-      const iteratorTag = `[${deploymentId}]`;
-      logger.info('Deployment init', { deployId, env, targetTraffic, checkStatusIterationMsDelay, namespace });
-      const minReadyOk = 3;
-      let readyOk = 0;
-      let result = {
-        ready: false,
-        notReadyPods: [],
-        readyPods: [],
+      const expectedContainerStatus = `${deployId}-${env}-ready-deployment`;
+      const tag = `[${deploymentId}]`;
+      const containerStatusDefault = 'waiting for status';
+
+      logger.info('Deployment init', { deployId, env, targetTraffic, namespace });
+
+      // Per-pod cache of last-known container-status (persists across retries)
+      const podStatusCache = new Map();
+
+      const readContainerStatus = (podName) => {
+        try {
+          const raw = shellExec(
+            `sudo kubectl exec ${podName} -n ${namespace} -- sh -c 'underpost config get container-status --plain'`,
+            { silent: true, disableLog: true, stdout: true, silentOnError: true },
+          );
+          const val = raw ? raw.toString().trim() : '';
+          return val || containerStatusDefault;
+        } catch (_) {
+          // exec failed (e.g. pod not yet running) — preserve last known value
+          return podStatusCache.get(podName) || containerStatusDefault;
+        }
       };
-      let lastMsg = {};
-      while (readyOk < minReadyOk) {
-        if (checkStatusIteration >= maxIterations) {
-          logger.error(
-            `${iteratorTag} | Deployment check ready status timeout. Max iterations reached: ${maxIterations}`,
-          );
-          throw new Error(
-            `monitorReadyRunner timeout: ${deploymentId} did not become Ready within ${maxIterations}*${checkStatusIterationMsDelay}ms`,
-          );
-        }
-        result = await Underpost.deploy.checkDeploymentReadyStatus(deployId, env, targetTraffic, ignorePods, namespace);
 
-        // Read current container-status from the pod to stream progress
-        let containerStatusValue = '(no pod)';
-        let podName = '(unknown)';
-        if (result.readyPods.length > 0) {
-          podName = result.readyPods[0].NAME;
-          try {
-            const raw = shellExec(
-              `sudo kubectl exec ${podName} -n ${namespace} -- sh -c 'underpost config get container-status --plain'`,
-              { silent: true, disableLog: true, stdout: true, silentOnError: true },
-            );
-            containerStatusValue = raw ? raw.toString().trim() : '(not set)';
-          } catch (_) {
-            containerStatusValue = '(unreachable)';
+      const getPodMessage = (pod) => {
+        try {
+          const parsed = pod.out ? JSON.parse(pod.out) : null;
+          const cond = parsed?.condition;
+          if (cond?.reason || cond?.message) {
+            return [cond.reason, cond.message].filter(Boolean).join(' — ');
           }
-        }
+        } catch (_) { }
+        return containerStatusDefault;
+      };
 
-        if (result.ready === true && containerStatusValue === `${deployId}-${env}-running-deployment`) {
-          readyOk++;
-          logger.info(`${iteratorTag} | Deployment ready. Verification number: ${readyOk} | container-status: ${containerStatusValue}`);
-
-          for (const pod of result.readyPods) {
-            const { NAME } = pod;
-            lastMsg[NAME] = 'Deployment ready';
-            console.log(
-              'Target pod:',
-              NAME[NAME.match('green') ? 'bgGreen' : 'bgBlue'].bold.black,
-              '| Status:',
-              lastMsg[NAME].bold.magenta,
-              `| container-status: ${containerStatusValue}`.bold.cyan,
-            );
-          }
-        } else {
-          // Reset readyOk if either K8S Ready or container-status does not match
-          if (readyOk > 0) {
-            readyOk = 0;
-            logger.info(`${iteratorTag} | Ready check reset — waiting for container-status: ${containerStatusValue}`);
-          }
-
-          // Stream container-status progress on not-ready pods
-          for (const pod of result.notReadyPods) {
-            // Try to get container-status even from not-ready pods (if process is running)
-            let podContainerStatus = containerStatusValue !== '(no pod)' ? containerStatusValue : '(not set)';
-            const { NAME, out } = pod;
-            let parsed = null;
-            try {
-              parsed = out ? JSON.parse(out) : null;
-            } catch (_) {
-              parsed = null;
-            }
-            const cond = parsed?.condition;
-            if (cond && (cond.reason || cond.message)) {
-              lastMsg[NAME] = `Not ready: ${cond.reason || ''}${cond.message ? ` — ${cond.message}` : ''}`.trim();
-            } else if (!lastMsg[NAME]) {
-              lastMsg[NAME] = 'Waiting for K8S Ready condition';
-            }
-
-            console.log(
-              'Target pod:',
-              NAME[NAME.match('green') ? 'bgGreen' : 'bgBlue'].bold.black,
-              '| Status:',
-              lastMsg[NAME].bold.magenta,
-              `| container-status: ${podContainerStatus}`.bold.cyan,
-            );
-          }
-        }
-        await timer(checkStatusIterationMsDelay);
-        checkStatusIteration++;
-        logger.info(
-          `${iteratorTag} | Deployment in progress... | Delay number monitor iterations: ${checkStatusIteration}`,
+      for (let i = 0; i < maxIterations; i++) {
+        const result = await Underpost.deploy.checkDeploymentReadyStatus(
+          deployId, env, targetTraffic, ignorePods, namespace,
         );
+
+        const allPods = [...result.readyPods, ...result.notReadyPods];
+
+        // Update cache with latest status for each pod
+        for (const pod of allPods) {
+          if (!pod?.NAME) continue;
+          podStatusCache.set(pod.NAME, readContainerStatus(pod.NAME));
+        }
+
+        const allPodsK8sReady = result.notReadyPods.length === 0;
+        const allPodsHaveExpectedStatus =
+          allPods.length > 0 &&
+          allPods.every((pod) => podStatusCache.get(pod.NAME) === expectedContainerStatus);
+
+        // Print snapshot for every pod
+        for (const pod of allPods) {
+          const status = podStatusCache.get(pod.NAME) || containerStatusDefault;
+          const k8sStatus = result.readyPods.some((p) => p.NAME === pod.NAME)
+            ? 'ok'
+            : getPodMessage(pod);
+
+          console.log(
+            'Target pod:',
+            pod.NAME[pod.NAME.includes('green') ? 'bgGreen' : 'bgBlue'].bold.black,
+            '| Status:',
+            k8sStatus.bold.magenta,
+            '| container-status:',
+            status.bold.cyan,
+          );
+        }
+
+        // Only finish when ALL pods are K8S-ready AND have expected container-status
+        if (allPodsK8sReady && allPodsHaveExpectedStatus) {
+          logger.info(`${tag} | All pods ready-deployment`);
+          return result;
+        }
+
+        await timer(delayMs);
+
+        if ((i + 1) % 10 === 0) {
+          logger.info(`${tag} | In progress... iteration ${i + 1}`);
+        }
       }
-      logger.info(
-        `${iteratorTag} | Deployment ready. | Total delay number monitor iterations: ${checkStatusIteration}`,
+
+      logger.error(`${tag} | Deployment timeout after ${maxIterations} iterations`);
+      throw new Error(
+        `monitorReadyRunner timeout: ${deploymentId} did not become Ready within ${maxIterations}*${delayMs}ms`,
       );
-      return result;
     },
 
     /**
