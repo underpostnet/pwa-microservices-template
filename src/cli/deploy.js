@@ -1215,7 +1215,7 @@ ${renderHosts}`,
           podName = result.readyPods[0].NAME;
           try {
             const raw = shellExec(
-              `sudo kubectl exec ${podName} -n ${namespace} -- sh -c 'env | grep -E "^container-status=" | cut -d= -f2' 2>/dev/null`,
+              `sudo kubectl exec ${podName} -n ${namespace} -- sh -c 'underpost config get container-status --plain'`,
               { silent: true, disableLog: true, stdout: true, silentOnError: true },
             );
             containerStatusValue = raw ? raw.toString().trim() : '(not set)';
