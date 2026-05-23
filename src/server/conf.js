@@ -1208,7 +1208,7 @@ const validateTemplatePath = (absolutePath = '') => {
   const confSsr = DefaultConf.ssr[ssr];
   const clients = DefaultConf.client.default.services;
 
-  if (absolutePath.match('src/api') && !confServer.apis.find((p) => absolutePath.match(`src/api/${p}/`))) {
+  if (absolutePath.match('src/api') && !absolutePath.match('src/api/types.js') && !confServer.apis.find((p) => absolutePath.match(`src/api/${p}/`))) {
     return false;
   }
   if (absolutePath.match('conf.dd-') && absolutePath.match('.js')) return false;

@@ -120,6 +120,7 @@ class UnderpostCluster {
         const namespaceExists = shellExec(`kubectl get namespace ${options.nsUse} --ignore-not-found -o name`, {
           stdout: true,
           silent: true,
+          silentOnError: true,
         }).trim();
 
         if (!namespaceExists) {
@@ -211,12 +212,12 @@ class UnderpostCluster {
           // Kind cluster initialization (if not using kubeadm or k3s)
           logger.info('Initializing Kind cluster...');
           shellExec(
-            `cd ${underpostRoot}/manifests && kind create cluster --config kind-config${
-              options.dev ? '-dev' : ''
+            `cd ${underpostRoot}/manifests && kind create cluster --config kind-config${options.dev ? '-dev' : ''
             }.yaml`,
           );
           Underpost.cluster.chown('kind'); // Pass 'kind' to chown
         }
+        Underpost.cluster.natSetup({ underpostRoot });
       }
 
       // --- Optional Component Deployments (Databases, Ingress, Cert-Manager) ---
@@ -419,7 +420,8 @@ EOF
      * This method ensures proper SELinux, Docker, Containerd, and Sysctl settings
      * are applied for a healthy Kubernetes environment. It explicitly avoids
      * iptables flushing commands to prevent conflicts with Kubernetes' own network management.
-     * @param {string} underpostRoot - The root directory of the underpost project.
+     * @param {object} [options] - Configuration options for host setup.
+     * @param {string} [options.underpostRoot] - The root path of the underpost project, used for locating scripts if needed.
      * @memberof UnderpostCluster
      */
     config(options = { underpostRoot: '.' }) {
@@ -451,6 +453,27 @@ EOF
       // Reload systemd daemon to pick up new unit files/changes
       shellExec(`sudo systemctl daemon-reload`);
 
+      // Increase inotify limits
+      shellExec(`sudo sysctl -w fs.inotify.max_user_watches=2099999999`);
+      shellExec(`sudo sysctl -w fs.inotify.max_user_instances=2099999999`);
+      shellExec(`sudo sysctl -w fs.inotify.max_queued_events=2099999999`);
+
+    },
+
+    /**
+     * @method natSetup
+     * @description Configures NAT and iptables settings for Kubernetes networking.
+     * This method enables necessary sysctl settings for bridge networking and applies iptables rules
+     * required for Kubernetes cluster communication. It is designed to work with kubeadm and k3s clusters, ensuring that
+     * traffic through Linux bridges is processed by iptables, which is crucial for CNI plugins to function correctly.
+     * The method also applies NAT iptables rules and configures firewalld for Kubernetes, which is required for multi-machine kubeadm inter-node communication.
+     * Note: This method should be called after the cluster is initialized and before deploying any workloads that require network communication.
+     * @param {object} [options] - Configuration options for NAT setup.
+     * @param {string} [options.underpostRoot] - The root path of the underpost project, used to locate the nat-iptables.sh script.
+     * @memberof UnderpostCluster
+     */
+    natSetup(options = { underpostRoot: '.' }) {
+      const { underpostRoot } = options;
       // Enable bridge-nf-call-iptables for Kubernetes networking
       // This ensures traffic through Linux bridges is processed by iptables (crucial for CNI)
       for (const iptableConfPath of [
@@ -465,12 +488,6 @@ net.bridge.bridge-nf-call-arptables = 1
 net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`,
           { silent: true },
         );
-
-      // Increase inotify limits
-      shellExec(`sudo sysctl -w fs.inotify.max_user_watches=2099999999`);
-      shellExec(`sudo sysctl -w fs.inotify.max_user_instances=2099999999`);
-      shellExec(`sudo sysctl -w fs.inotify.max_queued_events=2099999999`);
-
       // shellExec(`sudo sysctl --system`); // Apply sysctl changes immediately
       // Apply NAT iptables rules and configure firewalld for Kubernetes.
       // nat-iptables.sh enables firewalld and opens all required ports; do NOT stop it
@@ -595,7 +612,8 @@ net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`,
         shellExec('sudo systemctl stop podman');
         // Lazy-unmount all kubelet pod mounts to avoid 'Device or resource busy' on rm.
         shellExec(
-          `sudo sh -c 'findmnt --raw --noheadings -o TARGET | grep /var/lib/kubelet | sort -r | xargs -r umount -l' 2>/dev/null || true`,
+          `sudo sh -c 'findmnt --raw --noheadings -o TARGET | grep /var/lib/kubelet | sort -r | xargs -r umount -l'`,
+          { silentOnError: true },
         );
 
         // Phase 3: Execute official uninstallation commands (type-specific)
@@ -607,11 +625,11 @@ net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`,
           // Kill control plane processes that hold ports (6443, 10257, 10259, 2379, 2380)
           // so the next `kubeadm init` does not fail with [ERROR Port-xxxx].
           logger.info('  -> Stopping and killing control plane containers and processes...');
-          shellExec('sudo crictl rm -a -f 2>/dev/null || true');
-          shellExec('sudo crictl rmp -a -f 2>/dev/null || true');
-          shellExec('sudo systemctl stop etcd 2>/dev/null || true');
+          shellExec('sudo crictl rm -a -f', { silentOnError: true });
+          shellExec('sudo crictl rmp -a -f', { silentOnError: true });
+          shellExec('sudo systemctl stop etcd', { silentOnError: true });
           for (const port of [6443, 10259, 10257, 2379, 2380])
-            shellExec(`sudo fuser -k ${port}/tcp 2>/dev/null || true`);
+            shellExec(`sudo fuser -k ${port}/tcp`, { silentOnError: true });
           logger.info('  -> Executing kubeadm reset...');
           shellExec('sudo kubeadm reset --force');
         } else if (clusterType === 'k3s') {
@@ -620,7 +638,13 @@ net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`,
         } else {
           // Default: kind
           logger.info('  -> Deleting Kind clusters...');
-          shellExec('kind get clusters | xargs -r -t -n1 kind delete cluster');
+          shellExec(`clusters=$(kind get clusters)
+if [ -n "$clusters" ]; then
+  for c in $clusters; do
+    echo "Deleting cluster: $c"
+    kind delete cluster --name "$c"
+  done
+fi`);
         }
 
         // Phase 4: File system cleanup
@@ -630,7 +654,8 @@ net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`,
         shellExec('sudo rm -rf /etc/cni/net.d/*');
         // Second-pass lazy umount before rm to clear any remaining busy mounts.
         shellExec(
-          `sudo sh -c 'findmnt --raw --noheadings -o TARGET | grep /var/lib/kubelet | sort -r | xargs -r umount -l' 2>/dev/null || true`,
+          `sudo sh -c 'findmnt --raw --noheadings -o TARGET | grep /var/lib/kubelet | sort -r | xargs -r umount -l'`,
+          { silentOnError: true },
         );
         shellExec('sudo rm -rf /var/lib/kubelet/*');
         shellExec('sudo rm -rf /var/lib/etcd');
@@ -646,14 +671,14 @@ net.ipv4.ip_forward = 1' | sudo tee ${iptableConfPath}`,
         // Remove iptables rules and CNI network interfaces.
         shellExec('sudo iptables -F');
         shellExec('sudo iptables -t nat -F');
-        shellExec('sudo ip link del cni0 2>/dev/null || true');
-        shellExec('sudo ip link del flannel.1 2>/dev/null || true');
-        shellExec('sudo ip link del vxlan.calico 2>/dev/null || true');
-        shellExec('sudo ip link del tunl0 2>/dev/null || true');
+        shellExec('sudo ip link del cni0', { silentOnError: true });
+        shellExec('sudo ip link del flannel.1', { silentOnError: true });
+        shellExec('sudo ip link del vxlan.calico', { silentOnError: true });
+        shellExec('sudo ip link del tunl0', { silentOnError: true });
 
         logger.info('Phase 6/7: Clean up images');
-        shellExec('sudo podman rmi --all --force 2>/dev/null || true');
-        shellExec('sudo crictl rmi --prune 2>/dev/null || true');
+        shellExec('sudo podman rmi --all --force', { silentOnError: true });
+        shellExec('sudo crictl rmi --prune', { silentOnError: true });
 
         // Phase 6: Reload daemon and finalize
         logger.info('Phase 7/7: Reloading the system daemon and finalizing...');
@@ -785,8 +810,8 @@ EOF`);
 
       // Remove CRI-O
       console.log('Removing CRI-O...');
-      shellExec(`sudo systemctl stop crio 2>/dev/null || true`);
-      shellExec(`sudo systemctl disable crio 2>/dev/null || true`);
+      shellExec('sudo systemctl stop crio', { silentOnError: true });
+      shellExec('sudo systemctl disable crio', { silentOnError: true });
       shellExec(`sudo dnf -y remove cri-o`);
       shellExec(`sudo rm -f /etc/yum.repos.d/cri-o.repo`);
       shellExec(`sudo rm -f /etc/crictl.yaml`);
