@@ -8,6 +8,7 @@
 import { IoServer } from '../IoServer.js';
 import { DefaultWsConnectionHandler } from './default.ws.connection.js';
 import { DefaultWsMainChannel } from './channels/default.ws.main.js';
+import { resolveHostKeyContext } from '../../server/conf.js';
 
 /**
  * @class DefaultWsServer
@@ -24,11 +25,11 @@ class DefaultWsServer {
    */
   static create(httpServer, options) {
     const { host, path } = options;
-    const wsManagementId = `${host}${path}`;
+    const hostKeyContext = resolveHostKeyContext({ host, path });
 
-    DefaultWsMainChannel.init(wsManagementId);
+    DefaultWsMainChannel.init(hostKeyContext);
 
-    return IoServer.create(httpServer, options, (socket) => DefaultWsConnectionHandler.handle(socket, wsManagementId));
+    return IoServer.create(httpServer, options, (socket) => DefaultWsConnectionHandler.handle(socket, hostKeyContext));
   }
 }
 

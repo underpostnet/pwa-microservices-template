@@ -1187,7 +1187,7 @@ ${renderHosts}`,
       const delayMs = 1000;
       const maxIterations = 3000;
       const deploymentId = `${deployId}-${env}-${targetTraffic}`;
-      const expectedContainerStatus = `${deployId}-${env}-ready-deployment`;
+      const expectedContainerStatus = `${deployId}-${env}-running-deployment`;
       const tag = `[${deploymentId}]`;
       const containerStatusDefault = 'waiting for status';
 
@@ -1203,7 +1203,7 @@ ${renderHosts}`,
             { silent: true, disableLog: true, stdout: true, silentOnError: true },
           );
           const val = raw ? raw.toString().trim() : '';
-          return val || containerStatusDefault;
+          return val && val !== 'undefined' ? val : containerStatusDefault;
         } catch (_) {
           // exec failed (e.g. pod not yet running) — preserve last known value
           return podStatusCache.get(podName) || containerStatusDefault;
@@ -1231,7 +1231,10 @@ ${renderHosts}`,
         // Update cache with latest status for each pod
         for (const pod of allPods) {
           if (!pod?.NAME) continue;
-          podStatusCache.set(pod.NAME, readContainerStatus(pod.NAME));
+          const status = readContainerStatus(pod.NAME);
+          if (status === 'error')
+            throw new Error(`Pod ${pod.NAME} has error status`);
+          podStatusCache.set(pod.NAME, status);
         }
 
         const allPodsK8sReady = result.notReadyPods.length === 0;
