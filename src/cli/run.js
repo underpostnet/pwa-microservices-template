@@ -10,6 +10,7 @@ import {
   awaitDeployMonitor,
   buildKindPorts,
   Config,
+  cronDeployIdResolve,
   getNpmRootPath,
   isDeployRunnerContext,
   loadConfServerJson,
@@ -217,7 +218,7 @@ class UnderpostRun {
         shellExec(`${baseCommand} cluster${options.dev ? ' --dev' : ''}`);
 
         shellExec(
-          `${baseCommand} cluster${options.dev ? ' --dev' : ''} --mongodb --mongo-db-host ${mongoHosts.join(
+          `${baseCommand} cluster${options.dev ? ' --dev' : ''} --mongodb4 --mongo-db-host ${mongoHosts.join(
             ',',
           )} --pull-image`,
         );
@@ -228,12 +229,16 @@ class UnderpostRun {
         // Detect MongoDB primary pod using method
         let primaryMongoHost = 'mongodb-0.mongodb-service';
         try {
-          const primaryPodName = MongoBootstrap.getPrimaryPodName({
-            namespace: options.namespace,
-            podName: 'mongodb-0',
-          });
-          // shellExec(`${baseCommand} deploy --expose --disable-update-underpost-config mongo`, { async: true });
-          shellExec(`kubectl port-forward -n ${options.namespace} pod/${primaryPodName} 27017:27017`, { async: true });
+          const primaryPodName =
+            MongoBootstrap.getPrimaryPodName({
+              namespace: options.namespace,
+              podName: 'mongodb-0',
+              disableAuth: options.dev,
+            }) || 'mongodb-0';
+          shellExec(
+            `${baseCommand} deploy --expose --namespace ${options.namespace} --disable-update-underpost-config mongo`,
+            { async: true },
+          );
           shellExec(
             `${baseCommand} deploy --expose --namespace ${options.namespace} --disable-update-underpost-config valkey`,
             { async: true },
@@ -2308,9 +2313,10 @@ EOF`);
      * @memberof UnderpostRun
      */
     secret: (path, options = DEFAULT_OPTION) => {
-      const secretPath = path ? path : `/home/dd/engine/engine-private/conf/dd-cron/.env.production`;
-      const command = `${options.dev ? 'node bin' : 'underpost'} secret underpost --create-from-file ${secretPath}`;
-      shellExec(command);
+      const cronDeployId = cronDeployIdResolve() || 'dd-cron';
+      Underpost.secret.underpost.createFromEnvFile(
+        `/home/dd/engine/engine-private/conf/${cronDeployId}/.env.${options.dev ? 'development' : 'production'}`,
+      );
     },
     /**
      * @method underpost-config
@@ -2620,7 +2626,7 @@ EOF`;
     },
 
     /**
-     * @method setup-shared-dir
+     * @method shared-dir
      * @description Run once for initial shared-directory setup. Creates the group, adds the user,
      * creates the directory, sets ownership, applies the SGID bit, and configures default ACLs so
      * all future files inside the directory automatically inherit group write permissions.
@@ -2631,7 +2637,7 @@ EOF`;
      *   Key fields: `options.user` (default `'admin'`), `options.group` (default `'engine-dev'`).
      * @memberof UnderpostRun
      */
-    'setup-shared-dir': (path = '/home/dd/engine', options = DEFAULT_OPTION) => {
+    'shared-dir': (path = '/home/dd/engine', options = DEFAULT_OPTION) => {
       const dir = path || '/home/dd/engine';
       const user = options.user || 'admin';
       const group = options.group || 'engine-dev';
@@ -2647,30 +2653,6 @@ EOF`;
       shellExec(`sudo setfacl -m g:${group}:rwx ${dir}`);
 
       logger.info(`[setup-shared-dir] Shared directory setup complete: ${dir}`);
-    },
-
-    /**
-     * @method reload-shared-dir
-     * @description Re-applies recursive permissions and ACLs to repair permission drift on an
-     * already-configured shared directory. Does **not** recreate the group, add users, or modify
-     * ownership. Use this after VS Code permission errors or when existing files lose group write
-     * access due to tool or process interference.
-     * @param {string} path - Target directory to repair (defaults to `/home/dd/engine`).
-     *   Customise via the `path` argument or leave empty to use the default.
-     * @param {Object} options - The default underpost runner options for customizing workflow.
-     *   Key fields: `options.group` (default `'engine-dev'`).
-     * @memberof UnderpostRun
-     */
-    'reload-shared-dir': (path = '/home/dd/engine', options = DEFAULT_OPTION) => {
-      const dir = path || '/home/dd/engine';
-      const group = options.group || 'engine-dev';
-
-      logger.info(`[reload-shared-dir] dir=${dir} group=${group}`);
-
-      shellExec(`sudo chmod -R 2775 ${dir}`);
-      shellExec(`sudo setfacl -R -m g:${group}:rwx ${dir}`);
-
-      logger.info(`[reload-shared-dir] Shared directory permissions reloaded: ${dir}`);
     },
   };
 
@@ -2728,7 +2710,7 @@ EOF`;
         if (options.replicas === '' || options.replicas === null || options.replicas === undefined)
           options.replicas = 1;
         options.npmRoot = npmRoot;
-        logger.info('callback', { path, options });
+        logger.info(`Executing runner`, { runner, namespace: options.namespace });
         if (!Underpost.run.RUNNERS.includes(runner)) throw new Error(`Runner not found: ${runner}`);
         const result = await Underpost.run.CALL(runner, path, options);
         return result;
