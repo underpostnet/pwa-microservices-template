@@ -11,6 +11,7 @@ import {
   buildKindPorts,
   Config,
   cronDeployIdResolve,
+  etcHostFactory,
   getNpmRootPath,
   isDeployRunnerContext,
   loadConfServerJson,
@@ -250,7 +251,7 @@ class UnderpostRun {
           });
         }
 
-        const hostListenResult = Underpost.deploy.etcHostFactory([primaryMongoHost]);
+        const hostListenResult = etcHostFactory([primaryMongoHost]);
         logger.info(hostListenResult.renderHosts);
       }
     },
@@ -1164,7 +1165,7 @@ EOF
         );
       }
       if (options.etcHosts) {
-        const hostListenResult = Underpost.deploy.etcHostFactory(etcHosts);
+        const hostListenResult = etcHostFactory(etcHosts);
         logger.info(hostListenResult.renderHosts);
       }
     },
@@ -1913,7 +1914,7 @@ EOF`);
         );
       } else logger.error(`Service pod ${podToMonitor} failed to start in time.`);
       if (options.etcHosts === true) {
-        const hostListenResult = Underpost.deploy.etcHostFactory([host]);
+        const hostListenResult = etcHostFactory([host]);
         logger.info(hostListenResult.renderHosts);
       }
     },
@@ -1931,7 +1932,7 @@ EOF`);
         const confServer = loadConfServerJson(`./engine-private/conf/${options.deployId}/conf.server.json`);
         hosts.push(...Object.keys(confServer));
       }
-      const hostListenResult = Underpost.deploy.etcHostFactory(hosts);
+      const hostListenResult = etcHostFactory(hosts);
       logger.info(hostListenResult.renderHosts);
     },
 

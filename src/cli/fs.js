@@ -155,7 +155,7 @@ class UnderpostFileStorage {
         if (options.git === true) {
           Underpost.repo.initLocalRepo({ path });
           shellExec(`cd ${path} && git add . && git commit -m "Base pull state"`, {
-            silentOnError: true
+            silentOnError: true,
           });
         }
       } else {
@@ -175,7 +175,9 @@ class UnderpostFileStorage {
       Underpost.fs.writeStorageConf(storage, storageConf);
       if (options.git === true) {
         shellExec(`cd ${path} && git add .`);
-        shellExec(`underpost cmt ${path} feat`);
+        shellExec(`underpost cmt ${path} feat`, {
+          silentOnError: true,
+        });
       }
     },
     /**
