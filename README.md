@@ -16,7 +16,7 @@
 
 <div align="center">
 
-[![Node.js CI](https://github.com/underpostnet/engine/actions/workflows/docker-image.ci.yml/badge.svg?branch=master)](https://github.com/underpostnet/engine/actions/workflows/docker-image.ci.yml) [![Test](https://github.com/underpostnet/engine/actions/workflows/coverall.ci.yml/badge.svg?branch=master)](https://github.com/underpostnet/engine/actions/workflows/coverall.ci.yml) [![Downloads](https://img.shields.io/npm/dm/underpost.svg)](https://www.npmjs.com/package/underpost) [![](https://data.jsdelivr.com/v1/package/npm/underpost/badge)](https://www.jsdelivr.com/package/npm/underpost) [![Socket Badge](https://socket.dev/api/badge/npm/package/underpost/3.2.11)](https://socket.dev/npm/package/underpost/overview/3.2.11) [![Coverage Status](https://coveralls.io/repos/github/underpostnet/engine/badge.svg?branch=master)](https://coveralls.io/github/underpostnet/engine?branch=master) [![Version](https://img.shields.io/npm/v/underpost.svg)](https://www.npmjs.org/package/underpost) [![License](https://img.shields.io/npm/l/underpost.svg)](https://www.npmjs.com/package/underpost)
+[![Node.js CI](https://github.com/underpostnet/engine/actions/workflows/docker-image.ci.yml/badge.svg?branch=master)](https://github.com/underpostnet/engine/actions/workflows/docker-image.ci.yml) [![Test](https://github.com/underpostnet/engine/actions/workflows/coverall.ci.yml/badge.svg?branch=master)](https://github.com/underpostnet/engine/actions/workflows/coverall.ci.yml) [![Downloads](https://img.shields.io/npm/dm/underpost.svg)](https://www.npmjs.com/package/underpost) [![](https://data.jsdelivr.com/v1/package/npm/underpost/badge)](https://www.jsdelivr.com/package/npm/underpost) [![Socket Badge](https://socket.dev/api/badge/npm/package/underpost/3.2.12)](https://socket.dev/npm/package/underpost/overview/3.2.12) [![Coverage Status](https://coveralls.io/repos/github/underpostnet/engine/badge.svg?branch=master)](https://coveralls.io/github/underpostnet/engine?branch=master) [![Version](https://img.shields.io/npm/v/underpost.svg)](https://www.npmjs.org/package/underpost) [![License](https://img.shields.io/npm/l/underpost.svg)](https://www.npmjs.com/package/underpost)
 
 </div>
 
@@ -41,7 +41,7 @@ The project covers:
 
 ### Architectural roles (Cyberia stack)
 
-When the platform is hosting the Cyberia MMO extension, three runtime processes participate. Their boundaries are non-overlapping and their startup order is **strictly sequential** — not parallel.
+When the platform is hosting the Cyberia MMO extension, three independent runtime processes participate. Their boundaries are non-overlapping.
 
 | Process                              | Role                                                                                                                                                                       |
 | ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -49,13 +49,9 @@ When the platform is hosting the Cyberia MMO extension, three runtime processes 
 | **cyberia-server** (Go)              | Authoritative simulation runtime: tick advancement, AOI replication, input command processing, snapshot generation.                                                        |
 | **cyberia-client** (C → WebAssembly) | Presentation runtime: rendering, UI, input capture, prediction, reconciliation, interpolation, client-side presentation defaults.                                          |
 
-**Startup order — sequential, in order:**
+The ecosystem is **playable only when all three are running and healthy**. Each service is supervised independently and owns its own monitor/reconnector. If any one is unhealthy, the game enters standby and resumes automatically once all three are healthy again.
 
-1. **Persistent backend / sidecar data layer** — databases, content backend (engine-cyberia), static asset backend, config and data services.
-2. **cyberia-server** — authoritative Go simulation runtime; dials engine-cyberia gRPC at boot to load world configuration.
-3. **cyberia-client** — rendering, UI, prediction, interpolation, reconciliation; connects to cyberia-server via WebSocket.
-
-<a target="_top" href="https://github.com/underpostnet/engine-cyberia/blob/master/src/client/public/cyberia-docs/ARCHITECTURE.md">See Detailed architecture.</a>
+<a target="_top" href="https://github.com/underpostnet/engine-cyberia/blob/master/src/client/public/cyberia-docs/ARCHITECTURE.md">See detailed Cyberia architecture.</a>
 
 ## Create a new project
 
@@ -90,7 +86,7 @@ npm run dev
 <a target="_top" href="https://www.nexodev.org/docs?cid=src">See Docs.</a>
 
 <!-- cli-index-start -->
-## underpost ci/cd cli v3.2.11
+## underpost ci/cd cli v3.2.12
 
 ### Usage: `underpost [options] [command]`
   ```

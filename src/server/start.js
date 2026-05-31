@@ -211,7 +211,7 @@ class UnderpostStartUp {
           shellExec(`node bin env ${replica} ${env}`);
           const replicaCmd = `npm ${runCmd} ${replica}`;
           shellExec(replicaCmd, { async: true, callback: makeDeployCallback(replicaCmd) });
-          await awaitDeployMonitor(true);
+          await awaitDeployMonitor();
         }
       }
       shellExec(`node bin env ${deployId} ${env}`);
@@ -221,9 +221,9 @@ class UnderpostStartUp {
       if (Underpost.env.get('container-status') !== 'error') {
         if (env === 'production' && Underpost.env.isInsideContainer()) Underpost.secret.globalSecretClean();
         Underpost.env.set('container-status', `${deployId}-${env}-running-deployment`);
+      } else {
+        Underpost.env.set('container-status', 'error');
       }
-      Underpost.env.set('container-status', 'error');
-      throw new Error('Deployment process exited unexpectedly');
     },
   };
 }
