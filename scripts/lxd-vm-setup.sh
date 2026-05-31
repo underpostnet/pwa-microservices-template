@@ -5,9 +5,15 @@ set -euo pipefail
 # LXD VM OS base setup. Runs inside the VM via `lxc exec`. Idempotent.
 # ---------------------------------------------------------------------------
 
+# lxdbr0 is a plain L2 bridge: LXD runs no DHCP/DNS on it (MAAS owns
+# provisioning), so VMs configure their NIC statically and deterministically.
+# The host pins the gateway (10.250.250.1) on the bridge and provides NAT; no
+# resolver listens there, so DNS must use public/MAAS resolvers, not the gateway.
+# LXD_NET_MODE=dhcp opts back into DHCP-first for VMs on a MAAS-served segment.
+LXD_NET_MODE="${LXD_NET_MODE:-static}"
 LXD_FALLBACK_IPV4_CIDR="${LXD_FALLBACK_IPV4_CIDR:-10.250.250.100/24}"
 LXD_FALLBACK_GATEWAY="${LXD_FALLBACK_GATEWAY:-10.250.250.1}"
-LXD_FALLBACK_DNS="${LXD_FALLBACK_DNS:-10.250.250.1 1.1.1.1}"
+LXD_FALLBACK_DNS="${LXD_FALLBACK_DNS:-1.1.1.1 8.8.8.8}"
 ROCKY_MIRROR_HOST="${ROCKY_MIRROR_HOST:-mirrors.rockylinux.org}"
 
 current_ipv4() {
@@ -60,6 +66,17 @@ retry_dnf() {
     done
 }
 
+# k3s derives the node name from the system hostname. The Rocky image keeps
+# "localhost.localdomain" for every VM, so without this every node would try to
+# register under the same name — the second one is rejected ("Node password
+# rejected, duplicate hostname"). Pin the hostname to the LXD instance name so
+# node names are unique and deterministic (control plane labeling relies on it).
+if [ -n "${LXD_NODE_NAME:-}" ] && [ "$(hostname)" != "$LXD_NODE_NAME" ]; then
+    echo "--- Hostname ---"
+    echo "Setting hostname to ${LXD_NODE_NAME} (k3s node name)..."
+    sudo hostnamectl set-hostname "$LXD_NODE_NAME" 2>/dev/null || sudo hostname "$LXD_NODE_NAME"
+fi
+
 echo "--- Network Configuration ---"
 
 # 1. Detect primary non-loopback interface
@@ -85,25 +102,9 @@ if command -v nmcli >/dev/null 2>&1 && [ -z "$CURRENT_IP" ]; then
         nmcli connection add type ethernet con-name k3s-net ifname "$IFACE"
         NM_CON="k3s-net"
     fi
-    
-    echo "Configuring DHCP-first NetworkManager profile '$NM_CON' for the LXD bridge..."
-    nmcli connection modify "$NM_CON" \
-    connection.autoconnect yes \
-    connection.interface-name "$IFACE" \
-    ipv4.method auto \
-    ipv4.dhcp-client-id mac \
-    ipv4.ignore-auto-dns no \
-    ipv6.method ignore
-    
-    echo "Bringing network interface up with DHCP..."
-    if ! nmcli connection up "$NM_CON"; then
-        echo "DHCP activation for '$NM_CON' failed; static LXD bridge fallback will be attempted."
-    fi
-    
-    CURRENT_IP="$(wait_for_ipv4 || true)"
-    
-    if [ -z "$CURRENT_IP" ]; then
-        echo "No DHCP lease on $IFACE. Applying static fallback ${LXD_FALLBACK_IPV4_CIDR}..."
+
+    apply_static_ipv4() {
+        echo "Applying static LXD bridge address ${LXD_FALLBACK_IPV4_CIDR} (gw ${LXD_FALLBACK_GATEWAY}, dns ${LXD_FALLBACK_DNS})..."
         nmcli connection modify "$NM_CON" \
         connection.autoconnect yes \
         connection.interface-name "$IFACE" \
@@ -115,6 +116,30 @@ if command -v nmcli >/dev/null 2>&1 && [ -z "$CURRENT_IP" ]; then
         ipv6.method ignore
         nmcli connection up "$NM_CON"
         CURRENT_IP="$(wait_for_ipv4 || true)"
+    }
+
+    # Static-first: lxdbr0 has no DHCP, so a DHCP attempt only adds a ~45s
+    # activation timeout per boot. DHCP is opt-in for VMs on a MAAS-served
+    # segment (LXD_NET_MODE=dhcp), with a static fallback if no lease appears.
+    if [ "$LXD_NET_MODE" = "dhcp" ]; then
+        echo "Configuring DHCP-first NetworkManager profile '$NM_CON'..."
+        nmcli connection modify "$NM_CON" \
+        connection.autoconnect yes \
+        connection.interface-name "$IFACE" \
+        ipv4.method auto \
+        ipv4.dhcp-client-id mac \
+        ipv4.ignore-auto-dns no \
+        ipv6.method ignore
+        echo "Bringing network interface up with DHCP..."
+        nmcli connection up "$NM_CON" || echo "DHCP activation failed; static fallback will be applied."
+        CURRENT_IP="$(wait_for_ipv4 || true)"
+        if [ -z "$CURRENT_IP" ]; then
+            echo "No DHCP lease on $IFACE."
+            apply_static_ipv4
+        fi
+    else
+        echo "Configuring static NetworkManager profile '$NM_CON' for the plain LXD bridge..."
+        apply_static_ipv4
     fi
 fi
 

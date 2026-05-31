@@ -249,12 +249,20 @@ program
   .option('--mariadb', 'Initializes the cluster with a MariaDB statefulset.')
   .option('--mysql', 'Initializes the cluster with a MySQL statefulset.')
   .option('--mongodb', 'Initializes the cluster with a MongoDB statefulset.')
-  .option('--mongo-db-host <host>', 'Set custom mongo db host')
+  .option('--service-host <host>', 'Set custom host/IP for exposed MongoDB and Valkey clients.')
   .option('--postgresql', 'Initializes the cluster with a PostgreSQL statefulset.')
   .option('--mongodb4', 'Initializes the cluster with a MongoDB 4.4 service.')
   .option('--valkey', 'Initializes the cluster with a Valkey service.')
   .option('--ipfs', 'Initializes the cluster with an ipfs-cluster statefulset.')
   .option('--contour', 'Initializes the cluster with Project Contour base HTTPProxy and Envoy.')
+  .option(
+    '--node-port',
+    'Exposes enabled ready services (e.g. MongoDB 4.4, Valkey) to the host/public network via their NodePort Service manifest.',
+  )
+  .option(
+    '--node-selector <k8s-node-name>',
+    'Pins the just-deployed StatefulSet (MongoDB 4.4 / Valkey) to the given Kubernetes node once it is ready (via a kubernetes.io/hostname nodeSelector).',
+  )
   .option('--cert-manager', "Initializes the cluster with a Let's Encrypt production ClusterIssuer.")
   .option('--dedicated-gpu', 'Initializes the cluster with dedicated GPU base resources and environment settings.')
   .option(
@@ -692,11 +700,16 @@ program
     '--pull-bundle',
     'Explicitly download the pre-built client bundle from Cloudinary inside the container (supported by: sync, template-deploy). Use together with --skip-full-build.',
   )
+  .option('--remove', 'Remove/teardown resources')
   .description('Runs specified scripts using various runners.')
   .action(Underpost.run.callback);
 
 program
   .command('lxd')
+  .argument(
+    '[vm-id]',
+    'VM identifier shared by current-VM flags like --vm-create, --vm-delete, --vm-init, --vm-info, and --vm-test.',
+  )
   .option('--init', 'Initializes LXD on the current machine via preseed.')
   .option(
     '--reset',
@@ -721,32 +734,48 @@ program
   .option('--create-admin-profile', 'Creates the admin-profile for VM management.')
   .option('--control', 'Initialize the target VM as a K3s control plane node.')
   .option('--worker', 'Initialize the target VM as a K3s worker node.')
-  .option('--create-vm <vm-name>', 'Copy the LXC launch command for a new K3s VM to the clipboard.')
+  .option('--vm-create', 'Copy the LXC launch command for the command argument [vm-id] to the clipboard.')
   .option(
-    '--delete-vm <vm-name>',
-    'SAFELY stop and delete VM (removes proxy devices first, then stops, then deletes). Safe to re-run.',
+    '--vm-delete',
+    'SAFELY stop and delete the command argument [vm-id] (removes proxy devices first, then stops, then deletes). Safe to re-run.',
   )
   .option(
-    '--init-vm <vm-name>',
-    'Bring a VM up as a K3s node end-to-end: OS base setup, mirror /home/dd/engine into the VM, then K3s role install via the local engine (use with --control or --worker).',
+    '--vm-init',
+    'Bring the command argument [vm-id] up as a K3s node end-to-end: OS base setup, mirror /home/dd/engine into the VM, then K3s role install via the local engine (use with --control or --worker).',
   )
-  .option('--info-vm <vm-name>', 'Display full configuration and status for the specified VM.')
-  .option('--test <vm-name>', 'Run connectivity and health checks on the specified VM.')
-  .option('--root-size <gb-size>', 'Root disk size in GiB for --create-vm (default: 32).')
+  .option('--vm-info', 'Display full configuration and status for the command argument [vm-id].')
+  .option('--vm-test', 'Run connectivity and health checks on the command argument [vm-id].')
+  .option(
+    '--vm-sync-engine',
+    'Re-copy the host engine source into the command argument [vm-id], overriding whatever is currently there (equivalent to the engine-bootstrap step of --vm-init in isolation).',
+  )
+  .option('--root-size <gb-size>', 'Root disk size in GiB for --vm-create (default: 32).')
   .option(
     '--join-node <nodes>',
     'Join a K3s worker to a control plane. Standalone format: "workerName,controlName". ' +
-      'When used with --init-vm --worker, provide just the control node name for auto-join.',
+      'When used with --vm-init --worker, provide just the control node name for auto-join.',
   )
   .option('--expose <vm-name:ports>', 'Proxy host ports to a VM (e.g., "k3s-control:80,443").')
+  .option(
+    '--node-port <port>',
+    'Customizes the VM-side (connect) port for --expose, so the host listens on the given port but proxies to this NodePort inside the VM (e.g. expose host 27017 -> VM NodePort 32017).',
+  )
   .option('--delete-expose <vm-name:ports>', 'Remove proxied ports from a VM (e.g., "k3s-control:80,443").')
   .option(
     '--copy',
     'For two-phase flows that surface a command for the user to execute (e.g. --create-admin-profile phase 1), copy the command to the clipboard instead of printing it to the terminal.',
   )
   .option('--namespace <namespace>', 'Kubernetes namespace context (defaults to "default").')
+  .option(
+    '--maas-project <project>',
+    'LXD project managed by MAAS (e.g. "k3s-cluster"). When set, all lxc commands target this project so MAAS enumerates the VMs in its machines UI.',
+  )
+  .option(
+    '--move-to-project',
+    'Stop the [vm-id] VM in the default project, move it to --maas-project, then start it so MAAS picks it up. Requires --maas-project.',
+  )
   .description('Manages LXD virtual machines as K3s nodes (control plane or workers).')
-  .action(Underpost.lxd.callback);
+  .action((vmId, options) => Underpost.lxd.callback(vmId, options));
 
 program
   .command('baremetal [workflow-id]')

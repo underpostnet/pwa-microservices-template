@@ -127,7 +127,11 @@ class UnderpostFileStorage {
         if (options.git === true) {
           const gitPath = hasPathFilter ? basePath : '.';
           shellExec(`cd ${gitPath} && git add .`);
-          shellExec(`underpost cmt ${gitPath} feat`);
+          shellExec(`underpost cmt ${gitPath} feat`, {
+            silentOnError: true,
+            silent: true,
+            disableLog: true,
+          });
         }
 
         return;
@@ -177,6 +181,8 @@ class UnderpostFileStorage {
         shellExec(`cd ${path} && git add .`);
         shellExec(`underpost cmt ${path} feat`, {
           silentOnError: true,
+          silent: true,
+          disableLog: true,
         });
       }
     },

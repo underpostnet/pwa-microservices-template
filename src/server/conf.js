@@ -334,25 +334,29 @@ const Config = {
 
     if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
 
-    const envTemplate = fs.existsSync('./.env.example')
+    const sharedEnvTemplate = fs.existsSync('./.env.example')
       ? fs.readFileSync('./.env.example', 'utf8')
       : fs.existsSync('./.env.production')
         ? fs.readFileSync('./.env.production', 'utf8')
         : '';
 
-    if (envTemplate) {
-      const prodEnv = envTemplate.replaceAll('dd-default', deployId);
-      fs.writeFileSync(`${folder}/.env.production`, prodEnv, 'utf8');
-      fs.writeFileSync(
-        `${folder}/.env.development`,
-        prodEnv.replace('NODE_ENV=production', 'NODE_ENV=development').replace('PORT=3000', 'PORT=4000'),
-        'utf8',
-      );
-      fs.writeFileSync(
-        `${folder}/.env.test`,
-        prodEnv.replace('NODE_ENV=production', 'NODE_ENV=test').replace('PORT=3000', 'PORT=5000'),
-        'utf8',
-      );
+    const envTemplates = {
+      production: fs.existsSync('./.env.production') ? fs.readFileSync('./.env.production', 'utf8') : sharedEnvTemplate,
+      development: fs.existsSync('./.env.development')
+        ? fs.readFileSync('./.env.development', 'utf8')
+        : sharedEnvTemplate
+          ? sharedEnvTemplate.replace('NODE_ENV=production', 'NODE_ENV=development').replace('PORT=3000', 'PORT=4000')
+          : '',
+      test: fs.existsSync('./.env.test')
+        ? fs.readFileSync('./.env.test', 'utf8')
+        : sharedEnvTemplate
+          ? sharedEnvTemplate.replace('NODE_ENV=production', 'NODE_ENV=test').replace('PORT=3000', 'PORT=5000')
+          : '',
+    };
+
+    for (const [envName, envTemplate] of Object.entries(envTemplates)) {
+      if (!envTemplate) continue;
+      fs.writeFileSync(`${folder}/.env.${envName}`, envTemplate.replaceAll('dd-default', deployId), 'utf8');
     }
 
     fs.writeFileSync(

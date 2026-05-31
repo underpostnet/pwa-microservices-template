@@ -33,7 +33,7 @@ class UnderpostCluster {
      * @param {object} [options] - Configuration options for cluster initialization.
      * @param {boolean} [options.mongodb=false] - Deploy MongoDB.
      * @param {boolean} [options.mongodb4=false] - Deploy MongoDB 4.4.
-     * @param {String} [options.mongoDbHost=''] - Set custom mongo db host
+     * @param {string} [options.serviceHost=''] - Set a custom host/IP for exposed MongoDB and Valkey clients.
      * @param {boolean} [options.mariadb=false] - Deploy MariaDB.
      * @param {boolean} [options.mysql=false] - Deploy MySQL.
      * @param {boolean} [options.postgresql=false] - Deploy PostgreSQL.
@@ -64,6 +64,12 @@ class UnderpostCluster {
      * @param {boolean} [options.removeVolumeHostPaths=false] - Remove data from host paths used by Persistent Volumes.
      * @param {string} [options.hosts] - Set custom hosts entries.
      * @param {string} [options.replicas] - Set the number of replicas for certain deployments.
+     * @param {boolean} [options.nodePort=false] - Expose enabled ready services (e.g. MongoDB 4.4, Valkey)
+     *   to the host/public network via their NodePort Service manifest. The node port value lives directly
+     *   in each manifest (mongodb-4.4/mongodb-nodeport.yaml, valkey/valkey-nodeport.yaml).
+     * @param {string} [options.nodeSelector=''] - Pin the just-deployed StatefulSet (MongoDB 4.4 / Valkey)
+     *   to a specific Kubernetes node by name (e.g. 'localhost.localdomain'). Applied via a
+     *   `kubernetes.io/hostname` nodeSelector patch once the workload reports Ready.
      * @memberof UnderpostCluster
      */
     async init(
@@ -71,7 +77,7 @@ class UnderpostCluster {
       options = {
         mongodb: false,
         mongodb4: false,
-        mongoDbHost: '',
+        serviceHost: '',
         mariadb: false,
         mysql: false,
         postgresql: false,
@@ -102,6 +108,8 @@ class UnderpostCluster {
         removeVolumeHostPaths: false,
         hosts: '',
         replicas: '',
+        nodePort: false,
+        nodeSelector: '',
       },
     ) {
       if (options.initHost) return Underpost.cluster.initHost();
@@ -114,6 +122,8 @@ class UnderpostCluster {
 
       const npmRoot = getNpmRootPath();
       const underpostRoot = options.dev ? '.' : `${npmRoot}/underpost`;
+      const serviceHostInput = `${options.serviceHost || ''}`.trim();
+      const serviceHost = Underpost.cluster.resolveServiceHost(options);
 
       if (options.listPods) return console.table(Underpost.kubectl.get(podName ?? undefined));
       // Set default namespace if not specified
@@ -165,24 +175,32 @@ class UnderpostCluster {
         });
       }
 
-      // Check if a cluster (Kind, Kubeadm, or K3s) is already initialized
-      const alreadyKubeadmCluster = Underpost.kubectl.get('calico-kube-controllers')[0];
-      const alreadyKindCluster = Underpost.kubectl.get('kube-apiserver-kind-control-plane')[0];
-      // K3s pods often contain 'svclb-traefik' in the kube-system namespace
-      const alreadyK3sCluster = Underpost.kubectl.get('svclb-traefik')[0];
+      // Check if a cluster (Kind, Kubeadm, or K3s) is already initialized by
+      // inspecting nodes rather than probing add-on pods. See detectClusterRuntime.
+      const runtime = Underpost.cluster.detectClusterRuntime();
+      const alreadyCluster = runtime.type !== null;
+      if (alreadyCluster) {
+        logger.info(
+          `Detected existing ${runtime.type} cluster (${runtime.ready ? 'Ready' : 'NotReady'}); skipping initialization.`,
+        );
+      }
 
       // --- Kubeadm/Kind/K3s Cluster Initialization ---
       // Host config is applied per cluster type (not shared) so the K3s path can
       // stay minimal and avoid the Docker/containerd/kubelet setup it does not need.
-      if (!alreadyKubeadmCluster && !alreadyKindCluster && !alreadyK3sCluster) {
+      if (!alreadyCluster) {
         if (options.k3s) {
-          // K3s is self-contained (bundles containerd, kubelet, CNI, CoreDNS,
-          // traefik). Apply ONLY minimal host config — see configMinimalK3s.
+          // K3s is self-contained (bundles containerd, kubelet, CNI, CoreDNS).
+          // Apply ONLY minimal host config — see configMinimalK3s.
           Underpost.cluster.configMinimalK3s();
           logger.info('Initializing K3s control plane...');
           // Install K3s
           logger.info('Installing K3s...');
-          shellExec(`curl -sfL https://get.k3s.io | sh -`);
+          // Disable the bundled traefik ingress and servicelb (Klipper) load
+          // balancer. The platform exposes services explicitly via Project
+          // Contour / Envoy and NodePort services (see --node-port); leaving the
+          // K3s built-ins enabled would bind the same host ports and conflict.
+          shellExec(`curl -sfL https://get.k3s.io | sh -s - --disable=traefik --disable=servicelb`);
           logger.info('K3s installation completed.');
 
           Underpost.cluster.chown('k3s');
@@ -321,7 +339,23 @@ EOF
         if (options.pullImage) Underpost.cluster.pullImage('valkey/valkey:latest', options);
         shellExec(`kubectl delete statefulset valkey-service -n ${options.namespace} --ignore-not-found`);
         shellExec(`kubectl apply -k ${underpostRoot}/manifests/valkey -n ${options.namespace}`);
-        await Underpost.test.statusMonitor('valkey-service', 'Running', 'pods', 1000, 60 * 10);
+        const valkeyReady = await Underpost.test.statusMonitor('valkey-service', 'Running', 'pods', 1000, 60 * 10);
+        // Expose valkey to the host/public network only once the pod is ready.
+        // The node port (32079) is set directly in the manifest.
+        if (valkeyReady && options.nodePort)
+          shellExec(`kubectl apply -f ${underpostRoot}/manifests/valkey/valkey-nodeport.yaml -n ${options.namespace}`);
+        if (valkeyReady && options.nodeSelector)
+          Underpost.cluster.pinToNode({
+            name: 'valkey-service',
+            namespace: options.namespace,
+            node: options.nodeSelector,
+          });
+        if (valkeyReady && serviceHost)
+          Underpost.cluster.syncServiceConnectionEnv({
+            serviceHost,
+            valkey: true,
+            options,
+          });
       }
       if (options.ipfs) {
         await Underpost.ipfs.deploy(options, underpostRoot);
@@ -363,30 +397,66 @@ EOF
         const successInstance = await Underpost.test.statusMonitor(podName);
 
         if (successInstance) {
-          // When --dev (port-forward mode), default to mongodb-0.mongodb-service:27017
-          // so the RS member hostname resolves via /etc/hosts → 127.0.0.1 through the port-forward.
-          // rs.initiate() without args uses the pod's internal K8s hostname which is unreachable outside.
-          const rsHost = options.mongoDbHost || (options.dev ? '127.0.0.1' : 'mongodb-0.mongodb-service');
-          const initEval = rsHost
-            ? `rs.initiate(${JSON.stringify({ _id: 'rs0', members: [{ _id: 0, host: `${rsHost}:27017` }] })})`
-            : `rs.initiate()`;
+          // mongod only accepts a member host it can recognize as itself (the isSelf check):
+          // it must match a local interface IP or be reachable back at that address. A pod-external
+          // LAN IP / NodePort address is neither bound in the pod netns nor routable back from it,
+          // so reconfiguring to it fails with NodeNotFound ("...maps to this node") even under
+          // force. Bootstrap on localhost; only advertise a non-localhost host when the node can
+          // self-verify it, and tolerate the failure otherwise so bootstrap stays idempotent.
+          // Clients reaching the set through an external IP/NodePort must use directConnection=true,
+          // which ignores the advertised member host (see MongooseDB.buildUri).
+          const rsHost = serviceHostInput || (options.dev ? '127.0.0.1' : 'mongodb-0.mongodb-service');
+          const memberHost = `${rsHost}:27017`;
+          const initEval = [
+            `try { rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27017" }] }); }`,
+            `catch (e) { if (!String(e).includes("already initialized") && !String(e).includes("AlreadyInitialized")) throw e; }`,
+            `for (var i = 0; i < 30; i++) { if (db.isMaster().ismaster) break; sleep(1000); }`,
+            memberHost === 'localhost:27017'
+              ? ``
+              : `try { var c = rs.conf(); c.members[0].host = "${memberHost}"; rs.reconfig(c, { force: true }); print("RS_HOST_SET ${memberHost}"); } catch (e) { if (String(e).includes("NodeNotFound") || String(e).includes("maps to this node")) { print("RS_HOST_SKIPPED ${memberHost} (not self-reachable from pod; clients must use directConnection=true)"); } else { throw e; } }`,
+          ]
+            .filter(Boolean)
+            .join(' ');
 
-          shellExec(
-            `sudo kubectl exec -i ${podName} -n ${options.namespace} -- mongo --quiet \
-        --eval '${initEval}'`,
-          );
+          shellExec(`sudo kubectl exec -i ${podName} -n ${options.namespace} -- mongo --quiet --eval '${initEval}'`);
+
+          // Only expose mongos to the host/public network once the instance is
+          // confirmed ready and the replica set is initiated. The node port (32017)
+          // is set directly in the manifest.
+          if (options.nodePort)
+            shellExec(
+              `kubectl apply -f ${underpostRoot}/manifests/mongodb-4.4/mongodb-nodeport.yaml -n ${options.namespace}`,
+            );
+          if (options.nodeSelector)
+            Underpost.cluster.pinToNode({
+              name: statefulSetName,
+              namespace: options.namespace,
+              node: options.nodeSelector,
+            });
+          if (serviceHost)
+            Underpost.cluster.syncServiceConnectionEnv({
+              serviceHost,
+              mongodb: true,
+              options,
+            });
         }
       } else if (options.mongodb) {
         const clusterType = options.k3s ? 'k3s' : options.kubeadm ? 'kubeadm' : 'kind';
         await MongoBootstrap.initReplicaSet({
           namespace: options.namespace,
           replicaCount: Number(options.replicas) || MONGODB_DEFAULT_REPLICA_COUNT,
-          mongoDbHost: options.mongoDbHost || '',
+          hostList: serviceHostInput,
           pullImage: options.pullImage,
           reset: options.reset,
           clusterType,
           underpostRoot,
         });
+        if (serviceHost)
+          Underpost.cluster.syncServiceConnectionEnv({
+            serviceHost,
+            mongodb: true,
+            options,
+          });
       }
 
       if (options.contour) {
@@ -419,6 +489,132 @@ EOF
         shellExec(`sudo kubectl delete ClusterIssuer ${letsEncName} --ignore-not-found`);
         shellExec(`sudo kubectl apply -f ${underpostRoot}/manifests/${letsEncName}.yaml -n ${options.namespace}`);
       }
+    },
+
+    /**
+     * @method detectClusterRuntime
+     * @description Detects an already-initialized cluster by inspecting Kubernetes
+     * nodes, and classifies its runtime. Nodes are authoritative and stable, unlike
+     * add-on pods: the previous check keyed off pod names (`calico-kube-controllers`,
+     * `kube-apiserver-kind-control-plane`, `svclb-traefik`), whose presence and
+     * readiness are timing- and config-dependent. Disabling servicelb removes the
+     * `svclb-traefik` pods entirely, and CNI/controller pods report NotReady for a
+     * window right after init — both of which made re-runs misdetect the cluster
+     * state. Classification relies on stable node attributes:
+     *   - k3s: the node VERSION carries a `+k3s` build suffix (e.g. v1.30.5+k3s1).
+     *   - kind: kind names every node `<cluster>-control-plane` / `<cluster>-worker`.
+     *   - kubeadm: a real control-plane node that is neither of the above.
+     * @returns {{ type: ('k3s'|'kubeadm'|'kind'|null), ready: boolean, nodes: Array<object> }}
+     *   `type` is the detected runtime (null when no cluster exists); `ready` is true
+     *   when at least one node reports STATUS=Ready.
+     * @memberof UnderpostCluster
+     */
+    detectClusterRuntime() {
+      const nodes = Underpost.kubectl.get('', 'nodes');
+      if (!nodes.length) return { type: null, ready: false, nodes: [] };
+
+      // STATUS can be a comma-joined list (e.g. "Ready,SchedulingDisabled").
+      const ready = nodes.some((n) => `${n.STATUS || ''}`.split(',').includes('Ready'));
+
+      let type;
+      if (nodes.some((n) => `${n.VERSION || ''}`.includes('+k3s'))) type = 'k3s';
+      else if (nodes.some((n) => `${n.NAME || ''}`.includes('-control-plane') || `${n.NAME || ''}`.includes('kind')))
+        type = 'kind';
+      else type = 'kubeadm';
+
+      return { type, ready, nodes };
+    },
+
+    /**
+     * @method pinToNode
+     * @description Pins a workload to a specific Kubernetes node by patching its
+     * pod template with a `kubernetes.io/hostname` nodeSelector. General-purpose;
+     * currently used to place the MongoDB 4.4 / Valkey StatefulSets on a chosen
+     * node (`--node-selector`). The patch triggers a rolling reschedule onto the
+     * target node.
+     * @param {object} params
+     * @param {string} [params.kind='statefulset'] - Workload kind to patch.
+     * @param {string} params.name - Workload name.
+     * @param {string} params.namespace - Target namespace.
+     * @param {string} params.node - Target node name (matches `kubernetes.io/hostname`).
+     * @memberof UnderpostCluster
+     */
+    pinToNode({ kind = 'statefulset', name, namespace, node }) {
+      logger.info(`Pinning ${kind}/${name} to node '${node}' (namespace: ${namespace}).`);
+      const patch = JSON.stringify({
+        spec: { template: { spec: { nodeSelector: { 'kubernetes.io/hostname': node } } } },
+      });
+      shellExec(`kubectl patch ${kind} ${name} -n ${namespace} --type merge -p '${patch}'`);
+    },
+
+    /**
+     * @method resolveServiceHost
+     * @description Resolves a shared single-host override used by exposed service clients.
+     * @param {object} [options={}] - Cluster options.
+     * @returns {string} A single host override, or an empty string when unset / not reusable.
+     * @memberof UnderpostCluster
+     */
+    resolveServiceHost(options = {}) {
+      const candidate = `${options.serviceHost || ''}`.trim();
+      return candidate && !candidate.includes(',') ? candidate : '';
+    },
+
+    /**
+     * @method upsertEnvVar
+     * @description Replaces or appends one env var assignment in raw env file text.
+     * @param {string} envText - Existing env file contents.
+     * @param {string} key - Env var name.
+     * @param {string} value - Env var value.
+     * @returns {string} Updated env file contents.
+     * @memberof UnderpostCluster
+     */
+    upsertEnvVar(envText, key, value) {
+      const nextEntry = `${key}=${value}`;
+      const envKeyPattern = new RegExp(`^${key}=.*$`, 'm');
+      if (envKeyPattern.test(envText)) return envText.replace(envKeyPattern, nextEntry);
+
+      const trimmedEnvText = envText.replace(/\s*$/, '');
+      return `${trimmedEnvText}${trimmedEnvText ? '\n' : ''}${nextEntry}\n`;
+    },
+
+    /**
+     * @method syncServiceConnectionEnv
+     * @description Persists exposed service connection hosts to the active deploy env files.
+     * Currently applies only to MongoDB (`DB_HOST`) and Valkey (`VALKEY_HOST`).
+     * @param {object} params
+     * @param {string} params.serviceHost - Shared exposed host/IP.
+     * @param {boolean} [params.mongodb=false] - Update MongoDB runtime host.
+     * @param {boolean} [params.valkey=false] - Update Valkey runtime host.
+     * @param {object} [params.options={}] - Cluster options used to infer the active env.
+     * @memberof UnderpostCluster
+     */
+    syncServiceConnectionEnv({ serviceHost, mongodb = false, valkey = false, options = {} }) {
+      if (!serviceHost) return;
+
+      const updates = {};
+      if (mongodb) updates.DB_HOST = `mongodb://${serviceHost}:27017`;
+      if (valkey) updates.VALKEY_HOST = serviceHost;
+      if (Object.keys(updates).length === 0) return;
+
+      const deployId = process.env.DEPLOY_ID || process.env.DEFAULT_DEPLOY_ID || 'dd-default';
+      const envName = process.env.NODE_ENV || (options.dev ? 'development' : 'production');
+      const envPaths = [`./engine-private/conf/${deployId}/.env.${envName}`, `./.env.${envName}`, `./.env`].filter(
+        (envPath, index, paths) => fs.existsSync(envPath) && paths.indexOf(envPath) === index,
+      );
+
+      if (envPaths.length === 0) {
+        logger.warn(`No env files found to persist service host override for deploy '${deployId}' (${envName}).`);
+        return;
+      }
+
+      for (const envPath of envPaths) {
+        let envText = fs.readFileSync(envPath, 'utf8');
+        for (const [key, value] of Object.entries(updates))
+          envText = Underpost.cluster.upsertEnvVar(envText, key, value);
+        fs.writeFileSync(envPath, envText, 'utf8');
+      }
+
+      logger.info(`Persisted service host override for ${Object.keys(updates).join(', ')} to ${envPaths.join(', ')}`);
     },
 
     /**

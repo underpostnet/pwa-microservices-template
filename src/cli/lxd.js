@@ -3,27 +3,6 @@
  * @module src/cli/lxd.js
  * @namespace UnderpostLxd
  *
- * ### Design principles
- *
- *   1. **No silent failures.** Every destructive shell call propagates errors.
- *      Idempotency is achieved via explicit pre-condition checks (does the VM
- *      exist? is it running? is the profile present?), not by suppressing
- *      exit codes with `silentOnError` or `|| true`. The earlier "silent on
- *      error" pattern hid corruption signals and is removed everywhere.
- *
- *   2. **Host stays bootable, always.** `--reset` no longer touches the LXD
- *      snap or storage pools. Purging is opt-in via `--purge`, which always
- *      runs `lxd shutdown --timeout 60` first so the daemon can flush the
- *      ZFS pool cleanly. This prevents the dirty-pool-on-next-boot scenario
- *      that previously required a full host reinstall.
- *
- *   3. **Pre-reboot procedure.** `--shutdown` stops every VM gracefully and
- *      then signals the LXD daemon to shut down. Run this before any host
- *      `reboot` / `poweroff` to avoid corrupting the storage pool.
- *
- *   4. **Single source of truth for VM bring-up.** `--init-vm` runs OS base
- *      setup → engine source mirror → K3s role install, end-to-end. There is
- *      no follow-up bootstrap step.
  */
 
 import { getNpmRootPath } from '../server/conf.js';
@@ -42,10 +21,18 @@ const BRIDGE_NETWORK = 'lxdbr0';
 const BRIDGE_SUBNET_PREFIX = '10.250.250';
 
 class UnderpostLxd {
+  static _project = '';
+
+  static _lxcCmd() {
+    return UnderpostLxd._project ? `lxc --project ${UnderpostLxd._project}` : 'lxc';
+  }
+
   static API = {
     /**
      * @method callback
      * @description Main entry point for all LXD CLI operations.
+     * @param {string} [vmId=''] - Positional VM identifier for boolean
+     *   vm lifecycle flags.
      * @param {object} options
      * @param {boolean} [options.init=false] - Initialize LXD via preseed.
      * @param {boolean} [options.reset=false] - Host-safe teardown of VMs, proxy
@@ -65,27 +52,48 @@ class UnderpostLxd {
      *   "bring the lab back online" command.
      * @param {boolean} [options.dev=false] - Use local paths instead of npm global.
      * @param {boolean} [options.install=false] - Install LXD snap.
-     * @param {boolean} [options.createVirtualNetwork=false] - Create lxdbr0 bridge network.
-     * @param {string} [options.ipv4Address='10.250.250.1/24'] - IPv4 address/CIDR for lxdbr0.
+     * @param {boolean} [options.createVirtualNetwork=false] - Create lxdbr0 as a LXD-managed
+     *   bridge with NAT, but with DHCP/DNS off and dnsmasq neutralized (raw.dnsmasq=port=0) so
+     *   it coexists with MAAS. The managed subnet enables static NIC IPs for `--expose` proxies.
+     * @param {string} [options.ipv4Address='10.250.250.1/24'] - Managed gateway address/CIDR
+     *   for lxdbr0 (LXD assigns this to the bridge and masquerades VM egress).
      * @param {boolean} [options.createAdminProfile=false] - Create admin-profile for VMs.
      * @param {boolean} [options.control=false] - Initialize VM as K3s control plane.
      * @param {boolean} [options.worker=false] - Initialize VM as K3s worker.
-     * @param {string} [options.initVm=''] - VM name to bring up as a K3s node end-to-end.
-     * @param {string} [options.deleteVm=''] - VM name to safely stop and delete.
-     * @param {string} [options.createVm=''] - VM name to create (copies command to clipboard).
-     * @param {string} [options.infoVm=''] - VM name to inspect.
+     * @param {boolean} [options.vmInit=false] - Bring the VM identified by
+     *   `vmId` up as a K3s node end-to-end.
+     * @param {boolean} [options.vmDelete=false] - Safely stop and delete the
+     *   VM identified by `vmId`.
+     * @param {boolean} [options.vmCreate=false] - Surface the launch command
+     *   for the VM identified by `vmId`.
+     * @param {boolean} [options.vmInfo=false] - Inspect the VM identified by
+     *   `vmId`.
      * @param {string} [options.rootSize=''] - Root disk size in GiB for new VMs.
      * @param {string} [options.joinNode=''] - Join format: 'workerName,controlName'.
      * @param {string} [options.expose=''] - Expose VM ports to host: 'vmName:port1,port2'.
+     * @param {string} [options.nodePort=''] - Custom VM-side (connect) port for `--expose`. When set, the
+     *   host listens on each requested port but the proxy connects to this port inside the VM (e.g. expose
+     *   host 27017 → VM NodePort 32017). Defaults to the same port on both sides.
      * @param {string} [options.deleteExpose=''] - Remove exposed ports: 'vmName:port1,port2'.
-     * @param {string} [options.test=''] - VM name for connectivity and health checks.
+     * @param {boolean} [options.vmTest=false] - Run connectivity and health
+     *   checks on the VM identified by `vmId`.
+     * @param {boolean} [options.vmSyncEngine=false] - Re-copy the host engine
+     *   source into the VM identified by `vmId`, overriding whatever is
+     *   currently there. Equivalent to step 2 of `--vm-init` in isolation.
      * @param {boolean} [options.copy=false] - For two-phase flows that surface a
      *   command for the user to execute (e.g. `--create-admin-profile` phase 1):
      *   when set, copy the command to the clipboard. When unset, print it to
      *   the terminal so the user can read it directly.
+     * @param {string} [options.maasProject=''] - LXD project managed by MAAS
+     *   (e.g. 'k3s-cluster'). When set, all lxc commands target this project so
+     *   MAAS can enumerate the VMs in its machines UI.
+     * @param {boolean} [options.moveToProject=false] - Stop the VM identified
+     *   by `vmId`, move it from the default project to `maasProject`, then start
+     *   it so MAAS picks it up. Requires `--maas-project`.
      * @memberof UnderpostLxd
      */
     async callback(
+      vmId = '',
       options = {
         init: false,
         reset: false,
@@ -99,20 +107,32 @@ class UnderpostLxd {
         createAdminProfile: false,
         control: false,
         worker: false,
-        initVm: '',
-        deleteVm: '',
-        createVm: '',
-        infoVm: '',
+        vmInit: false,
+        vmDelete: false,
+        vmCreate: false,
+        vmInfo: false,
         rootSize: '',
         joinNode: '',
         expose: '',
+        nodePort: '',
         deleteExpose: '',
-        test: '',
+        vmTest: false,
+        vmSyncEngine: false,
         copy: false,
+        maasProject: '',
+        moveToProject: false,
       },
     ) {
       const npmRoot = getNpmRootPath();
       const underpostRoot = options?.dev === true ? '.' : `${npmRoot}/underpost`;
+      const currentVmId = vmId ? String(vmId).trim() : '';
+      const vmCreate = options.vmCreate === true;
+      const vmDelete = options.vmDelete === true;
+      const vmInfo = options.vmInfo === true;
+      const vmInit = options.vmInit === true;
+      const vmTest = options.vmTest === true;
+      const vmSyncEngine = options.vmSyncEngine === true;
+      UnderpostLxd._project = options.maasProject ? String(options.maasProject).trim() : '';
 
       // =====================================================================
       // SHUTDOWN: graceful pre-host-reboot procedure
@@ -161,38 +181,68 @@ class UnderpostLxd {
       if (options.init === true) {
         shellExec(`sudo systemctl start snap.lxd.daemon`);
         shellExec(`sudo systemctl status snap.lxd.daemon`);
-        const lxdPreseedContent = fs
-          .readFileSync(`${underpostRoot}/manifests/lxd/lxd-preseed.yaml`, 'utf8')
-          .replaceAll(`127.0.0.1`, Underpost.dns.getLocalIPv4Address());
-        shellExec(`echo "${lxdPreseedContent}" | lxd init --preseed`);
-        shellExec(`lxc cluster list`);
+        if (UnderpostLxd._lxdInitialized()) {
+          logger.info('LXD is already initialized (storage pool present); skipping preseed.');
+        } else {
+          const lxdPreseedContent = fs
+            .readFileSync(`${underpostRoot}/manifests/lxd/lxd-preseed.yaml`, 'utf8')
+            .replaceAll(`127.0.0.1`, Underpost.dns.getLocalIPv4Address());
+          shellExec(`echo "${lxdPreseedContent}" | lxd init --preseed`);
+        }
+        shellExec(`${UnderpostLxd._lxcCmd()} cluster list`);
       }
 
       // =====================================================================
       // CREATE VIRTUAL NETWORK
+      //
+      // LXD-managed bridge so its native features work — the host is the
+      // gateway (10.250.250.1), LXD masquerades VM egress (`ipv4.nat`), and the
+      // managed subnet lets instance NICs carry a static `ipv4.address`, which
+      // NAT-mode proxy devices (`--expose`) require.
+      //
+      // MAAS harmony: LXD spawns a dnsmasq for any managed subnet, and on this
+      // host that dnsmasq cannot bind :53/:67 (MAAS's named/dhcpd already own
+      // them), so a default managed bridge dies with "Address already in use".
+      // We neutralize dnsmasq instead of dropping the subnet:
+      //   - ipv4.dhcp=false  → no DHCP, no :67 bind (MAAS owns DHCP).
+      //   - dns.mode=none + raw.dnsmasq=port=0 → no DNS, no :53 bind. dns.mode
+      //     alone does not force port=0 in dnsmasq, hence the explicit raw line.
+      // dnsmasq then starts but opens no listening sockets — no collision.
+      //
+      // Settings are applied inline at create time so dnsmasq is neutralized on
+      // its first spawn (not after a racing default-config start). Idempotent:
+      // reconcile when the network already exists.
       // =====================================================================
       if (options.createVirtualNetwork === true) {
-        const ipv4Address = options.ipv4Address ? options.ipv4Address : '10.250.250.1/24';
+        const gatewayCidr = options.ipv4Address ? options.ipv4Address : '10.250.250.1/24';
+        // Order matters for the reconcile path: neutralize dnsmasq (no DHCP, no
+        // DNS listener) BEFORE assigning ipv4.address, or setting the subnet on
+        // an existing bridge spawns a default dnsmasq that collides with MAAS
+        // before raw.dnsmasq lands. On a fresh inline create this is atomic.
         const bridgeSettings = {
-          'ipv4.address': ipv4Address,
-          'ipv4.nat': 'true',
-          'ipv4.dhcp': 'true',
-          'ipv4.firewall': 'true',
-          'dns.mode': 'managed',
+          'ipv4.dhcp': 'false',
+          'dns.mode': 'none',
+          'raw.dnsmasq': 'port=0',
           'ipv6.address': 'none',
+          'ipv4.address': gatewayCidr,
+          'ipv4.nat': 'true',
+          'ipv4.firewall': 'true',
         };
 
         if (UnderpostLxd._networkExists(BRIDGE_NETWORK)) {
           logger.info(`Network '${BRIDGE_NETWORK}' already exists; reconciling managed bridge settings.`);
+          for (const [key, value] of Object.entries(bridgeSettings)) {
+            shellExec(`${UnderpostLxd._lxcCmd()} network set ${BRIDGE_NETWORK} ${key} "${value}"`);
+          }
         } else {
-          shellExec(`lxc network create ${BRIDGE_NETWORK}`);
+          const inlineConfig = Object.entries(bridgeSettings)
+            .map(([key, value]) => `${key}="${value}"`)
+            .join(' ');
+          shellExec(`${UnderpostLxd._lxcCmd()} network create ${BRIDGE_NETWORK} ${inlineConfig}`);
         }
 
-        for (const [key, value] of Object.entries(bridgeSettings)) {
-          shellExec(`lxc network set ${BRIDGE_NETWORK} ${key} ${value}`);
-        }
-        shellExec(`sudo firewall-cmd --permanent --zone=trusted --add-interface=${BRIDGE_NETWORK}`);
-        shellExec(`sudo firewall-cmd --reload`);
+        UnderpostLxd._ensureBridgeInTrustedZone(BRIDGE_NETWORK);
+        UnderpostLxd._ensureBridgeForwardingAccept(BRIDGE_NETWORK);
       }
 
       // =====================================================================
@@ -220,16 +270,89 @@ class UnderpostLxd {
             console.log(`\n  ${createCmd}\n`);
           }
         } else {
-          shellExec(`cat ${underpostRoot}/manifests/lxd/lxd-admin-profile.yaml | lxc profile edit ${ADMIN_PROFILE}`);
-          shellExec(`lxc profile show ${ADMIN_PROFILE}`);
+          shellExec(
+            `cat ${underpostRoot}/manifests/lxd/lxd-admin-profile.yaml | ${UnderpostLxd._lxcCmd()} profile edit ${ADMIN_PROFILE}`,
+          );
+          shellExec(`${UnderpostLxd._lxcCmd()} profile show ${ADMIN_PROFILE}`);
         }
       }
 
       // =====================================================================
       // DELETE VM (idempotent via pre-condition checks; no silent errors)
       // =====================================================================
-      if (options.deleteVm) {
-        UnderpostLxd._safeDeleteVm(options.deleteVm);
+      if (vmDelete) {
+        if (!currentVmId) {
+          throw new Error(`--vm-delete requires the [vm-id] command argument.`);
+        }
+        UnderpostLxd._safeDeleteVm(currentVmId);
+      }
+
+      // =====================================================================
+      // MOVE VM TO PROJECT (stop + cross-project move + start for MAAS)
+      // =====================================================================
+      if (options.moveToProject === true) {
+        if (!currentVmId) {
+          throw new Error(`--move-to-project requires the [vm-id] command argument.`);
+        }
+        if (!UnderpostLxd._project) {
+          throw new Error(`--move-to-project requires --maas-project <projectName>.`);
+        }
+        const rawState = shellExec(`lxc list ${currentVmId} --format json`, { stdout: true }).trim();
+        const arr = JSON.parse(rawState || '[]');
+        const inst = Array.isArray(arr) ? arr.find((i) => i?.name === currentVmId) : null;
+        if (!inst) throw new Error(`VM '${currentVmId}' not found in the default project.`);
+
+        // Ensure every profile the VM references exists in the target project.
+        // `lxc move` across projects fails with "Profile not found" if the
+        // target project does not have the same profiles as the source.
+        //
+        // Two-phase pattern (mirrors --create-admin-profile): `lxc profile create`
+        // can hang waiting on stdin/tty, so we NEVER run it programmatically.
+        //   Phase 1 (profile absent in target): surface the create command and exit.
+        //   Phase 2 (profile present in target): sync the YAML from the default project.
+        const vmProfiles = Array.isArray(inst.profiles) ? inst.profiles : [];
+        const targetProfilesRaw = shellExec(`${UnderpostLxd._lxcCmd()} profile list --format json`, {
+          stdout: true,
+        }).trim();
+        const targetProfiles = JSON.parse(targetProfilesRaw || '[]');
+        const targetProfileNames = Array.isArray(targetProfiles) ? targetProfiles.map((p) => p?.name) : [];
+        for (const profileName of vmProfiles) {
+          if (profileName === 'default') continue; // every project already has 'default'
+          if (!targetProfileNames.includes(profileName)) {
+            const createCmd = `lxc --project ${UnderpostLxd._project} profile create ${profileName}`;
+            if (options.copy === true) {
+              logger.warn(
+                `Profile '${profileName}' not found in project '${UnderpostLxd._project}'. The create command has been copied to your clipboard — run it, then re-run --move-to-project.`,
+              );
+              pbcopy(createCmd);
+            } else {
+              logger.warn(
+                `Profile '${profileName}' not found in project '${UnderpostLxd._project}'. Run the command below in your shell, then re-run --move-to-project. (Pass --copy to put it on the clipboard instead.)`,
+              );
+              console.log(`\n  ${createCmd}\n`);
+            }
+            return;
+          }
+          // Phase 2: profile exists in target — sync YAML from default project.
+          // Explicitly use --project default on the source side so the read is
+          // unambiguous regardless of any active project context.
+          logger.info(`Syncing profile '${profileName}' YAML into project '${UnderpostLxd._project}'...`);
+          shellExec(
+            `lxc --project default profile show ${profileName} | ${UnderpostLxd._lxcCmd()} profile edit ${profileName}`,
+          );
+          logger.info(`  Profile '${profileName}' synced.`);
+        }
+
+        if (inst.status === 'Running' || inst.status === 'Frozen') {
+          logger.info(`Stopping VM '${currentVmId}' before cross-project move...`);
+          shellExec(`lxc stop ${currentVmId} --timeout 60`);
+        }
+        logger.info(`Moving VM '${currentVmId}' to project '${UnderpostLxd._project}'...`);
+        shellExec(`lxc move ${currentVmId} ${currentVmId} --target-project ${UnderpostLxd._project}`);
+        logger.info(`VM '${currentVmId}' is now in project '${UnderpostLxd._project}'. Starting...`);
+        shellExec(`${UnderpostLxd._lxcCmd()} start ${currentVmId}`);
+        logger.info(`VM '${currentVmId}' started in project '${UnderpostLxd._project}'.`);
+        return;
       }
 
       // =====================================================================
@@ -240,18 +363,22 @@ class UnderpostLxd {
       // `lxc launch` itself (it can hang on first image fetch or AppArmor
       // negotiation in some snap setups), so the user always invokes it.
       // =====================================================================
-      if (options.createVm) {
-        const launchCmd = `lxc launch images:rockylinux/9 ${
-          options.createVm
+      if (vmCreate) {
+        if (!currentVmId) {
+          throw new Error(`--vm-create requires the [vm-id] command argument.`);
+        }
+        const vmName = currentVmId;
+        const launchCmd = `${UnderpostLxd._lxcCmd()} launch images:rockylinux/9 ${
+          vmName
         } --vm --target lxd-node1 -c limits.cpu=2 -c limits.memory=4GB --profile ${ADMIN_PROFILE} -d root,size=${
           options.rootSize ? options.rootSize + 'GiB' : '32GiB'
         }`;
         if (options.copy === true) {
-          logger.info(`Launch command for VM '${options.createVm}' copied to clipboard. Run it in your shell.`);
+          logger.info(`Launch command for VM '${vmName}' copied to clipboard. Run it in your shell.`);
           pbcopy(launchCmd);
         } else {
           logger.info(
-            `Run the launch command below in your shell to create VM '${options.createVm}'. (Pass --copy to put it on the clipboard instead.)`,
+            `Run the launch command below in your shell to create VM '${vmName}'. (Pass --copy to put it on the clipboard instead.)`,
           );
           console.log(`\n  ${launchCmd}\n`);
         }
@@ -260,24 +387,23 @@ class UnderpostLxd {
       // =====================================================================
       // INIT VM (OS setup + engine bootstrap + K3s role)
       // =====================================================================
-      if (options.initVm) {
-        const vmName = options.initVm;
+      if (vmInit) {
+        if (!currentVmId) {
+          throw new Error(`--vm-init requires the [vm-id] command argument.`);
+        }
+        const vmName = currentVmId;
         if (!UnderpostLxd._vmExists(vmName)) {
-          throw new Error(`VM '${vmName}' does not exist. Create it first with --create-vm.`);
+          throw new Error(`VM '${vmName}' does not exist. Create it first with 'underpost lxd ${vmName} --vm-create'.`);
         }
         const lxdSetupPath = `${underpostRoot}/scripts/lxd-vm-setup.sh`;
         const k3sSetupPath = `${underpostRoot}/scripts/k3s-node-setup.sh`;
 
-        // Step 1: OS base setup. Pass a deterministic per-VM static fallback IP
-        // so multiple VMs that fail DHCP don't all collide on 10.250.250.100
-        // and break K3s worker→control joins.
         const fallbackIp = UnderpostLxd._allocateFallbackIp(vmName);
         logger.info(`[${vmName}] Step 1/3: OS base setup (DHCP fallback IP: ${fallbackIp}/24)...`);
-        shellExec(`cat ${lxdSetupPath} | lxc exec ${vmName} --env LXD_FALLBACK_IPV4_CIDR=${fallbackIp}/24 -- bash`);
+        shellExec(
+          `cat ${lxdSetupPath} | ${UnderpostLxd._lxcCmd()} exec ${vmName} --env LXD_FALLBACK_IPV4_CIDR=${fallbackIp}/24 --env LXD_NODE_NAME=${vmName} -- bash`,
+        );
 
-        // Step 2: Mirror /home/dd/engine into the VM. Mandatory: the K3s role
-        // setup resolves every command via `node bin ...` from this directory,
-        // not from a global `underpost` install.
         logger.info(`[${vmName}] Step 2/3: Bootstrapping engine source into VM...`);
         await UnderpostLxd._bootstrapEngineSource(vmName);
 
@@ -287,17 +413,20 @@ class UnderpostLxd {
         if (options.worker === true) {
           if (!options.joinNode) {
             throw new Error(
-              `--init-vm --worker requires --join-node <controlVmName>. A worker is meaningless without a control plane to join; the script would only fail after npm install completes.`,
+              `--vm-init --worker requires --join-node <controlVmName>. A worker is meaningless without a control plane to join; the script would only fail after npm install completes.`,
             );
           }
           const controlNode = options.joinNode.includes(',') ? options.joinNode.split(',').pop() : options.joinNode;
           const { ip: controlPlaneIp, token: k3sToken } = UnderpostLxd._readControlPlaneJoinInfo(controlNode);
           logger.info(`[${vmName}] Joining control plane ${controlNode} (${controlPlaneIp})`);
           shellExec(
-            `cat ${k3sSetupPath} | lxc exec ${vmName} -- bash -s -- ${baseArgs} --worker --control-ip=${controlPlaneIp} --token=${k3sToken}`,
+            `cat ${k3sSetupPath} | ${UnderpostLxd._lxcCmd()} exec ${vmName} -- bash -s -- ${baseArgs} --worker --control-ip=${controlPlaneIp} --token=${k3sToken}`,
           );
+          UnderpostLxd._labelWorkerNodeRole(controlNode, vmName);
         } else {
-          shellExec(`cat ${k3sSetupPath} | lxc exec ${vmName} -- bash -s -- ${baseArgs} --control`);
+          shellExec(
+            `cat ${k3sSetupPath} | ${UnderpostLxd._lxcCmd()} exec ${vmName} -- bash -s -- ${baseArgs} --control`,
+          );
         }
         logger.info(`[${vmName}] Init complete. Engine mirrored at ${ENGINE_ROOT_IN_VM}.`);
       }
@@ -305,7 +434,7 @@ class UnderpostLxd {
       // =====================================================================
       // STANDALONE JOIN
       // =====================================================================
-      if (options.joinNode && !options.initVm) {
+      if (options.joinNode && !vmInit) {
         const [workerNode, controlNode] = options.joinNode.split(',');
         if (!workerNode || !controlNode) {
           throw new Error(`--join-node standalone requires 'workerName,controlName' format.`);
@@ -317,43 +446,70 @@ class UnderpostLxd {
         const k3sSetupPath = `${underpostRoot}/scripts/k3s-node-setup.sh`;
         logger.info(`Joining K3s worker ${workerNode} to control plane ${controlNode} (${controlPlaneIp})`);
         shellExec(
-          `cat ${k3sSetupPath} | lxc exec ${workerNode} -- bash -s -- --engine-root=${ENGINE_ROOT_IN_VM} --worker --control-ip=${controlPlaneIp} --token=${k3sToken}`,
+          `cat ${k3sSetupPath} | ${UnderpostLxd._lxcCmd()} exec ${workerNode} -- bash -s -- --engine-root=${ENGINE_ROOT_IN_VM} --worker --control-ip=${controlPlaneIp} --token=${k3sToken}`,
         );
+        UnderpostLxd._labelWorkerNodeRole(controlNode, workerNode);
         logger.info(`Worker ${workerNode} joined successfully.`);
       }
 
       // =====================================================================
       // INFO VM
       // =====================================================================
-      if (options.infoVm) {
-        shellExec(`lxc config show ${options.infoVm}`);
-        shellExec(`lxc info --show-log ${options.infoVm}`);
-        shellExec(`lxc info ${options.infoVm}`);
-        shellExec(`lxc list ${options.infoVm}`);
+      if (vmInfo) {
+        if (!currentVmId) {
+          throw new Error(`--vm-info requires the [vm-id] command argument.`);
+        }
+        const vmName = currentVmId;
+        shellExec(`${UnderpostLxd._lxcCmd()} config show ${vmName}`);
+        shellExec(`${UnderpostLxd._lxcCmd()} info --show-log ${vmName}`);
+        shellExec(`${UnderpostLxd._lxcCmd()} info ${vmName}`);
+        shellExec(`${UnderpostLxd._lxcCmd()} list ${vmName}`);
       }
 
       // =====================================================================
-      // EXPOSE (proxy host ports to VM)
+      // EXPOSE (host LAN port -> VM NodePort via LXD NAT-mode proxy device)
+      //
+      // NAT-mode proxy on a VM requires the host to be the gateway (it is) and a
+      // static ipv4.address on the instance NIC. _ensureNicStaticIpv4 pins that
+      // (with security.ipv4_filtering so it's accepted on the DHCP-less bridge),
+      // then the proxy device forwards listen=host -> connect=VM, preserving the
+      // client address via NAT. When exposing known service ports (MongoDB 27017,
+      // Valkey 6379), also persist the host-side runtime env so `node src/server`
+      // on the physical host dials the LXD proxy instead of localhost defaults.
       // =====================================================================
       if (options.expose) {
         const [vmName, ports] = options.expose.split(':');
         const protocols = ['tcp'];
         const hostIp = Underpost.dns.getLocalIPv4Address();
+        const exposedHostPorts = ports
+          .split(',')
+          .map((port) => port.trim())
+          .filter((port) => port.length > 0);
         const vmIp = UnderpostLxd._vmIpv4(vmName);
         if (!vmIp) {
           throw new Error(`Could not resolve VM IP for ${vmName}. Cannot expose ports.`);
         }
-        for (const port of ports.split(',')) {
+        UnderpostLxd._ensureNicStaticIpv4(vmName, vmIp);
+        for (const port of exposedHostPorts) {
+          const connectPort = options.nodePort ? options.nodePort : port;
           for (const protocol of protocols) {
             const deviceName = `${vmName}-${protocol}-port-${port}`;
             if (UnderpostLxd._vmHasDevice(vmName, deviceName)) {
-              shellExec(`lxc config device remove ${vmName} ${deviceName}`);
+              shellExec(`${UnderpostLxd._lxcCmd()} config device remove ${vmName} ${deviceName}`);
             }
             shellExec(
-              `lxc config device add ${vmName} ${deviceName} proxy listen=${protocol}:${hostIp}:${port} connect=${protocol}:${vmIp}:${port} nat=true`,
+              `${UnderpostLxd._lxcCmd()} config device add ${vmName} ${deviceName} proxy listen=${protocol}:${hostIp}:${port} connect=${protocol}:${vmIp}:${connectPort} nat=true`,
             );
-            logger.info(`Exposed ${protocol}:${hostIp}:${port} -> ${vmIp}:${port} on ${vmName}`);
+            logger.info(`Exposed ${protocol}:${hostIp}:${port} -> ${vmIp}:${connectPort} on ${vmName}`);
           }
+        }
+        if (exposedHostPorts.includes('27017') || exposedHostPorts.includes('6379')) {
+          Underpost.cluster.syncServiceConnectionEnv({
+            serviceHost: hostIp,
+            mongodb: exposedHostPorts.includes('27017'),
+            valkey: exposedHostPorts.includes('6379'),
+            options,
+          });
         }
       }
 
@@ -367,7 +523,7 @@ class UnderpostLxd {
           for (const protocol of protocols) {
             const deviceName = `${vmName}-${protocol}-port-${port}`;
             if (UnderpostLxd._vmHasDevice(vmName, deviceName)) {
-              shellExec(`lxc config device remove ${vmName} ${deviceName}`);
+              shellExec(`${UnderpostLxd._lxcCmd()} config device remove ${vmName} ${deviceName}`);
             } else {
               logger.info(`Device ${deviceName} not present on ${vmName}; skipping.`);
             }
@@ -376,25 +532,46 @@ class UnderpostLxd {
       }
 
       // =====================================================================
+      // SYNC ENGINE (re-copy host engine source into VM)
+      // =====================================================================
+      if (vmSyncEngine) {
+        if (!currentVmId) {
+          throw new Error(`--vm-sync-engine requires the [vm-id] command argument.`);
+        }
+        const vmName = currentVmId;
+        if (!UnderpostLxd._vmExists(vmName)) {
+          throw new Error(`VM '${vmName}' does not exist.`);
+        }
+        logger.info(`[${vmName}] Syncing engine source from host...`);
+        await UnderpostLxd._bootstrapEngineSource(vmName);
+        UnderpostLxd._execVmNodeCommand(vmName, `cd ${ENGINE_ROOT_IN_VM} && npm install`, { requireNpm: true });
+        logger.info(`[${vmName}] Engine source sync complete.`);
+        return;
+      }
+
+      // =====================================================================
       // TEST (connectivity and health checks)
       // =====================================================================
-      if (options.test) {
-        const vmName = options.test;
+      if (vmTest) {
+        if (!currentVmId) {
+          throw new Error(`--vm-test requires the [vm-id] command argument.`);
+        }
+        const vmName = currentVmId;
         const vmIp = UnderpostLxd._vmIpv4(vmName);
         logger.info(`VM ${vmName} IPv4: ${vmIp || 'none'}`);
         const httpStatus = shellExec(
-          `lxc exec ${vmName} -- curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://google.com`,
+          `${UnderpostLxd._lxcCmd()} exec ${vmName} -- curl -s -o /dev/null -w "%{http_code}" --max-time 5 http://google.com`,
           { stdout: true },
         ).trim();
         logger.info(`VM ${vmName} HTTP connectivity: ${httpStatus}`);
         logger.info(`Health report for VM: ${vmName}`);
-        shellExec(`lxc list ${vmName} --format json`);
-        shellExec(`lxc exec ${vmName} -- bash -c 'top -bn1 | grep "Cpu(s)"'`);
-        shellExec(`lxc exec ${vmName} -- bash -c 'free -m'`);
-        shellExec(`lxc exec ${vmName} -- bash -c 'df -h /'`);
-        shellExec(`lxc exec ${vmName} -- bash -c 'ip a'`);
-        shellExec(`lxc exec ${vmName} -- bash -c 'cat /etc/resolv.conf'`);
-        shellExec(`lxc exec ${vmName} -- bash -c 'sudo k3s kubectl get nodes'`);
+        shellExec(`${UnderpostLxd._lxcCmd()} list ${vmName} --format json`);
+        shellExec(`${UnderpostLxd._lxcCmd()} exec ${vmName} -- bash -c 'top -bn1 | grep "Cpu(s)"'`);
+        shellExec(`${UnderpostLxd._lxcCmd()} exec ${vmName} -- bash -c 'free -m'`);
+        shellExec(`${UnderpostLxd._lxcCmd()} exec ${vmName} -- bash -c 'df -h /'`);
+        shellExec(`${UnderpostLxd._lxcCmd()} exec ${vmName} -- bash -c 'ip a'`);
+        shellExec(`${UnderpostLxd._lxcCmd()} exec ${vmName} -- bash -c 'cat /etc/resolv.conf'`);
+        shellExec(`${UnderpostLxd._lxcCmd()} exec ${vmName} -- bash -c 'sudo k3s kubectl get nodes'`);
       }
     },
   };
@@ -412,9 +589,12 @@ class UnderpostLxd {
    * @private
    */
   static _listVms() {
-    const raw = shellExec(`lxc list --format json | jq -r '.[] | select(.type=="virtual-machine") | .name // empty'`, {
-      stdout: true,
-    }).trim();
+    const raw = shellExec(
+      `${UnderpostLxd._lxcCmd()} list --format json | jq -r '.[] | select(.type=="virtual-machine") | .name // empty'`,
+      {
+        stdout: true,
+      },
+    ).trim();
     if (!raw) return [];
     return raw.split('\n').filter((n) => n.length > 0);
   }
@@ -427,7 +607,7 @@ class UnderpostLxd {
    * @private
    */
   static _vmState(vmName) {
-    const raw = shellExec(`lxc list ${vmName} --format json`, { stdout: true }).trim();
+    const raw = shellExec(`${UnderpostLxd._lxcCmd()} list ${vmName} --format json`, { stdout: true }).trim();
     if (!raw) return null;
     const arr = JSON.parse(raw);
     const inst = Array.isArray(arr) ? arr.find((i) => i?.name === vmName) : null;
@@ -452,23 +632,61 @@ class UnderpostLxd {
    * @private
    */
   static _vmIpv4(vmName) {
-    const defaultRoute = shellExec(`lxc exec ${vmName} -- ip -4 -o route show default`, { stdout: true }).trim();
+    const defaultRoute = shellExec(`${UnderpostLxd._lxcCmd()} exec ${vmName} -- ip -4 -o route show default`, {
+      stdout: true,
+    }).trim();
     const defaultRouteTokens = defaultRoute ? defaultRoute.split(/\s+/) : [];
     const devIndex = defaultRouteTokens.indexOf('dev');
     const defaultIface = devIndex >= 0 ? defaultRouteTokens[devIndex + 1] || '' : '';
 
     if (defaultIface) {
-      const defaultIfaceAddr = shellExec(`lxc exec ${vmName} -- ip -4 -o addr show dev ${defaultIface} scope global`, {
-        stdout: true,
-      }).trim();
+      const defaultIfaceAddr = shellExec(
+        `${UnderpostLxd._lxcCmd()} exec ${vmName} -- ip -4 -o addr show dev ${defaultIface} scope global`,
+        {
+          stdout: true,
+        },
+      ).trim();
       const routeScopedIp = defaultIfaceAddr.match(/\binet\s+([0-9.]+)\//)?.[1] || '';
       if (routeScopedIp) return routeScopedIp;
     }
 
     return shellExec(
-      `lxc list ${vmName} --format json | jq -r '[.[0].state.network | to_entries[] | select(.key!="lo") | .value.addresses[]? | select(.family=="inet" and .scope=="global") | .address | select(test("^10\\.42\\.|^10\\.43\\.|^169\\.254\\.") | not)] | .[0] // empty'`,
+      `${UnderpostLxd._lxcCmd()} list ${vmName} --format json | jq -r '[.[0].state.network | to_entries[] | select(.key!="lo") | .value.addresses[]? | select(.family=="inet" and .scope=="global") | .address | select(test("^10\\.42\\.|^10\\.43\\.|^169\\.254\\.") | not)] | .[0] // empty'`,
       { stdout: true },
     ).trim();
+  }
+
+  /**
+   * Pins the VM's lxdbr0 NIC to a static `ipv4.address` equal to `vmIp`, which
+   * NAT-mode proxy devices require. `security.ipv4_filtering=true` is set in the
+   * same call: lxdbr0 runs no DHCP, and LXD only permits a static NIC address
+   * on a DHCP-less managed bridge when filtering is enabled (it also anti-spoofs
+   * the VM to that IP). The eth0 NIC comes from admin-profile, so override it on
+   * first touch and set thereafter. Same IP as the current lease -> no disruption.
+   * @param {string} vmName
+   * @param {string} vmIp
+   * @private
+   */
+  static _ensureNicStaticIpv4(vmName, vmIp) {
+    const nic = 'eth0';
+    const raw = shellExec(`${UnderpostLxd._lxcCmd()} list ${vmName} --format json`, { stdout: true }).trim();
+    const arr = JSON.parse(raw || '[]');
+    const inst = Array.isArray(arr) ? arr.find((i) => i?.name === vmName) : null;
+    const instanceDevices = inst?.devices || {};
+    const currentStatic = instanceDevices[nic]?.['ipv4.address'] || '';
+    const hasLocalNic = !!instanceDevices[nic];
+    const verb = hasLocalNic ? 'set' : 'override';
+    if (currentStatic !== vmIp) {
+      shellExec(
+        `${UnderpostLxd._lxcCmd()} config device ${verb} ${vmName} ${nic} ipv4.address=${vmIp} security.ipv4_filtering=true`,
+      );
+      logger.info(`  Pinned ${vmName} NIC ${nic} to static ${vmIp} (required for NAT proxy on VMs).`);
+    } else {
+      shellExec(`${UnderpostLxd._lxcCmd()} config device set ${vmName} ${nic} security.ipv4_filtering=true`, {
+        silentOnError: true,
+      });
+      logger.info(`  NIC ${nic} on ${vmName} already pinned to static ${vmIp}.`);
+    }
   }
 
   /**
@@ -480,11 +698,11 @@ class UnderpostLxd {
    */
   static _vmHasDevice(vmName, deviceName) {
     if (!UnderpostLxd._vmExists(vmName)) return false;
-    const raw = shellExec(`lxc query /1.0/instances/${vmName}?recursion=1 | jq -r '.expanded_devices // {} | keys[]'`, {
-      stdout: true,
-    }).trim();
-    if (!raw) return false;
-    return raw.split('\n').some((n) => n.trim() === deviceName);
+    const raw = shellExec(`${UnderpostLxd._lxcCmd()} list ${vmName} --format json`, { stdout: true }).trim();
+    const arr = JSON.parse(raw || '[]');
+    const inst = Array.isArray(arr) ? arr.find((i) => i?.name === vmName) : null;
+    if (!inst) return false;
+    return Object.prototype.hasOwnProperty.call(inst.expanded_devices || {}, deviceName);
   }
 
   /**
@@ -493,7 +711,7 @@ class UnderpostLxd {
    * @private
    */
   static _profileExists(name) {
-    const raw = shellExec(`lxc profile list --format json`, { stdout: true }).trim();
+    const raw = shellExec(`${UnderpostLxd._lxcCmd()} profile list --format json`, { stdout: true }).trim();
     const arr = JSON.parse(raw || '[]');
     return Array.isArray(arr) && arr.some((p) => p?.name === name);
   }
@@ -504,9 +722,78 @@ class UnderpostLxd {
    * @private
    */
   static _networkExists(name) {
-    const raw = shellExec(`lxc network list --format json`, { stdout: true }).trim();
+    const raw = shellExec(`${UnderpostLxd._lxcCmd()} network list --format json`, { stdout: true }).trim();
     const arr = JSON.parse(raw || '[]');
     return Array.isArray(arr) && arr.some((n) => n?.name === name);
+  }
+
+  /**
+   * True once `lxd init --preseed` has bootstrapped this daemon. Detected by the
+   * presence of any storage pool: the preseed creates `local`, and a fresh
+   * daemon has none. `lxc storage list` exits 0 with `[]` before init, so this
+   * never throws on a not-yet-initialized host.
+   * @returns {boolean}
+   * @private
+   */
+  static _lxdInitialized() {
+    const raw = shellExec(`${UnderpostLxd._lxcCmd()} storage list --format json`, {
+      stdout: true,
+      silentOnError: true,
+    }).trim();
+    if (!raw) return false;
+    let arr;
+    try {
+      arr = JSON.parse(raw);
+    } catch {
+      return false;
+    }
+    return Array.isArray(arr) && arr.length > 0;
+  }
+
+  /**
+   * Adds the bridge to the firewalld `trusted` zone so VM<->host and VM
+   * outbound traffic isn't dropped by the host firewall. Idempotent and
+   * resilient: re-adding an already-trusted interface is a no-op, and hosts
+   * without firewalld are skipped rather than aborting bridge creation.
+   * @param {string} bridge
+   * @private
+   */
+  static _ensureBridgeInTrustedZone(bridge) {
+    const hasFirewalld = shellExec(`command -v firewall-cmd`, { stdout: true, silentOnError: true }).trim();
+    if (!hasFirewalld) {
+      logger.info(`firewall-cmd not found; skipping trusted-zone binding for ${bridge}.`);
+      return;
+    }
+    shellExec(`sudo firewall-cmd --permanent --zone=trusted --add-interface=${bridge}`, { silentOnError: true });
+    shellExec(`sudo firewall-cmd --reload`, { silentOnError: true });
+  }
+
+  /**
+   * Explicitly accepts forwarded traffic to/from the plain bridge in the
+   * iptables FORWARD chain. A LXD-managed bridge inserts these itself
+   * (`ipv4.firewall=true`); a plain bridge does not, so on a host where Docker
+   * has set the FORWARD policy to DROP, VM<->VM traffic on lxdbr0 (e.g. a k3s
+   * worker dialing the control plane API) is silently dropped once br_netfilter
+   * routes bridged frames through netfilter. Rules are prepended (position 1) so
+   * they win over Docker's DROP, and guarded by `-C` so re-runs don't duplicate.
+   * Not persisted across reboots/iptables flush by design — re-run
+   * `--create-virtual-network`, consistent with the rest of this lab flow.
+   * @param {string} bridge
+   * @private
+   */
+  static _ensureBridgeForwardingAccept(bridge) {
+    const hasIptables = shellExec(`command -v iptables`, { stdout: true, silentOnError: true }).trim();
+    if (!hasIptables) {
+      logger.info(`iptables not found; skipping FORWARD accept rules for ${bridge}.`);
+      return;
+    }
+    for (const dir of ['-i', '-o']) {
+      const present = shellExec(`sudo iptables -C FORWARD ${dir} ${bridge} -j ACCEPT`, { silentOnError: true });
+      if (present.code !== 0) {
+        shellExec(`sudo iptables -I FORWARD 1 ${dir} ${bridge} -j ACCEPT`);
+      }
+    }
+    logger.info(`Ensured FORWARD ACCEPT for ${bridge} (counters Docker/default DROP for VM<->VM traffic).`);
   }
 
   /**
@@ -519,6 +806,45 @@ class UnderpostLxd {
   static _snapInstalled(name) {
     const raw = shellExec(`snap list`, { stdout: true });
     return raw.split('\n').some((line) => new RegExp(`^${name}\\s`).test(line));
+  }
+
+  /**
+   * Single-quotes a shell argument for safe `bash -lc '...'` usage.
+   * @param {string} value
+   * @returns {string}
+   * @private
+   */
+  static _shellSingleQuote(value) {
+    return `'${`${value}`.replace(/'/g, `'\\''`)}'`;
+  }
+
+  /**
+   * Runs a command inside a VM with Node/NPM restored from the NVM install
+   * that k3s-node-setup.sh lays down. Non-login `bash -c` shells do not keep
+   * that PATH, so resolve it explicitly here.
+   * @param {string} vmName
+   * @param {string} command
+   * @param {object} [options]
+   * @param {boolean} [options.requireNpm=false]
+   * @param {number} [options.timeoutSeconds=0]
+   * @private
+   */
+  static _execVmNodeCommand(vmName, command, options = { requireNpm: false, timeoutSeconds: 0 }) {
+    const { requireNpm = false, timeoutSeconds = 0 } = options;
+    const runtimeBootstrap = [
+      'export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || printf %s "${XDG_CONFIG_HOME}/nvm")"',
+      '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"',
+      `if ! command -v node >/dev/null 2>&1${requireNpm ? ' || ! command -v npm >/dev/null 2>&1' : ''}; then latest_nvm_bin="$(ls -d "$NVM_DIR"/versions/node/*/bin 2>/dev/null | sort -V | tail -n 1)"; if [ -n "$latest_nvm_bin" ]; then export PATH="$latest_nvm_bin:$PATH"; fi; fi`,
+      'command -v node >/dev/null 2>&1 || { echo "ERROR: node not found in PATH or NVM_DIR=$NVM_DIR" >&2; exit 127; }',
+      requireNpm
+        ? 'command -v npm >/dev/null 2>&1 || { echo "ERROR: npm not found in PATH or NVM_DIR=$NVM_DIR" >&2; exit 127; }'
+        : '',
+      command,
+    ]
+      .filter(Boolean)
+      .join(' && ');
+    const lxcExecCmd = `${UnderpostLxd._lxcCmd()} exec ${vmName} -- bash -lc ${UnderpostLxd._shellSingleQuote(runtimeBootstrap)}`;
+    return shellExec(timeoutSeconds > 0 ? `timeout ${timeoutSeconds} ${lxcExecCmd}` : lxcExecCmd);
   }
 
   /**
@@ -538,19 +864,31 @@ class UnderpostLxd {
   }
 
   /**
-   * Reads the K3s join info (control plane IPv4 + node token) from a running
-   * control VM. Throws if either value is missing — callers depend on both.
+   * Reads the K3s join info (control plane IPv4 + node token) from the control
+   * VM. The control must already be running — VMs created with `admin-profile`
+   * have `boot.autostart=false`, so after a host reboot bring it up explicitly
+   * ('lxc start <control>' or 'node bin lxd --restore') before joining a worker.
+   * Throws if either value is missing — callers depend on both.
    * @param {string} controlNode
    * @returns {{ip: string, token: string}}
    * @private
    */
   static _readControlPlaneJoinInfo(controlNode) {
-    if (!UnderpostLxd._vmExists(controlNode)) {
+    const state = UnderpostLxd._vmState(controlNode);
+    if (state === null) {
       throw new Error(`Control node VM '${controlNode}' does not exist.`);
     }
-    const token = shellExec(`lxc exec ${controlNode} -- bash -c 'sudo cat /var/lib/rancher/k3s/server/node-token'`, {
-      stdout: true,
-    }).trim();
+    if (state !== 'Running') {
+      throw new Error(
+        `Control node VM '${controlNode}' is ${state}. Start it first ('lxc start ${controlNode}' or 'node bin lxd --restore'), then re-run the worker join.`,
+      );
+    }
+    const token = shellExec(
+      `${UnderpostLxd._lxcCmd()} exec ${controlNode} -- bash -c 'sudo cat /var/lib/rancher/k3s/server/node-token'`,
+      {
+        stdout: true,
+      },
+    ).trim();
     const ip = UnderpostLxd._vmIpv4(controlNode);
     if (!ip || !token) {
       throw new Error(`Could not read join info from control node '${controlNode}' (ip='${ip}', token='${token}').`);
@@ -559,9 +897,28 @@ class UnderpostLxd {
   }
 
   /**
-   * Enumerates and removes every device of `type: proxy` attached to a VM.
-   * Naming-agnostic. Skips if the VM is already gone; otherwise every
-   * `lxc config device remove` call propagates errors loudly.
+   * Applies the `node-role.kubernetes.io/worker` label to a freshly joined
+   * worker. A K3s agent cannot self-apply `node-role.kubernetes.io/*` labels
+   * (the NodeRestriction admission plugin rejects them), so the label must be
+   * set from the control plane after the worker registers — otherwise the node
+   * shows ROLES `<none>`. The K3s node name defaults to the VM hostname, which
+   * LXD sets to the instance name, so `workerName` is the VM name. Waits up to
+   * 60s for the node to appear before labeling.
+   * @param {string} controlNode
+   * @param {string} workerName
+   * @private
+   */
+  static _labelWorkerNodeRole(controlNode, workerName) {
+    logger.info(`Labeling worker '${workerName}' as node-role.kubernetes.io/worker (from control '${controlNode}')...`);
+    shellExec(
+      `${UnderpostLxd._lxcCmd()} exec ${controlNode} -- bash -c 'for i in $(seq 1 30); do if sudo k3s kubectl get node ${workerName} >/dev/null 2>&1; then sudo k3s kubectl label node ${workerName} node-role.kubernetes.io/worker=worker --overwrite && exit 0; fi; sleep 2; done; echo "WARN: worker ${workerName} did not register within 60s; role label not applied." >&2'`,
+    );
+  }
+
+  /**
+   * Enumerates and removes every device of `type: proxy` attached to a VM
+   * (the `--expose` NAT proxy devices). Naming-agnostic. Skips if the VM is
+   * already gone; otherwise every `lxc config device remove` propagates errors.
    * @param {string} vmName
    * @private
    */
@@ -571,19 +928,20 @@ class UnderpostLxd {
       return;
     }
     logger.info(`  Removing proxy devices from ${vmName}...`);
-    const devicesRaw = shellExec(
-      `lxc query /1.0/instances/${vmName}?recursion=1 | jq -r '.expanded_devices // {} | to_entries[] | select(.value.type=="proxy") | .key'`,
-      { stdout: true },
-    ).trim();
-    if (!devicesRaw) {
+    const raw = shellExec(`${UnderpostLxd._lxcCmd()} list ${vmName} --format json`, { stdout: true }).trim();
+    const arr = JSON.parse(raw || '[]');
+    const inst = Array.isArray(arr) ? arr.find((i) => i?.name === vmName) : null;
+    const expandedDevices = inst?.expanded_devices || {};
+    const proxyNames = Object.entries(expandedDevices)
+      .filter(([, dev]) => dev?.type === 'proxy')
+      .map(([name]) => name);
+    if (proxyNames.length === 0) {
       logger.info(`  No proxy devices found on ${vmName}.`);
       return;
     }
-    for (const deviceName of devicesRaw.split('\n')) {
-      const name = deviceName.trim();
-      if (!name) continue;
+    for (const name of proxyNames) {
       logger.info(`    Removing device: ${name}`);
-      shellExec(`lxc config device remove ${vmName} ${name}`);
+      shellExec(`${UnderpostLxd._lxcCmd()} config device remove ${vmName} ${name}`);
     }
   }
 
@@ -593,21 +951,25 @@ class UnderpostLxd {
    * engine mirror is missing. Bounded by `timeout 300`.
    * @param {string} vmName
    * @param {'drain'|'full'} resetMode - `drain` preserves K3s for next boot
-   *   (`--shutdown`); `full` uninstalls (`--delete-vm` / `--reset` / `--purge`).
+   *   (`--shutdown`); `full` uninstalls (`--vm-delete` / `--reset` / `--purge`).
    * @private
    */
   static _resetK3sInVm(vmName, resetMode) {
     if (UnderpostLxd._vmState(vmName) !== 'Running') return;
     const m = resetMode === 'drain' ? 'drain' : 'full';
     const probe = `if test -x /usr/local/bin/k3s && test -d ${ENGINE_ROOT_IN_VM}/bin; then echo yes; else echo no; fi`;
-    const probeOut = shellExec(`lxc exec ${vmName} -- bash -c '${probe}'`, { stdout: true }).trim();
+    const probeOut = shellExec(`${UnderpostLxd._lxcCmd()} exec ${vmName} -- bash -c '${probe}'`, {
+      stdout: true,
+    }).trim();
     if (probeOut !== 'yes') {
       logger.info(`  [${vmName}] No K3s+engine detected (probe=${probeOut}); skipping K3s reset.`);
       return;
     }
     logger.info(`  [${vmName}] Resetting K3s (resetMode=${m}) via 'node bin cluster --reset --k3s --reset-mode=${m}'`);
-    shellExec(
-      `timeout 300 lxc exec ${vmName} -- bash -lc 'cd ${ENGINE_ROOT_IN_VM} && node bin cluster --dev --reset --k3s --reset-mode=${m}'`,
+    UnderpostLxd._execVmNodeCommand(
+      vmName,
+      `cd ${ENGINE_ROOT_IN_VM} && node bin cluster --dev --reset --k3s --reset-mode=${m}`,
+      { timeoutSeconds: 300 },
     );
   }
 
@@ -634,10 +996,10 @@ class UnderpostLxd {
     if (state === 'Running' || state === 'Frozen') {
       UnderpostLxd._resetK3sInVm(vmName, 'full');
       logger.info(`  Stopping VM: ${vmName}`);
-      shellExec(`lxc stop ${vmName} --timeout 60`);
+      shellExec(`${UnderpostLxd._lxcCmd()} stop ${vmName} --timeout 60`);
     }
     logger.info(`  Deleting VM: ${vmName}`);
-    shellExec(`lxc delete ${vmName}`);
+    shellExec(`${UnderpostLxd._lxcCmd()} delete ${vmName}`);
     logger.info(`VM ${vmName} deleted.`);
   }
 
@@ -668,7 +1030,7 @@ class UnderpostLxd {
       if (state === 'Running' || state === 'Frozen') {
         UnderpostLxd._resetK3sInVm(vmName, 'full');
         logger.info(`  Stopping VM: ${vmName}`);
-        shellExec(`lxc stop ${vmName} --timeout 60`);
+        shellExec(`${UnderpostLxd._lxcCmd()} stop ${vmName} --timeout 60`);
       } else if (state !== null) {
         logger.info(`  VM ${vmName} already in state: ${state}`);
       }
@@ -678,16 +1040,16 @@ class UnderpostLxd {
     for (const vmName of vmList) {
       if (UnderpostLxd._vmExists(vmName)) {
         logger.info(`  Deleting VM: ${vmName}`);
-        shellExec(`lxc delete ${vmName}`);
+        shellExec(`${UnderpostLxd._lxcCmd()} delete ${vmName}`);
       }
     }
 
     logger.info(`Phase 4/4: Removing ${ADMIN_PROFILE} and ${BRIDGE_NETWORK} if present...`);
     if (UnderpostLxd._profileExists(ADMIN_PROFILE)) {
-      shellExec(`lxc profile delete ${ADMIN_PROFILE}`);
+      shellExec(`${UnderpostLxd._lxcCmd()} profile delete ${ADMIN_PROFILE}`);
     }
     if (UnderpostLxd._networkExists(BRIDGE_NETWORK)) {
-      shellExec(`lxc network delete ${BRIDGE_NETWORK}`);
+      shellExec(`${UnderpostLxd._lxcCmd()} network delete ${BRIDGE_NETWORK}`);
     }
 
     logger.info('=== LXD RESET COMPLETE ===');
@@ -741,7 +1103,7 @@ class UnderpostLxd {
       if (state === 'Running' || state === 'Frozen') {
         UnderpostLxd._resetK3sInVm(vmName, 'drain');
         logger.info(`  Stopping VM: ${vmName} (timeout 60s)`);
-        shellExec(`lxc stop ${vmName} --timeout 60`);
+        shellExec(`${UnderpostLxd._lxcCmd()} stop ${vmName} --timeout 60`);
       } else {
         logger.info(`  VM ${vmName} already in state: ${state}`);
       }
@@ -802,7 +1164,7 @@ class UnderpostLxd {
         logger.info(`  ${vmName} already running.`);
       } else {
         logger.info(`  Starting VM: ${vmName} (was: ${state})`);
-        shellExec(`lxc start ${vmName}`);
+        shellExec(`${UnderpostLxd._lxcCmd()} start ${vmName}`);
       }
     }
     logger.info('=== LXD RESTORE COMPLETE ===');
@@ -837,10 +1199,10 @@ class UnderpostLxd {
     fs.writeFileSync(includesFile, files.join('\n'));
 
     shellExec(
-      `lxc exec ${vmName} -- bash -c 'mkdir -p ${ENGINE_ROOT_IN_VM} && find ${ENGINE_ROOT_IN_VM} -mindepth 1 -delete'`,
+      `${UnderpostLxd._lxcCmd()} exec ${vmName} -- bash -c 'mkdir -p ${ENGINE_ROOT_IN_VM} && find ${ENGINE_ROOT_IN_VM} -mindepth 1 -delete'`,
     );
     shellExec(
-      `tar -C ${ENGINE_ROOT_ON_HOST} -cf - --files-from=${includesFile} | lxc exec ${vmName} -- tar -C ${ENGINE_ROOT_IN_VM} -xf -`,
+      `tar -C ${ENGINE_ROOT_ON_HOST} -cf - --files-from=${includesFile} | ${UnderpostLxd._lxcCmd()} exec ${vmName} -- tar -C ${ENGINE_ROOT_IN_VM} -xf -`,
     );
     fs.removeSync(includesFile);
 
@@ -855,10 +1217,10 @@ class UnderpostLxd {
       const privateIncludes = `/tmp/lxd-push-${vmName}-private-${Date.now()}.txt`;
       fs.writeFileSync(privateIncludes, privateFiles.join('\n'));
       shellExec(
-        `lxc exec ${vmName} -- bash -c 'mkdir -p ${ENGINE_ROOT_IN_VM}/engine-private && find ${ENGINE_ROOT_IN_VM}/engine-private -mindepth 1 -delete'`,
+        `${UnderpostLxd._lxcCmd()} exec ${vmName} -- bash -c 'mkdir -p ${ENGINE_ROOT_IN_VM}/engine-private && find ${ENGINE_ROOT_IN_VM}/engine-private -mindepth 1 -delete'`,
       );
       shellExec(
-        `tar -C ${privateSrcPath} -cf - --files-from=${privateIncludes} | lxc exec ${vmName} -- tar -C ${ENGINE_ROOT_IN_VM}/engine-private -xf -`,
+        `tar -C ${privateSrcPath} -cf - --files-from=${privateIncludes} | ${UnderpostLxd._lxcCmd()} exec ${vmName} -- tar -C ${ENGINE_ROOT_IN_VM}/engine-private -xf -`,
       );
       fs.removeSync(privateIncludes);
     }

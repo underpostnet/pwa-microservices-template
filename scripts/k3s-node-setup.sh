@@ -6,9 +6,10 @@ set -euo pipefail
 #
 # This script runs INSIDE an LXD VM. It assumes the host has already mirrored
 # the project source into $ENGINE_ROOT (default /home/dd/engine) via the
-# `--init-vm` flow in `src/cli/lxd.js`. There is no fallback to a globally
-# installed `underpost`: every operational command resolves from the local
-# project so the latest local changes are always what runs in the VM.
+# `underpost lxd [vm-id] --vm-init` flow in `src/cli/lxd.js`. There is no
+# fallback to a globally installed `underpost`: every operational command
+# resolves from the local project so the latest local changes are always what
+# runs in the VM.
 #
 # Usage:
 #   --engine-root=<path>   Path to the mirrored engine source (default: /home/dd/engine)
@@ -38,12 +39,12 @@ done
 # avoids needing an error-swallowing redirect.
 if [ ! -d "$ENGINE_ROOT" ]; then
     echo "ERROR: engine source directory $ENGINE_ROOT does not exist."
-    echo "The LXD --init-vm flow must mirror the project here before running this script."
+    echo "The LXD [vm-id] --vm-init flow must mirror the project here before running this script."
     exit 1
 fi
 if [ -z "$(ls -A "$ENGINE_ROOT")" ]; then
     echo "ERROR: engine source directory $ENGINE_ROOT is empty."
-    echo "The LXD --init-vm flow must mirror the project here before running this script."
+    echo "The LXD [vm-id] --vm-init flow must mirror the project here before running this script."
     exit 1
 fi
 
@@ -60,6 +61,10 @@ export NVM_DIR="$([ -z "${XDG_CONFIG_HOME-}" ] && printf %s "${HOME}/.nvm" || pr
 
 nvm install 24.15.0
 nvm use 24.15.0
+nvm alias default 24.15.0
+ln -sf "$(command -v node)" /usr/local/bin/node
+ln -sf "$(command -v npm)" /usr/local/bin/npm
+ln -sf "$(command -v npx)" /usr/local/bin/npx
 
 echo "
 ██╗░░░██╗███╗░░██╗██████╗░███████╗██████╗░██████╗░░█████╗░░██████╗████████╗
