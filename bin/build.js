@@ -4,6 +4,7 @@ import { shellExec } from '../src/server/process.js';
 import dotenv from 'dotenv';
 import { getCapVariableName } from '../src/client/components/core/CommonJs.js';
 import { getPathsSSR } from '../src/server/conf.js';
+import UnderpostRepository from '../src/cli/repository.js';
 
 const baseConfPath = './engine-private/conf/dd-cron/.env.production';
 if (fs.existsSync(baseConfPath)) dotenv.config({ path: baseConfPath, override: true });
@@ -83,7 +84,38 @@ if (confName === 'dd') {
   process.exit(0);
 }
 
-const { DefaultConf } = await import(`../conf.${confName}.js`);
+switch (confName) {
+  case 'dd-prototype':
+    UnderpostRepository.API.sparseCheckoutDirectory('conf/dd-prototype');
+    fs.mkdirSync('src/api', { recursive: true });
+    fs.mkdirSync('src/client/components', { recursive: true });
+    fs.mkdirSync('src/client/public', { recursive: true });
+    fs.mkdirSync('src/client/services', { recursive: true });
+    for (const [src, dest] of [
+      ['../engine-prototype/src/api/healthcare-appointment', 'src/api/healthcare-appointment'],
+      ['../engine-prototype/src/client/components/bymyelectrics', 'src/client/components/bymyelectrics'],
+      ['../engine-prototype/src/client/components/cecinasmarcelina', 'src/client/components/cecinasmarcelina'],
+      ['../engine-prototype/src/client/components/healthcare', 'src/client/components/healthcare'],
+      ['../engine-prototype/src/client/public/bymyelectrics', 'src/client/public/bymyelectrics'],
+      ['../engine-prototype/src/client/public/cecinasmarcelina', 'src/client/public/cecinasmarcelina'],
+      ['../engine-prototype/src/client/public/healthcare', 'src/client/public/healthcare'],
+      ['../engine-prototype/src/client/services/healthcare-appointment', 'src/client/services/healthcare-appointment'],
+      ['../engine-prototype/src/client/Bymyelectrics.index.js', 'src/client/Bymyelectrics.index.js'],
+      ['../engine-prototype/src/client/Cecinasmarcelina.index.js', 'src/client/Cecinasmarcelina.index.js'],
+      ['../engine-prototype/src/client/Healthcare.index.js', 'src/client/Healthcare.index.js'],
+    ])
+      if (fs.existsSync(src)) fs.moveSync(src, dest, { overwrite: true });
+    break;
+  default:
+    break;
+}
+
+const confDir = `./engine-private/conf/${confName}`;
+const DefaultConf = {
+  server: JSON.parse(fs.readFileSync(`${confDir}/conf.server.json`, 'utf8')),
+  client: JSON.parse(fs.readFileSync(`${confDir}/conf.client.json`, 'utf8')),
+  ssr: JSON.parse(fs.readFileSync(`${confDir}/conf.ssr.json`, 'utf8')),
+};
 
 {
   for (const host of Object.keys(DefaultConf.server)) {
@@ -248,8 +280,6 @@ const { DefaultConf } = await import(`../conf.${confName}.js`);
       `${basePath}/manifests/deployment/${confName}-development`,
     );
 
-  // Copy conf.<deploy-id>.js to conf.js for the respective deployment
-  fs.copyFileSync(`./conf.${confName}.js`, `${basePath}/conf.js`);
   fs.copyFileSync(`./manifests/deployment/${confName}-development/proxy.yaml`, `${basePath}/proxy.yaml`);
   fs.copyFileSync(`./manifests/deployment/${confName}-development/deployment.yaml`, `${basePath}/deployment.yaml`);
   const pvPvcPath = `./manifests/deployment/${confName}-development/pv-pvc.yaml`;
@@ -258,6 +288,8 @@ const { DefaultConf } = await import(`../conf.${confName}.js`);
   if (fs.existsSync(`./src/ws/${confName.split('-')[1]}`)) {
     fs.copySync(`./src/ws/${confName.split('-')[1]}`, `${basePath}/src/ws/${confName.split('-')[1]}`);
   }
-  fs.copyFileSync(`.gitignore`, `${basePath}/.gitignore`);
-  shellExec(`cd ${basePath} && npm install --ignore-scripts`);
+  fs.writeFileSync(
+    `${basePath}/.gitignore`,
+    fs.readFileSync(`.gitignore`, 'utf8').split('# Ignore ERP / CRM custom prototypes src')[0],
+  );
 }
