@@ -10,6 +10,7 @@ import dotenv from 'dotenv';
 import {
   capFirst,
   getCapVariableName,
+  getDirname,
   newInstance,
   orderAbc,
   orderArrayFromAttrInt,
@@ -1423,65 +1424,130 @@ const writeEnv = (envPath, envObj) =>
 
 /**
  * @method buildCliDoc
- * @description Builds the CLI documentation.
- * @param {object} program - The program.
- * @param {string} oldVersion - The old version.
- * @param {string} newVersion - The new version.
+ * @description Scrapes `node bin help` (and `node bin help <command>` for every
+ * registered command) and renders a structured Markdown reference: a command
+ * index with anchor links, plus a per-command section with its description,
+ * usage, and Arguments/Options rendered as tables. Writes
+ * `CLI-HELP.md` + the served reference doc, and refreshes the README CLI index.
+ * @param {object} program - The commander program.
+ * @param {string} oldVersion - The old version string to replace.
+ * @param {string} newVersion - The new version string.
  * @memberof ServerConfBuilder
  */
 const buildCliDoc = (program, oldVersion, newVersion) => {
-  let md = shellExec(`node bin help`, { silent: true, stdout: true }).split('Options:');
-  const baseOptions =
-    `## ${md[0].split(`\n`)[2]}
+  const help = (args = '') => shellExec(`node bin help${args ? ` ${args}` : ''}`, { silent: true, stdout: true });
+  // Escape table-breaking pipes and collapse wrapped whitespace for a Markdown cell.
+  const cell = (s) => String(s).replace(/\s+/g, ' ').replaceAll('|', '\\|').trim();
+  const anchor = (name) => `underpost-${name}`.toLowerCase().replace(/[^a-z0-9-]/g, '');
 
-### Usage: ` +
-    '`' +
-    md[0].split(`\n`)[0].split('Usage: ')[1] +
-    '`' +
-    `
-  ` +
-    '```\n Options:' +
-    md[1] +
-    ' \n```';
-  md =
-    baseOptions +
-    `
+  // Parse a commander help block into { usage, description, sections: { Options, Arguments, Commands } }.
+  const parseHelp = (text) => {
+    const lines = text.split('\n');
+    const usageMatch = lines[0].match(/^Usage:\s*(.*)$/);
+    const usage = usageMatch ? usageMatch[1].trim() : '';
+    const sections = {};
+    const descLines = [];
+    let current = null;
+    let buf = [];
+    const flush = () => {
+      if (current) sections[current] = buf.join('\n');
+      buf = [];
+    };
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i];
+      const head = line.match(/^([A-Za-z][\w ]*):\s*$/); // top-level "Options:", "Arguments:", "Commands:"
+      if (head) {
+        flush();
+        current = head[1].trim();
+      } else if (current !== null) {
+        buf.push(line);
+      } else {
+        descLines.push(line);
+      }
+    }
+    flush();
+    return { usage, description: descLines.join('\n').trim(), sections };
+  };
 
-## Commands:
-    `;
-  program.commands.map((o) => {
-    md +=
-      `
+  // Parse a columnar "  <term>   <description>" section (descriptions may wrap onto
+  // indented continuation lines) into [{ term, desc }].
+  const parseEntries = (text = '') => {
+    const entries = [];
+    for (const line of text.split('\n')) {
+      if (!line.trim()) continue;
+      const leading = line.length - line.trimStart().length;
+      if (leading <= 2) {
+        const rest = line.trim();
+        const gap = rest.search(/\s{2,}/);
+        entries.push(gap === -1 ? { term: rest, desc: '' } : { term: rest.slice(0, gap), desc: rest.slice(gap) });
+      } else if (entries.length) {
+        entries[entries.length - 1].desc += ` ${line.trim()}`;
+      }
+    }
+    return entries;
+  };
 
-` +
-      '### `' +
-      o._name +
-      '` :' +
-      `
-` +
-      '```\n ' +
-      shellExec(`node bin help ${o._name}`, { silent: true, stdout: true }) +
-      ' \n```' +
-      `
-  `;
-  });
-  md = md.replaceAll(oldVersion, newVersion);
+  const table = (head, entries) =>
+    !entries.length
+      ? ''
+      : `| ${head[0]} | ${head[1]} |\n| --- | --- |\n` +
+        entries.map(({ term, desc }) => `| \`${cell(term)}\` | ${cell(desc)} |`).join('\n') +
+        '\n';
+
+  const detailSection = (sections, name, head) => {
+    const t = table(head, parseEntries(sections[name]));
+    return t ? `\n#### ${name}\n\n${t}` : '';
+  };
+
+  // ── Top-level index ──
+  const root = parseHelp(help());
+  const commandEntries = parseEntries(root.sections['Commands']).filter((e) => e.term.split(' ')[0] !== 'help');
+
+  const index =
+    `## Underpost CLI\n\n` +
+    (root.description ? `> ${root.description.replace(/\s+/g, ' ')}\n\n` : '') +
+    `**Usage:** \`${root.usage}\`\n\n` +
+    `### Global options\n\n${table(['Option', 'Description'], parseEntries(root.sections['Options']))}\n` +
+    `### Commands\n\n| Command | Description |\n| --- | --- |\n` +
+    commandEntries
+      .map((e) => {
+        const name = e.term.split(' ')[0];
+        return `| [\`${name}\`](#${anchor(name)}) | ${cell(e.desc)} |`;
+      })
+      .join('\n') +
+    '\n';
+
+  // ── Per-command detail ──
+  let details = `\n## Command reference\n`;
+  for (const cmd of program.commands) {
+    const name = cmd._name;
+    if (name === 'help') continue;
+    const cmdHelp = parseHelp(help(name));
+    details +=
+      `\n### \`underpost ${name}\`\n\n` +
+      (cmdHelp.description ? `${cmdHelp.description.replace(/\s+/g, ' ')}\n\n` : '') +
+      `**Usage:** \`${cmdHelp.usage}\`\n` +
+      detailSection(cmdHelp.sections, 'Arguments', ['Argument', 'Description']) +
+      detailSection(cmdHelp.sections, 'Options', ['Option', 'Description']);
+  }
+
+  const md = `${index}${details}`.replaceAll(oldVersion, newVersion);
   fs.writeFileSync(`./src/client/public/nexodev/docs/references/Command Line Interface.md`, md, 'utf8');
   fs.writeFileSync(`./CLI-HELP.md`, md, 'utf8');
 
-  // Update README.md: replace version and CLI index section between comment tags
-  let readme = fs.readFileSync(`./README.md`, 'utf8');
-  readme = readme.replaceAll(oldVersion, newVersion);
+  // Update README.md: bump version and refresh the CLI index between the comment tags.
+  let readme = fs.readFileSync(`./README.md`, 'utf8').replaceAll(oldVersion, newVersion);
   const cliStartTag = '<!-- cli-index-start -->';
   const cliEndTag = '<!-- cli-index-end -->';
   const startIdx = readme.indexOf(cliStartTag);
   const endIdx = readme.indexOf(cliEndTag);
   if (startIdx !== -1 && endIdx !== -1) {
+    const readmeIndex = index.replace(/\(#(underpost-[a-z0-9-]+)\)/g, '(CLI-HELP.md#$1)');
     readme =
       readme.substring(0, startIdx) +
       cliStartTag +
       '\n' +
-      baseOptions +
+      readmeIndex.replaceAll(oldVersion, newVersion) +
       '\n' +
       cliEndTag +
       readme.substring(endIdx + cliEndTag.length);
@@ -1751,18 +1817,6 @@ ${renderHosts}`,
 };
 
 /**
- * Extra payload directories copied verbatim into a deploy id's private repo, beyond the
- * standard `conf`, `replica`, and `itc-scripts` sync. Keyed by deploy id; deploy ids absent
- * from this map carry no extra payload.
- *
- * @constant {Object<string, string[]>}
- * @memberof ServerConfBuilder
- */
-const PRIVATE_CONF_EXTRA_PATHS = {
-  'dd-cyberia': ['cyberia-instances/FOREST'],
-};
-
-/**
  * Resolves the concrete deploy ids a build or conf-sync run should iterate over.
  *
  * The meta deploy id `dd` fans out to the comma separated ids declared in
@@ -1786,15 +1840,17 @@ const resolveDeployList = (deployId) =>
  *
  * Idempotent and safe to rerun: the private repo is cloned when missing or reset to a clean
  * checkout when present, then the deploy id's `conf` folder, matching `replica` and
- * `itc-scripts` entries, and any deploy-specific {@link PRIVATE_CONF_EXTRA_PATHS} payloads are
- * mirrored. The commit/push step is a no-op when nothing changed (`silentOnError`).
+ * `itc-scripts` entries, and any caller-supplied `extraPaths` payloads are mirrored. The
+ * commit/push step is a no-op when nothing changed (`silentOnError`).
  *
  * @method syncPrivateConf
  * @param {string} deployId - A concrete deploy id (e.g. `dd-cyberia`), not the `dd` meta id.
+ * @param {string[]} [extraPaths=[]] - Extra `./engine-private` payload paths to mirror (from the
+ *   deploy's product catalog), kept out of this module so it stays product-agnostic.
  * @returns {void}
  * @memberof ServerConfBuilder
  */
-const syncPrivateConf = (deployId) => {
+const syncPrivateConf = (deployId, extraPaths = []) => {
   const suffix = deployId.split('dd-')[1];
   const privateRepoName = `engine-${suffix}-private`;
   const privateGitUri = `${process.env.GITHUB_USERNAME}/${privateRepoName}`;
@@ -1821,8 +1877,7 @@ const syncPrivateConf = (deployId) => {
       if (entry.match(deployId)) fs.copySync(`${srcDir}/${entry}`, `${privateRepoPath}/${payloadDir}/${entry}`);
   }
 
-  for (const extraPath of PRIVATE_CONF_EXTRA_PATHS[deployId] ?? [])
-    fs.copySync(`./engine-private/${extraPath}`, `${privateRepoPath}/${extraPath}`);
+  for (const extraPath of extraPaths) fs.copySync(`./engine-private/${extraPath}`, `${privateRepoPath}/${extraPath}`);
 
   shellExec(
     `cd ${privateRepoPath}` +
@@ -1830,6 +1885,147 @@ const syncPrivateConf = (deployId) => {
       ` && underpost cmt . ci engine-core-conf 'Update ${deployId} conf'` +
       ` && underpost push . ${privateGitUri}`,
     { silent: true, silentOnError: true },
+  );
+};
+
+/**
+ * Moves a deploy's public template sources into the engine working tree ahead of
+ * the build copy step. Idempotent and safe to rerun: each move is guarded by
+ * `existsSync`, so already-moved or absent sources are skipped rather than throwing.
+ * The `[src, dest]` pairs come from the deploy's product catalog (passed in), so
+ * this module stays product-agnostic.
+ *
+ * @method syncDeployIdSources
+ * @param {Array<[string, string]>} [sourceMoves=[]] - Public `[src, dest]` move pairs.
+ * @returns {boolean} `true` when any sources were declared, else `false`.
+ * @memberof ServerConfBuilder
+ */
+const syncDeployIdSources = (sourceMoves = []) => {
+  if (!sourceMoves.length) return false;
+  for (const dir of ['src/api', 'src/client/components', 'src/client/public', 'src/client/services'])
+    fs.mkdirSync(dir, { recursive: true });
+  for (const [src, dest] of sourceMoves) if (fs.existsSync(src)) fs.moveSync(src, dest, { overwrite: true });
+  return true;
+};
+
+/**
+ * Rebuilds the standalone `pwa-microservices-template` from scratch out of the current
+ * engine source tree.
+ *
+ * Clones the template repo next to the engine when missing, otherwise resets it to a clean
+ * pristine checkout, then syncs every engine-tracked file the template is allowed to carry
+ * ({@link validateTemplatePath}), strips engine-only + product modules, restores the template's
+ * own CI workflows + guest services, and rewrites `package.json` / `package-lock.json` / `README`
+ * so the result is a standalone, installable project. Throws on failure; callers own exit codes.
+ *
+ * Product catalogs are read dynamically ({@link module:src/server/catalog} `loadProductCatalogs`),
+ * so this stays decoupled from — and survives removal of — any product module.
+ *
+ * @method buildTemplate
+ * @param {object} [options]
+ * @param {string} [options.srcPath='./'] - Engine source root to sync from.
+ * @param {string} [options.toPath='../pwa-microservices-template'] - Template output path.
+ * @returns {Promise<void>}
+ * @memberof ServerConfBuilder
+ */
+const buildTemplate = async ({ srcPath = './', toPath = '../pwa-microservices-template' } = {}) => {
+  const walk = (await import('ignore-walk')).default;
+  const { TEMPLATE_RESTORE_PATHS, TEMPLATE_KEYWORDS, TEMPLATE_DESCRIPTION } = await import('./catalog-underpost.js');
+  const { loadProductCatalogs } = await import('./catalog.js');
+  const githubUsername = process.env.GITHUB_USERNAME;
+
+  logger.info('Build template', { srcPath, toPath });
+
+  const sourceFiles = (
+    await new Promise((resolve) =>
+      walk({ path: srcPath, ignoreFiles: [`.gitignore`], includeEmpty: false, follow: false }, (...args) =>
+        resolve(args[1]),
+      ),
+    )
+  ).filter((p) => !p.startsWith('.git'));
+
+  // Clone the template from 0 if missing; otherwise reset it to a clean pristine checkout.
+  if (!fs.existsSync(toPath)) {
+    shellExec(`cd .. && node engine/bin clone ${githubUsername}/pwa-microservices-template`);
+  } else {
+    shellExec(`cd ${toPath} && git reset && git checkout . && git clean -f -d`);
+    shellExec(`node bin pull ${toPath} ${githubUsername}/pwa-microservices-template`);
+    shellExec(`sudo rm -rf ${toPath}/engine-private`);
+    shellExec(`sudo rm -rf ${toPath}/logs`);
+  }
+  shellExec(`cd ${toPath} && git config core.filemode false`);
+
+  for (const copyPath of sourceFiles) {
+    if (copyPath === 'NaN') continue;
+    const absolutePath = `${srcPath}/${copyPath}`;
+    if (!validateTemplatePath(absolutePath)) continue;
+
+    const folder = getDirname(`${toPath}/${copyPath}`);
+    if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
+
+    logger.info('build', `${toPath}/${copyPath}`);
+    fs.copyFileSync(absolutePath, `${toPath}/${copyPath}`);
+  }
+
+  fs.copySync(`./.vscode`, `${toPath}/.vscode`);
+  fs.copySync(`./src/client/public/default`, `${toPath}/src/client/public/default`);
+
+  // Preserve the template's own README + package.json identity before merging engine metadata.
+  for (const checkoutPath of ['README.md', 'package.json']) shellExec(`cd ${toPath} && git checkout ${checkoutPath}`);
+
+  // Strip each product catalog's `stripPaths` (aggregated dynamically) plus the engine-only
+  // workflows, deploy manifests, and product catalog modules.
+  const productStripPaths = (await loadProductCatalogs()).flatMap((c) => c.stripPaths);
+  for (const deletePath of productStripPaths) {
+    const target = `${toPath}/${deletePath}`;
+    if (fs.existsSync(target)) fs.removeSync(target);
+  }
+  shellExec(`rm -rf ${toPath}/.github`);
+  shellExec(`rm -rf ${toPath}/manifests/deployment/dd-*`);
+  shellExec(`rm -rf ${toPath}/src/server/catalog-*`);
+
+  fs.mkdirSync(`${toPath}/.github/workflows`, { recursive: true });
+  for (const restorePath of TEMPLATE_RESTORE_PATHS) {
+    const dest = `${toPath}/${restorePath}`;
+    if (fs.statSync(restorePath).isDirectory()) fs.copySync(restorePath, dest, { overwrite: true });
+    else fs.copyFileSync(restorePath, dest);
+  }
+
+  // ── package.json: take engine deps/scripts/version, keep template identity. ──
+  const originPackageJson = JSON.parse(fs.readFileSync('./package.json', 'utf8'));
+  const templatePackageJson = JSON.parse(fs.readFileSync(`${toPath}/package.json`, 'utf8'));
+  const templateName = templatePackageJson.name;
+
+  templatePackageJson.dependencies = originPackageJson.dependencies;
+  templatePackageJson.devDependencies = originPackageJson.devDependencies;
+  templatePackageJson.version = originPackageJson.version;
+  templatePackageJson.scripts = originPackageJson.scripts;
+  templatePackageJson.overrides = originPackageJson.overrides;
+  templatePackageJson.name = templateName;
+  templatePackageJson.description = TEMPLATE_DESCRIPTION;
+  templatePackageJson.keywords = TEMPLATE_KEYWORDS;
+  delete templatePackageJson.scripts['build:template'];
+  fs.writeFileSync(`${toPath}/package.json`, JSON.stringify(templatePackageJson, null, 4), 'utf8');
+
+  // ── package-lock.json: mirror engine packages, keep template name/version on the root entry. ──
+  const originPackageLockJson = JSON.parse(fs.readFileSync('./package-lock.json', 'utf8'));
+  const templatePackageLockJson = JSON.parse(fs.readFileSync(`${toPath}/package-lock.json`, 'utf8'));
+  const originBasePackageLock = newInstance(templatePackageLockJson.packages['']);
+  templatePackageLockJson.name = templateName;
+  templatePackageLockJson.version = originPackageLockJson.version;
+  templatePackageLockJson.packages = originPackageLockJson.packages;
+  templatePackageLockJson.packages[''].name = templateName;
+  templatePackageLockJson.packages[''].version = originPackageLockJson.version;
+  templatePackageLockJson.packages[''].hasInstallScript = originBasePackageLock.hasInstallScript;
+  templatePackageLockJson.packages[''].license = originBasePackageLock.license;
+  fs.writeFileSync(`${toPath}/package-lock.json`, JSON.stringify(templatePackageLockJson, null, 4), 'utf8');
+
+  fs.writeFileSync(
+    `${toPath}/README.md`,
+    fs
+      .readFileSync('./README.md', 'utf8')
+      .replace('<!-- template-title -->', '#### Base template for pwa/api-rest projects.'),
+    'utf8',
   );
 };
 
@@ -1882,5 +2078,6 @@ export {
   etcHostFactory,
   resolveDeployList,
   syncPrivateConf,
-  PRIVATE_CONF_EXTRA_PATHS,
+  syncDeployIdSources,
+  buildTemplate,
 };
