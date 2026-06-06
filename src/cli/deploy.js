@@ -18,6 +18,7 @@ import {
 } from '../server/conf.js';
 import { loggerFactory } from '../server/logger.js';
 import { shellExec } from '../server/process.js';
+import { INTERNAL_READY_PATH, INTERNAL_HEALTH_PATH } from '../server/runtime-status.js';
 import fs from 'fs-extra';
 import dotenv from 'dotenv';
 import os from 'node:os';
@@ -114,6 +115,64 @@ class UnderpostDeploy {
       .join('')}`;
     },
     /**
+     * Builds Kubernetes probes that gate on the in-pod internal status endpoint.
+     *
+     * HTTP mode (default) aligns Kubernetes pod readiness with actual Underpost
+     * runtime readiness:
+     *   - readinessProbe → GET /_internal/ready  (200 only when running-deployment)
+     *   - livenessProbe  → GET /_internal/health (deadlock / hung-process detection)
+     *   - startupProbe   → GET /_internal/ready  (long window for hot-built/slow boots)
+     *
+     * Migration: pass `useHttp: false` to emit the legacy TCP socket probes
+     * (port-bound only) for deployments not yet serving the internal endpoint.
+     *
+     * @param {object} opts
+     * @param {number} opts.port - In-pod internal status port (deployment base PORT).
+     * @param {boolean} [opts.useHttp=true] - Emit HTTP probes; false → legacy TCP.
+     * @param {boolean} [opts.liveness=true] - Include a livenessProbe.
+     * @param {boolean} [opts.startup=true] - Include a startupProbe.
+     * @returns {{readinessProbe: object, livenessProbe?: object, startupProbe?: object}}
+     * @memberof UnderpostDeploy
+     */
+    runtimeProbesFactory({ port, useHttp = true, liveness = true, startup = true } = {}) {
+      if (!port) return {};
+      if (!useHttp) {
+        const tcp = { tcpSocket: { port }, initialDelaySeconds: 5, periodSeconds: 10, failureThreshold: 6 };
+        const probes = { readinessProbe: tcp };
+        if (liveness) probes.livenessProbe = { ...tcp, initialDelaySeconds: 30 };
+        return probes;
+      }
+      const probes = {
+        readinessProbe: {
+          httpGet: { path: INTERNAL_READY_PATH, port },
+          initialDelaySeconds: 5,
+          periodSeconds: 5,
+          timeoutSeconds: 3,
+          failureThreshold: 3,
+        },
+      };
+      if (liveness)
+        probes.livenessProbe = {
+          httpGet: { path: INTERNAL_HEALTH_PATH, port },
+          initialDelaySeconds: 30,
+          periodSeconds: 15,
+          timeoutSeconds: 3,
+          failureThreshold: 3,
+        };
+      if (startup)
+        // A startupProbe suspends readiness/liveness until it first succeeds, so
+        // its window bounds in-container hot builds and slow boots. 180 × 10s =
+        // 30 min before the pod is considered failed to start.
+        probes.startupProbe = {
+          httpGet: { path: INTERNAL_READY_PATH, port },
+          initialDelaySeconds: 10,
+          periodSeconds: 10,
+          timeoutSeconds: 3,
+          failureThreshold: 180,
+        };
+      return probes;
+    },
+    /**
      * Creates a YAML deployment configuration for a deployment.
      * @param {string} deployId - Deployment ID for which the deployment is being created.
      * @param {string} env - Environment for which the deployment is being created.
@@ -127,6 +186,11 @@ class UnderpostDeploy {
      * @param {boolean} skipFullBuild - Whether to skip the full client bundle build during deployment.
      * @param {boolean} pullBundle - Whether to pull the pre-built client bundle from Cloudinary before starting. Use together with skipFullBuild to skip the local build entirely.
      * @param {string} [imagePullPolicy] - Container imagePullPolicy override (`Always`, `IfNotPresent`, `Never`). When omitted, defaults to `Never` for `localhost/` images and `IfNotPresent` otherwise.
+     * @param {object} lifecycle - Kubernetes lifecycle hooks configuration for the deployment container.
+     * @param {object} readinessProbe - Kubernetes readiness probe configuration for the deployment container.
+     * @param {object} livenessProbe - Kubernetes liveness probe configuration for the deployment container.
+     * @param {object} startupProbe - Kubernetes startup probe configuration for the deployment container.
+     * @param {number} containerPort - Container port to expose for the deployment.
      * @returns {string} - YAML deployment configuration for the specified deployment.
      * @memberof UnderpostDeploy
      */
@@ -152,7 +216,12 @@ class UnderpostDeploy {
       lifecycle,
       readinessProbe,
       livenessProbe,
+      startupProbe,
       containerPort,
+      // Explicit, secret-free internal status port injected as an env var so the
+      // in-pod endpoint binds exactly what the probes and the monitor target,
+      // independent of the ambient `PORT` baked into the image/secret.
+      internalStatusPort,
     }) {
       if (!cmd)
         cmd =
@@ -204,12 +273,19 @@ spec:
             - secretRef:
                 name: underpost-config
 ${
-  containerPort
-    ? `          ports:
-            - containerPort: ${containerPort}
+  internalStatusPort
+    ? `          env:
+            - name: UNDERPOST_INTERNAL_PORT
+              value: "${internalStatusPort}"
 `
     : ''
 }${
+        containerPort
+          ? `          ports:
+            - containerPort: ${containerPort}
+`
+          : ''
+      }${
         resources
           ? `          resources:
             requests:
@@ -238,6 +314,15 @@ ${JSON.stringify(readinessProbe, null, 2)
         livenessProbe
           ? `          livenessProbe:
 ${JSON.stringify(livenessProbe, null, 2)
+  .split('\n')
+  .map((l) => '            ' + l)
+  .join('\n')}
+`
+          : ''
+      }${
+        startupProbe
+          ? `          startupProbe:
+${JSON.stringify(startupProbe, null, 2)
   .split('\n')
   .map((l) => '            ' + l)
   .join('\n')}
@@ -282,18 +367,22 @@ spec:
      * @param {object} options - Options for the manifest build process.
      * @param {string} options.replicas - Number of replicas for each deployment.
      * @param {string} options.image - Docker image for the deployment.
-     * @param {string} options.namespace - Kubernetes namespace for the deployment.
+     * @param {string} options.namespace - Kubernetes namespace for the deployment (defaults to "default").
      * @param {string} [options.versions] - Comma-separated list of versions to deploy.
      * @param {string} [options.cmd] - Custom initialization command for deploymentYamlPartsFactory (comma-separated commands).
-     * @param {string} [options.timeoutResponse] - Timeout response setting for the deployment.
-     * @param {string} [options.timeoutIdle] - Timeout idle setting for the deployment.
-     * @param {string} [options.retryCount] - Retry count setting for the deployment.
-     * @param {string} [options.retryPerTryTimeout] - Retry per-try timeout setting for the deployment.
-     * @param {boolean} [options.disableDeploymentProxy] - Whether to disable deployment proxy.
-     * @param {string} [options.traffic] - Traffic status for the deployment.
-     * @param {boolean} [options.skipFullBuild] - Whether to skip the full client bundle build; forwarded to deploymentYamlPartsFactory to generate a pull-bundle startup command.
+     * @param {string} [options.timeoutResponse] - HTTPProxy per-route response timeout (e.g. "300000ms", "infinity").
+     * @param {string} [options.timeoutIdle] - HTTPProxy per-route idle timeout (e.g. "10s", "infinity").
+     * @param {string} [options.retryCount] - HTTPProxy per-route retry count (e.g. 3).
+     * @param {string} [options.retryPerTryTimeout] - HTTPProxy per-route per-try timeout (e.g. "150ms").
+     * @param {boolean} [options.disableDeploymentProxy] - Whether to disable deployment proxy route generation.
+     * @param {string} [options.traffic] - Comma-separated active traffic colour(s) used to select which versions receive traffic (e.g. "blue", "green").
+     * @param {boolean} [options.cert] - Whether to include cert-manager Certificate resources in secret.yaml (production only).
+     * @param {boolean} [options.selfSigned] - Whether to include TLS block in HTTPProxy using a pre-created self-signed secret. Enables HTTPS for development without cert-manager.
+     * @param {boolean} [options.skipFullBuild] - Whether to skip the full client bundle build; forwarded to deploymentYamlPartsFactory.
      * @param {boolean} [options.pullBundle] - Whether to pull the pre-built client bundle from Cloudinary; forwarded to deploymentYamlPartsFactory. Use together with skipFullBuild.
-     * @param {string} [options.imagePullPolicy] - Container imagePullPolicy override (`Always`, `IfNotPresent`, `Never`); forwarded to deploymentYamlPartsFactory. When omitted, the builder defaults to `Never` for `localhost/` images and `IfNotPresent` otherwise.
+     * @param {string} [options.imagePullPolicy] - Container imagePullPolicy override (`Always`, `IfNotPresent`, `Never`); forwarded to deploymentYamlPartsFactory. Defaults to `Never` for `localhost/` images and `IfNotPresent` otherwise.
+     * @param {boolean} [options.disableRuntimeProbes] - Omit internal-status HTTP probes from generated manifests. When true no readiness/liveness/startup probes are emitted.
+     * @param {boolean} [options.tcpProbes] - Emit legacy TCP socket probes instead of HTTP internal-status probes (migration path).
      * @returns {Promise<void>} - Promise that resolves when the manifest is built.
      * @memberof UnderpostDeploy
      */
@@ -318,6 +407,17 @@ spec:
 
         logger.info('port range', { deployId, fromPort, toPort });
 
+        // The internal status endpoint binds `fromPort - 1`: app instances bind
+        // the router range starting at `fromPort`, so this slot is always free
+        // inside the pod. It is injected into the pod env (UNDERPOST_INTERNAL_PORT)
+        // and used for both the probes and the monitor's port-forward target so
+        // all three agree regardless of the image's ambient PORT.
+        // Opt out with `--disable-runtime-probes` to keep legacy probe-less pods.
+        const internalPort = fromPort - 1;
+        const probes = options.disableRuntimeProbes
+          ? {}
+          : Underpost.deploy.runtimeProbesFactory({ port: internalPort, useHttp: !options.tcpProbes });
+
         let deploymentYamlParts = '';
         for (const deploymentVersion of deploymentVersions) {
           deploymentYamlParts += `---
@@ -333,6 +433,10 @@ ${Underpost.deploy
     skipFullBuild: options.skipFullBuild,
     pullBundle: options.pullBundle,
     imagePullPolicy: options.imagePullPolicy,
+    internalStatusPort: options.disableRuntimeProbes ? undefined : internalPort,
+    readinessProbe: probes.readinessProbe,
+    livenessProbe: probes.livenessProbe,
+    startupProbe: probes.startupProbe,
   })
   .replace('{{ports}}', buildKindPorts(fromPort, toPort))}
 `;
@@ -375,7 +479,7 @@ ${Underpost.deploy
           : [];
 
         for (const host of Object.keys(confServer)) {
-          if (env === 'production')
+          if (env === 'production' && options.cert === true)
             secretYaml += Underpost.deploy.buildCertManagerCertificate({ host, namespace: options.namespace });
 
           const pathPortAssignment = pathPortAssignmentData[host];
@@ -578,6 +682,7 @@ spec:
      * @memberof UnderpostDeploy
      */
     baseProxyYamlFactory({ host, env, options }) {
+      const includeTls = env !== 'development' || options.selfSigned === true;
       return `
 ---
 apiVersion: projectcontour.io/v1
@@ -588,11 +693,11 @@ metadata:
 spec:
   virtualhost:
     fqdn: ${host}${
-      env === 'development'
-        ? ''
-        : `
+      includeTls
+        ? `
     tls:
       secretName: ${host}`
+        : ''
     }
   routes:`;
     },
@@ -608,8 +713,9 @@ spec:
      * @param {boolean} options.buildManifest - Whether to build the deployment manifest.
      * @param {boolean} options.infoUtil - Whether to display utility information.
      * @param {boolean} options.expose - Whether to expose the deployment.
-     * @param {boolean} options.cert - Whether to create certificates for the deployment.
-     * @param {string} options.certHosts - Comma-separated list of hosts for which to create certificates.
+     * @param {boolean} options.cert - Whether to create cert-manager Certificate resources for the deployment.
+     * @param {string} options.certHosts - Comma-separated list of hosts for which to create cert-manager certificates.
+     * @param {boolean} options.selfSigned - Use a pre-created self-signed TLS secret instead of cert-manager. The secret must already exist in the namespace with the same name as the host. Enables TLS in the Contour HTTPProxy virtualhost without requiring a production ClusterIssuer.
      * @param {string} options.versions - Comma-separated list of versions to deploy.
      * @param {string} options.image - Docker image for the deployment.
      * @param {string} options.traffic - Traffic status for the deployment.
@@ -621,22 +727,27 @@ spec:
      * @param {boolean} options.disableUpdateVolume - Whether to disable volume updates.
      * @param {boolean} options.status - Whether to display deployment status.
      * @param {boolean} options.disableUpdateUnderpostConfig - Whether to disable Underpost config updates.
-     * @param {string} [options.namespace] - Kubernetes namespace for the deployment.
-     * @param {string} [options.timeoutResponse] - Timeout response setting for the deployment.
-     * @param {string} [options.timeoutIdle] - Timeout idle setting for the deployment.
-     * @param {string} [options.retryCount] - Retry count setting for the deployment.
-     * @param {string} [options.retryPerTryTimeout] - Retry per-try timeout setting for the deployment.
-     * @param {string} [options.kindType] - Type of Kubernetes resource to retrieve information for.
-     * @param {number} [options.port] - Port number for exposing the deployment.
-     * @param {string} [options.cmd] - Custom initialization command for deploymentYamlPartsFactory (comma-separated commands).
-     * @param {number} [options.exposePort] - Local:remote port override when --expose is active (overrides auto-detected service port).
+     * @param {string} [options.namespace] - Kubernetes namespace for the deployment (defaults to "default").
+     * @param {string} [options.timeoutResponse] - HTTPProxy per-route response timeout (e.g. "300000ms", "infinity").
+     * @param {string} [options.timeoutIdle] - HTTPProxy per-route idle timeout (e.g. "10s", "infinity").
+     * @param {string} [options.retryCount] - HTTPProxy per-route retry count (e.g. 3).
+     * @param {string} [options.retryPerTryTimeout] - HTTPProxy per-route per-try timeout (e.g. "150ms").
+     * @param {string} [options.kindType] - Kubernetes resource kind to target when using --expose (defaults to "svc").
+     * @param {number} [options.port] - Port number override for exposing the deployment.
+     * @param {string} [options.cmd] - Custom initialization command (comma-separated) for deploymentYamlPartsFactory.
+     * @param {number} [options.exposePort] - Remote port override when --expose is active (overrides auto-detected service port). Used as both local and remote port unless exposeLocalPort is also set.
+     * @param {number} [options.exposeLocalPort] - Local port override for --expose (e.g. 80); remote port is still auto-detected. Enables /etc/hosts access without a port in the browser URL.
+     * @param {boolean} [options.localProxy] - When true (with --expose), forward all service TCP ports locally and start the Node.js path-routing proxy for full path-based routing (e.g. /wp alongside /).
+     * @param {boolean} [options.tls] - When true (with --expose --local-proxy), start the proxy on port 443 with TLS using self-signed certificates resolved from the local SSL store.
      * @param {boolean} [options.k3s] - Whether to use k3s cluster context.
      * @param {boolean} [options.kubeadm] - Whether to use kubeadm cluster context.
      * @param {boolean} [options.kind] - Whether to use kind cluster context.
      * @param {boolean} [options.gitClean] - Whether to run git clean on volume mount paths before copying.
      * @param {boolean} [options.skipFullBuild] - Whether to skip the full client bundle build; passed through to buildManifest/deploymentYamlPartsFactory.
      * @param {boolean} [options.pullBundle] - Whether to pull the pre-built client bundle from Cloudinary; passed through to buildManifest/deploymentYamlPartsFactory. Use together with skipFullBuild.
-     * @param {string} [options.imagePullPolicy] - Container imagePullPolicy override (`Always`, `IfNotPresent`, `Never`); passed through to buildManifest/deploymentYamlPartsFactory. When omitted, the builder defaults to `Never` for `localhost/` images and `IfNotPresent` otherwise.
+     * @param {string} [options.imagePullPolicy] - Container imagePullPolicy override (`Always`, `IfNotPresent`, `Never`); passed through to buildManifest/deploymentYamlPartsFactory. Defaults to `Never` for `localhost/` images and `IfNotPresent` otherwise.
+     * @param {boolean} [options.disableRuntimeProbes] - Omit internal-status HTTP probes from generated manifests. When true no readiness/liveness/startup probes are emitted.
+     * @param {boolean} [options.tcpProbes] - Emit legacy TCP socket probes instead of HTTP internal-status probes.
      * @returns {Promise<void>} - Promise that resolves when the deployment process is complete.
      * @memberof UnderpostDeploy
      */
@@ -671,6 +782,10 @@ spec:
         kindType: '',
         port: 0,
         exposePort: 0,
+        exposeLocalPort: 0,
+        localProxy: false,
+        tls: false,
+        selfSigned: false,
         cmd: '',
         k3s: false,
         kubeadm: false,
@@ -756,20 +871,50 @@ EOF`);
             logger.error(`No ${kindType} found matching '${deployId}', skipping expose`);
             continue;
           }
-          const port = options.exposePort
-            ? parseInt(options.exposePort)
-            : options.port
-              ? parseInt(options.port)
-              : kindType !== 'svc'
-                ? 80
-                : parseInt(svc[`PORT(S)`].split('/TCP')[0]);
-          logger.info(deployId, {
-            svc,
-            port,
-          });
-          shellExec(`sudo kubectl port-forward -n ${namespace} ${kindType}/${svc.NAME} ${port}:${port}`, {
-            async: true,
-          });
+          if (options.localProxy) {
+            const svcPorts = [
+              ...new Set(
+                svc['PORT(S)']
+                  .split(',')
+                  .filter((p) => p.includes('/TCP'))
+                  .map((p) => parseInt(p.split(':')[0])),
+              ),
+            ];
+            for (const svcPort of svcPorts) {
+              shellExec(`sudo kubectl port-forward -n ${namespace} ${kindType}/${svc.NAME} ${svcPort}:${svcPort}`, {
+                async: true,
+              });
+            }
+            const envFile = `./engine-private/conf/${deployId}/.env.${env}`;
+            let basePort = svcPorts[0] - 1;
+            if (fs.existsSync(envFile)) {
+              const portMatch = fs.readFileSync(envFile, 'utf8').match(/^PORT=(\d+)/m);
+              if (portMatch) basePort = parseInt(portMatch[1]);
+            }
+            logger.info(deployId, { svc, svcPorts, basePort });
+            const tlsFlag = options.tls ? ' tls' : '';
+            shellExec(
+              `NODE_ENV=${env} PORT=${basePort} DEV_PROXY_PORT_OFFSET=0 node src/proxy proxy ${deployId} ${env}${tlsFlag}`,
+              { async: true },
+            );
+          } else {
+            const remotePort = options.exposePort
+              ? parseInt(options.exposePort)
+              : options.port
+                ? parseInt(options.port)
+                : kindType !== 'svc'
+                  ? 80
+                  : parseInt(svc[`PORT(S)`].split('/TCP')[0]);
+            const localPort = options.exposeLocalPort ? parseInt(options.exposeLocalPort) : remotePort;
+            logger.info(deployId, {
+              svc,
+              localPort,
+              remotePort,
+            });
+            shellExec(`sudo kubectl port-forward -n ${namespace} ${kindType}/${svc.NAME} ${localPort}:${remotePort}`, {
+              async: true,
+            });
+          }
           continue;
         }
 
@@ -821,7 +966,10 @@ EOF`);
           if (!options.disableUpdateProxy)
             shellExec(`sudo kubectl apply -f ./${manifestsPath}/proxy.yaml -n ${namespace}`);
 
-          if (Underpost.deploy.isValidTLSContext({ host: Object.keys(confServer)[0], env, options }))
+          if (
+            Underpost.deploy.isValidTLSContext({ host: Object.keys(confServer)[0], env, options }) &&
+            !options.selfSigned
+          )
             shellExec(`sudo kubectl apply -f ./${manifestsPath}/secret.yaml -n ${namespace}`);
         }
       }
@@ -1082,9 +1230,10 @@ spec:
      * @memberof UnderpostDeploy
      */
     isValidTLSContext: ({ host, env, options }) =>
-      env === 'production' &&
-      options.cert === true &&
-      (!options.certHosts || options.certHosts.split(',').includes(host)),
+      (env === 'production' &&
+        options.cert === true &&
+        (!options.certHosts || options.certHosts.split(',').includes(host))) ||
+      options.selfSigned === true,
 
     /**
      * Predefined resource templates for Kubernetes deployments.

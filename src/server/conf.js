@@ -1086,13 +1086,9 @@ const buildPortProxyRouter = (
 
   if (Object.keys(router).length === 0) return router;
 
-  if (options.devProxyContext === true && process.env.NODE_ENV === 'development') {
-    const confDevApiServer = JSON.parse(
-      fs.readFileSync(
-        `./engine-private/conf/${process.argv[3]}/conf.server.dev.${process.argv[4]}-dev-api.json`,
-        'utf8',
-      ),
-    );
+  const devApiConfPath = `./engine-private/conf/${process.argv[3]}/conf.server.dev.${process.argv[4]}-dev-api.json`;
+  if (options.devProxyContext === true && process.env.NODE_ENV === 'development' && fs.existsSync(devApiConfPath)) {
+    const confDevApiServer = JSON.parse(fs.readFileSync(devApiConfPath, 'utf8'));
     let devApiHosts = [];
     let origins = [];
     for (const _host of Object.keys(confDevApiServer))
@@ -1524,11 +1520,12 @@ const buildCliDoc = (program, oldVersion, newVersion) => {
     if (name === 'help') continue;
     const cmdHelp = parseHelp(help(name));
     details +=
-      `\n### \`underpost ${name}\`\n\n` +
+      `\n### underpost ${name}\n\n` +
       (cmdHelp.description ? `${cmdHelp.description.replace(/\s+/g, ' ')}\n\n` : '') +
       `**Usage:** \`${cmdHelp.usage}\`\n` +
       detailSection(cmdHelp.sections, 'Arguments', ['Argument', 'Description']) +
-      detailSection(cmdHelp.sections, 'Options', ['Option', 'Description']);
+      detailSection(cmdHelp.sections, 'Options', ['Option', 'Description']) +
+      `\n---\n`;
   }
 
   const md = `${index}${details}`.replaceAll(oldVersion, newVersion);
@@ -2029,6 +2026,32 @@ const buildTemplate = async ({ srcPath = './', toPath = '../pwa-microservices-te
   );
 };
 
+const updatePrivateTemplateRepo = async () => {
+  const templatePath = '/home/dd/pwa-microservices-template';
+  shellExec(`sudo rm -rf ${templatePath}
+cd /home/dd/engine && npm run build:template
+cd /home/dd
+underpost clone --bare underpostnet/pwa-microservices-template-private
+sudo rm -rf ${templatePath}/.git
+mv ./pwa-microservices-template-private.git ${templatePath}/.git
+cd ${templatePath}
+npm install --omit=dev --ignore-scripts
+git init
+git config user.name 'underpostnet'
+git config user.email 'development@underpost.net'
+git add .`);
+  const hasChanges = shellExec(`node bin cmt ${templatePath} --has-changes`, {
+    stdout: true,
+    silent: true,
+    disableLog: true,
+  }).trim();
+  if (hasChanges === '1') {
+    shellExec(
+      `cd ${templatePath} && git commit -m 'Update template' && underpost push . underpostnet/pwa-microservices-template-private`,
+    );
+  }
+};
+
 export {
   Config,
   loadConf,
@@ -2080,4 +2103,5 @@ export {
   syncPrivateConf,
   syncDeployIdSources,
   buildTemplate,
+  updatePrivateTemplateRepo,
 };

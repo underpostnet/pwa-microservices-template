@@ -266,6 +266,16 @@ class UnderpostRun {
     },
 
     /**
+     * @method etc-hosts
+     * @description Modifies the `/etc/hosts` file to add entries for local access to services,
+     * based on the provided path input.
+     * @param {string} path - The input value, identifier, or path for the operation (used to specify the entries to add to /etc/hosts).
+     */
+    'etc-hosts': (path = '', options = DEFAULT_OPTION) => {
+      etcHostFactory(path.split(','));
+    },
+
+    /**
      * @method ipfs-expose
      * @description Exposes IPFS Cluster services on specified ports for local access.
      * @type {Function}
@@ -2683,6 +2693,18 @@ EOF`;
           pullBundleRoute(host, routePath);
         }
       }
+    },
+
+    /**
+     * @method build-cluster-deployment-manifests
+     * @description Builds deployment manifests for both production and development environments using `node bin deploy --build-manifest`, syncing them, and setting replicas to 1 for the `dd` deployment.
+     * @param {string} path - Unused.
+     * @param {Object} options - The default underpost runner options for customizing workflow.
+     * @memberof UnderpostRun
+     */
+    'build-cluster-deployment-manifests': (path = '', options = DEFAULT_OPTION) => {
+      shellExec(`node bin deploy --build-manifest --sync --info-router --replicas 1 dd development`);
+      shellExec(`node bin deploy --build-manifest --sync --info-router --replicas 1 dd production --cert`);
     },
 
     /**

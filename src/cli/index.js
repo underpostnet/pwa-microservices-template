@@ -124,6 +124,10 @@ program
     '--is-remote-repo <url-repo>',
     'Checks whether a remote Git repository URL is reachable. Prints true or false.',
   )
+  .option(
+    '--has-changes',
+    'Prints "1" if there are staged or unstaged git changes in the repository, empty string otherwise.',
+  )
   .description('Manages commits to a GitHub repository, supporting various commit types and options.')
   .action(Underpost.repo.commit);
 
@@ -315,6 +319,12 @@ program
   .option('--expose', 'Exposes services matching the provided deployment ID list.')
   .option('--cert', 'Resets TLS/SSL certificate secrets for deployments.')
   .option('--cert-hosts <hosts>', 'Resets TLS/SSL certificate secrets for specified hosts.')
+  .option(
+    '--self-signed',
+    'Use a pre-created self-signed TLS secret (kubernetes.io/tls) instead of cert-manager. ' +
+      'The secret must already exist in the namespace with the same name as the host. ' +
+      'Enables TLS in the Contour HTTPProxy virtualhost without requiring a production ClusterIssuer.',
+  )
   .option('--node <node>', 'Sets optional node for deployment operations.')
   .option(
     '--build-manifest',
@@ -332,6 +342,8 @@ program
   .option('--retry-count <count>', 'Sets HTTPProxy per-route retry count (e.g., 3).')
   .option('--retry-per-try-timeout <duration>', 'Sets HTTPProxy retry per-try timeout (e.g., "150ms").')
   .option('--disable-update-deployment', 'Disables updates to deployments.')
+  .option('--disable-runtime-probes', 'Omits the internal-status HTTP probes from generated deployment manifests.')
+  .option('--tcp-probes', 'Generates legacy TCP socket probes instead of HTTP internal-status probes (migration).')
   .option('--disable-update-proxy', 'Disables updates to proxies.')
   .option('--disable-deployment-proxy', 'Disables proxies of deployments.')
   .option('--disable-update-volume', 'Disables updates to volume mounts during deployment.')
@@ -351,6 +363,14 @@ program
     '--expose-port <port>',
     'Sets the local:remote port to expose when --expose is active (overrides auto-detected service port).',
   )
+  .option(
+    '--expose-local-port <port>',
+    'Sets a different local port for --expose (e.g. 80) while keeping the remote service port. Useful for /etc/hosts local access without specifying a port in the browser.',
+  )
+  .option(
+    '--local-proxy',
+    'Forward all service TCP ports locally and start the Node.js path-routing proxy. Enables full path-based routing (e.g. /wp alongside /) without needing --expose-local-port. Requires --expose.',
+  )
   .option('--cmd <cmd>', 'Custom initialization command for deployment (comma-separated commands).')
   .option(
     '--skip-full-build',
@@ -363,6 +383,12 @@ program
   .option(
     '--image-pull-policy <policy>',
     'Override container imagePullPolicy in the generated deployment manifest (Always, IfNotPresent, Never). Defaults to Never for localhost/ images and IfNotPresent otherwise.',
+  )
+  .option(
+    '--tls',
+    'Enables TLS for the local proxy started by --expose --local-proxy. ' +
+      'The proxy will serve HTTPS on port 443 using self-signed certificates resolved from the local SSL store. ' +
+      'Use together with --expose and --local-proxy.',
   )
   .description('Manages application deployments, defaulting to deploying development pods.')
   .action(Underpost.deploy.callback);
@@ -888,6 +914,19 @@ program
   .option(
     '--dry-run',
     'For --build: previews version-bump changes (per-file substitution counts) without writing files or running downstream commands.',
+  )
+  .option(
+    '--mongo-host <host>',
+    'For --build: override DB_HOST in the template .env.example for the smoke test (e.g., "192.168.1.82:27017").',
+  )
+  .option('--mongo-user <user>', 'For --build: override DB_USER in the template .env.example for the smoke test.')
+  .option(
+    '--mongo-password <password>',
+    'For --build: override DB_PASSWORD in the template .env.example for the smoke test.',
+  )
+  .option(
+    '--valkey-host <host>',
+    'For --build: override VALKEY_HOST in the template .env.example for the smoke test (e.g., "192.168.1.82").',
   )
   .description('Release orchestrator for building new versions and deploying releases of the Underpost CLI.')
   .action(async (version, options) => {
