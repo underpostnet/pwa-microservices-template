@@ -70,6 +70,10 @@ program
     '--pull-bundle',
     'Downloads the pre-built client bundle from Cloudinary via pull-bundle before starting. Use together with --skip-full-build to skip the local build entirely.',
   )
+  .option(
+    '--private-test-repo',
+    'During --build, clone the private test source repo (engine-test-<id>) instead of the production engine-<id> repo.',
+  )
   .action(Underpost.start.callback)
   .description('Initiates application servers, build pipelines, or other defined services based on the deployment ID.');
 
@@ -727,6 +731,10 @@ program
     'Explicitly download the pre-built client bundle from Cloudinary inside the container (supported by: sync, template-deploy). Use together with --skip-full-build.',
   )
   .option('--remove', 'Remove/teardown resources')
+  .option(
+    '--test',
+    'Enables test/generic-purpose mode for the runner (e.g. use self-signed TLS instead of cert-manager).',
+  )
   .description('Runs specified scripts using various runners.')
   .action(Underpost.run.callback);
 
