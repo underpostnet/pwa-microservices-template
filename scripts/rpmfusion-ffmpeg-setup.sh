@@ -11,7 +11,16 @@ echo "3) Install EPEL"
 dnf -y install epel-release \
 || dnf -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm
 
-echo "4) Install ffmpeg"
+echo "4) Install RPM Fusion repositories"
+dnf -y install \
+https://download1.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm \
+https://download1.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm
+
+echo "5) Refresh metadata"
+dnf clean all
+dnf makecache --refresh
+
+echo "6) Install ffmpeg"
 dnf -y install ffmpeg ffmpeg-devel --allowerasing
 
 echo
