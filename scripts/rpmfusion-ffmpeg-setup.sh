@@ -16,11 +16,15 @@ dnf -y install \
 https://download1.rpmfusion.org/free/el/rpmfusion-free-release-9.noarch.rpm \
 https://download1.rpmfusion.org/nonfree/el/rpmfusion-nonfree-release-9.noarch.rpm
 
-echo "5) Refresh metadata"
+
+echo "5) Install libwebp-tools (for ffmpeg to support WebP)"
+dnf -y install libwebp-tools
+
+echo "6) Refresh metadata"
 dnf clean all
 dnf makecache --refresh
 
-echo "6) Install ffmpeg"
+echo "7) Install ffmpeg"
 dnf -y install ffmpeg ffmpeg-devel --allowerasing
 
 echo

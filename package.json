@@ -67,7 +67,7 @@
         "@neodrag/vanilla": "^2.3.1",
         "adm-zip": "^0.5.17",
         "ag-grid-community": "^35.3.1",
-        "axios": "^1.17.0",
+        "axios": "^1.18.0",
         "bumpp": "^11.1.0",
         "chai": "^6.2.2",
         "clipboardy": "^5.3.1",
@@ -81,7 +81,7 @@
         "dexie": "^4.4.3",
         "dotenv": "^17.4.2",
         "easymde": "^2.21.0",
-        "esbuild": "^0.28.0",
+        "esbuild": "^0.28.1",
         "escape-string-regexp": "^5.0.0",
         "express": "^5.2.1",
         "express-fileupload": "^1.4.3",
@@ -93,17 +93,17 @@
         "fullcalendar": "^6.1.15",
         "helmet": "^8.2.0",
         "html-minifier-terser": "^7.2.0",
-        "http-proxy-middleware": "^4.1.0",
+        "http-proxy-middleware": "^4.1.1",
         "ignore-walk": "^9.0.0",
         "iovalkey": "^0.3.3",
         "json-colorizer": "^3.0.1",
         "jsonwebtoken": "^9.0.3",
-        "mariadb": "^3.2.2",
-        "mocha": "^11.7.6",
+        "mariadb": "^3.5.3",
         "marked": "^18.0.5",
-        "mongoose": "^9.6.3",
+        "mocha": "^11.7.6",
+        "mongoose": "^9.7.0",
         "morgan": "^1.11.0",
-        "nodemailer": "^8.0.10",
+        "nodemailer": "^9.0.0",
         "nodemon": "^3.0.1",
         "peer": "^1.0.2",
         "peerjs": "^1.5.5",
@@ -145,6 +145,7 @@
         "serialize-javascript": ">=7.0.5",
         "router": {
             "path-to-regexp": ">=8.4.0"
-        }
+        },
+        "ws": "^8.20.2"
     }
 }
