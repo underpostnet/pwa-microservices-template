@@ -18,8 +18,6 @@ import fs from 'fs-extra';
 import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
 
-const catalogDir = path.dirname(fileURLToPath(import.meta.url));
-
 /** Empty product catalog returned for deploy ids without a dedicated module. */
 const EMPTY_CATALOG = {
   sourceMoves: [],
@@ -43,12 +41,11 @@ const EMPTY_CATALOG = {
 const loadDeployCatalog = async (deployId) => {
   const suffix = (deployId ?? '').split('dd-')[1];
   if (!suffix) return EMPTY_CATALOG;
-  try {
-    const mod = await import(`./catalog-${suffix}.js`);
+  if (fs.existsSync(`./src/projects/${suffix}/catalog-${suffix}.js`)) {
+    const mod = await import(`../projects/${suffix}/catalog-${suffix}.js`);
     return { ...EMPTY_CATALOG, ...(mod.default ?? {}) };
-  } catch {
-    return EMPTY_CATALOG;
   }
+  return EMPTY_CATALOG;
 };
 
 /**
@@ -62,14 +59,10 @@ const loadDeployCatalog = async (deployId) => {
  */
 const loadProductCatalogs = async () => {
   const catalogs = [];
-  for (const file of fs.readdirSync(catalogDir)) {
-    if (!/^catalog-.+\.js$/.test(file) || file === 'catalog-underpost.js') continue;
-    try {
-      const mod = await import(`./${file}`);
-      if (mod.default) catalogs.push({ ...EMPTY_CATALOG, ...mod.default });
-    } catch {
-      /* a malformed/removed product catalog must not break the base build */
-    }
+  for (const file of await fs.readdir('./src/projects')) {
+    if (file === 'underpost') continue;
+    const mod = await import(`../projects/${file}/catalog-${file}.js`);
+    if (mod.default) catalogs.push({ ...EMPTY_CATALOG, ...mod.default });
   }
   return catalogs;
 };
