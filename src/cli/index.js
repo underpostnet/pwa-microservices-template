@@ -739,6 +739,37 @@ program
   .action(Underpost.run.callback);
 
 program
+  .command('docker-compose')
+  .argument('[target]', 'Optional service name for --logs, --shell, --restart, or --build.')
+  .option('--install', 'Install Docker Engine and the Compose v2 plugin on RHEL/Rocky hosts.')
+  .option(
+    '--reset',
+    'Comprehensive teardown (equivalent to cluster --reset): removes all stack containers, the network, named volumes (destroys data), orphans, and generated artifacts.',
+  )
+  .option('--force', 'Force reinstall (--install), remove volumes (--down), or also drop the env-file (--reset).')
+  .option(
+    '--deploy-id <deploy-id>',
+    "Deployment to run as the app container (default: dd-default). 'dd-default' self-bootstraps a fresh engine; any other id runs the standard 'underpost start' command (mirrors src/cli/deploy.js).",
+  )
+  .option('--env <env>', 'Deployment environment for non-default deploy ids (default: development).')
+  .option('--generate', 'Render dynamic supporting files (nginx router config, env-file, app-command override).')
+  .option('--up', 'Start the full stack detached (regenerates config first).')
+  .option('--down', 'Stop and remove containers (and orphans).')
+  .option('--volumes', 'With --down, also remove named volumes (destroys persisted data).')
+  .option('--restart', 'Restart services (optionally a single [target]).')
+  .option('--build', 'With --up rebuild images; alone, rebuilds images with --no-cache.')
+  .option('--pull', 'Pull upstream images for all services.')
+  .option('--logs', 'Follow logs for all services (optionally a single [target]).')
+  .option('--status', 'Show a formatted status table of services.')
+  .option('--shell', 'Open an interactive shell in [target] (default: app).')
+  .option('--exec <subcommand>', 'General-purpose passthrough docker compose subcommand.')
+  .option('--compose-file <path>', 'Path to the compose file (default: docker-compose.yml).')
+  .option('--env-file <path>', 'Path to the compose env-file (default: docker/compose.env).')
+  .option('--nginx-conf <path>', 'Path to the generated nginx config (default: docker/nginx/default.conf).')
+  .description('General-purpose Docker Compose development pipeline (mirrors the Kubernetes dev stack).')
+  .action(Underpost.dockerCompose.callback);
+
+program
   .command('lxd')
   .argument(
     '[vm-id]',
@@ -857,6 +888,42 @@ program
   .option('--clear-discovered', 'Clears all discovered baremetal machines from the database.')
   .option('--commission', 'Init workflow for commissioning a physical machine.')
   .option(
+    '--install-disk [device]',
+    'Explicit target install disk for Rocky deployment (e.g. /dev/nvme0n1). Omit or leave empty to auto-detect the internal disk.',
+  )
+  .option(
+    '--no-auto-install',
+    'Disables the ephemeral runtime AUTO_INSTALL fallback (controller must trigger install).',
+  )
+  .option('--no-remote-install', 'Skips the controller-side remote install orchestration over SSH.')
+  .option(
+    '--worker',
+    'Post-install infra role: join the deployed node as a Kubernetes worker (requires --control <ip>). Without this flag the node is set up as a control-plane.',
+  )
+  .option('--control <ip>', 'Control-plane IP the worker node joins (used with --worker for kubeadm infra setup).')
+  .option(
+    '--ssh-key-dir <dir>',
+    'Directory holding the SSH key pair used for commissioning/orchestration (expects <dir>/id_rsa and <dir>/id_rsa.pub). Overrides the workflow "sshKeyDir"; defaults to engine-private/deploy. Supports a leading ~.',
+  )
+  .option(
+    '--deploy-id <deploy-id>',
+    'Deployment ID whose user key pair is used for SSH (key from engine-private/conf/<deploy-id>/users/<user>/id_rsa). Same user↔deployId↔key convention as the ssh command.',
+  )
+  .option(
+    '--user <user>',
+    'SSH user paired with --deploy-id for key resolution and the login user on an existing control-plane (defaults to root). Mirrors the ssh command --user.',
+  )
+  .option(
+    '--engine-repo <url>',
+    'Custom engine repo cloned + normalized to /home/dd/engine on the node (default: <GITHUB_USERNAME>/engine).',
+  )
+  .option('--engine-branch <branch>', 'Branch of the engine repo to clone on the node.')
+  .option(
+    '--engine-private-repo <url>',
+    'Custom private repo cloned + normalized to /home/dd/engine/engine-private on the node (default: <GITHUB_USERNAME>/engine-<id>-private).',
+  )
+  .option('--engine-private-branch <branch>', 'Branch of the engine-private repo to clone on the node.')
+  .option(
     '--bootstrap-http-server-run',
     'Runs a temporary bootstrap HTTP server for generic purposes such as serving iPXE scripts or ISO images during commissioning.',
   )
@@ -896,6 +963,14 @@ program
   )
   .option('--dev', 'Sets the development context environment for baremetal operations.')
   .option('--ls', 'Lists available boot resources and machines.')
+  .option(
+    '--resume-infra-setup',
+    'Skip commissioning, OS install, and all bootstrapping; resume only the SSH-based infra setup (kubeadm join/init) on a node that already has the OS installed and is reachable via SSH.',
+  )
+  .option(
+    '--resume-join',
+    'Skip everything except the kubeadm join command. Assumes engine, Node.js, CRI-O, kubelet, and kubeadm are already installed. Only retrieves a fresh join token from the control-plane and runs kubeadm join.',
+  )
   .description(
     'Manages baremetal server operations, including installation, database setup, commissioning, and user management.',
   )

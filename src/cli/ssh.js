@@ -546,6 +546,196 @@ EOF
     },
 
     /**
+     * Waits until a TCP SSH port becomes reachable on a host.
+     * @async
+     * @function waitForSshPort
+     * @memberof UnderpostSSH
+     * @param {object} params
+     * @param {string} params.host - Target host/IP.
+     * @param {number} [params.port=22] - SSH port.
+     * @param {number} [params.timeoutMs=600000] - Maximum wait window.
+     * @param {number} [params.intervalMs=3000] - Poll interval.
+     * @returns {Promise<boolean>} True once the port accepts connections, false on timeout.
+     */
+    waitForSshPort: async ({ host, port = 22, timeoutMs = 10 * 60 * 1000, intervalMs = 3000 }) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const probe = shellExec(
+          `timeout 5 bash -c '</dev/tcp/${host}/${port}' >/dev/null 2>&1 && echo open || echo closed`,
+          { silent: true, stdout: true, silentOnError: true, disableLog: true },
+        );
+        if (`${probe}`.trim() === 'open') return true;
+        await new Promise((r) => setTimeout(r, intervalMs));
+      }
+      logger.warn(`SSH port ${host}:${port} not reachable within timeout`);
+      return false;
+    },
+
+    /**
+     * Waits until a host's SSH port stops accepting connections (e.g. while it
+     * reboots). Used to detect a reboot edge before waiting for the port to come
+     * back up, so callers don't latch onto the pre-reboot (ephemeral) sshd.
+     * @async
+     * @function waitForSshPortClosed
+     * @memberof UnderpostSSH
+     * @param {object} params
+     * @param {string} params.host - Target host/IP.
+     * @param {number} [params.port=22] - SSH port.
+     * @param {number} [params.timeoutMs=180000] - Maximum wait window.
+     * @param {number} [params.intervalMs=3000] - Poll interval.
+     * @returns {Promise<boolean>} True once the port is closed, false on timeout.
+     */
+    waitForSshPortClosed: async ({ host, port = 22, timeoutMs = 3 * 60 * 1000, intervalMs = 3000 }) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        const probe = shellExec(
+          `timeout 5 bash -c '</dev/tcp/${host}/${port}' >/dev/null 2>&1 && echo open || echo closed`,
+          { silent: true, stdout: true, silentOnError: true, disableLog: true },
+        );
+        if (`${probe}`.trim() === 'closed') return true;
+        await new Promise((r) => setTimeout(r, intervalMs));
+      }
+      return false;
+    },
+
+    /**
+     * Orchestrates a non-interactive, key-only SSH session against a freshly
+     * provisioned host: waits for the port, attempts key-based auth, runs a
+     * remote command batch, and returns a structured result. Used by the
+     * commissioning flow once the ephemeral runtime reports SSH readiness.
+     * @async
+     * @function sshExecBatch
+     * @memberof UnderpostSSH
+     * @param {object} params
+     * @param {string} params.host - Target host/IP.
+     * @param {string} params.command - Remote command batch to execute.
+     * @param {number} [params.port=22] - SSH port.
+     * @param {string} [params.user='root'] - SSH user (key-only).
+     * @param {string} [params.keyPath] - Private key path (defaults to engine deploy key).
+     * @param {number} [params.connectTimeoutSec=15] - Per-attempt SSH connect timeout.
+     * @param {number} [params.retries=3] - Auth/exec retry attempts.
+     * @param {number} [params.retryDelayMs=5000] - Base backoff between retries.
+     * @param {number} [params.waitForPortMs=0] - When > 0, wait for the port first.
+     * @returns {Promise<{ok: boolean, code: number, stdout: string, stderr: string, attempts: number}>}
+     */
+    sshExecBatch: async ({
+      host,
+      command,
+      port = 22,
+      user = 'root',
+      keyPath = './engine-private/deploy/id_rsa',
+      connectTimeoutSec = 15,
+      retries = 3,
+      retryDelayMs = 5000,
+      waitForPortMs = 0,
+    }) => {
+      if (!host) throw new Error('sshExecBatch requires a host');
+      if (!command) throw new Error('sshExecBatch requires a command');
+
+      if (waitForPortMs > 0) {
+        const reachable = await Underpost.ssh.waitForSshPort({ host, port, timeoutMs: waitForPortMs });
+        if (!reachable) return { ok: false, code: 255, stdout: '', stderr: 'ssh port unreachable', attempts: 0 };
+      }
+
+      shellExec(`chmod 600 ${keyPath}`, { silent: true, silentOnError: true, disableLog: true });
+
+      const sshOpts = [
+        `-i ${keyPath}`,
+        `-o BatchMode=yes`,
+        `-o PreferredAuthentications=publickey`,
+        `-o PubkeyAuthentication=yes`,
+        `-o PasswordAuthentication=no`,
+        `-o StrictHostKeyChecking=no`,
+        `-o UserKnownHostsFile=/dev/null`,
+        `-o ConnectTimeout=${connectTimeoutSec}`,
+        // Tolerate a freshly-booted node whose network briefly flaps (e.g. while
+        // NetworkManager applies a static profile): retry the TCP connect and
+        // keep the session alive across short stalls.
+        `-o ConnectionAttempts=3`,
+        `-o ServerAliveInterval=10`,
+        `-o ServerAliveCountMax=6`,
+        `-p ${port}`,
+      ].join(' ');
+
+      let last = { ok: false, code: 255, stdout: '', stderr: '', attempts: 0 };
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        const result = shellExec(`ssh ${sshOpts} ${user}@${host} bash -s <<'UNDERPOST_SSH_BATCH_EOF'\n${command}\nUNDERPOST_SSH_BATCH_EOF`, {
+          stdout: false,
+          silentOnError: true,
+          disableLog: true,
+        });
+        last = {
+          ok: result.code === 0,
+          code: result.code,
+          stdout: result.stdout || '',
+          stderr: result.stderr || '',
+          attempts: attempt,
+        };
+        if (last.ok) {
+          logger.info(`sshExecBatch succeeded on ${user}@${host}:${port} (attempt ${attempt})`);
+          return last;
+        }
+        logger.warn(`sshExecBatch attempt ${attempt}/${retries} failed on ${user}@${host}:${port}`, {
+          code: last.code,
+          stderr: last.stderr.slice(-400),
+        });
+        if (attempt < retries) await new Promise((r) => setTimeout(r, retryDelayMs * attempt));
+      }
+      return last;
+    },
+
+    /**
+     * Transfers a local script to a remote host and runs it over key-only SSH.
+     * The script is base64-encoded so no shell-quoting/escaping is needed, then
+     * decoded, made executable, and executed with the given arguments. Reuses
+     * sshExecBatch for the actual transport, retries, and structured result.
+     * @async
+     * @function sshRunScript
+     * @memberof UnderpostSSH
+     * @param {object} params
+     * @param {string} params.host - Target host/IP.
+     * @param {string} params.scriptPath - Local path to the script to run.
+     * @param {string} [params.args=''] - Arguments appended to the remote invocation.
+     * @param {object} [params.env={}] - Environment variables exported for the remote run (e.g. secrets). Passed inline to the command, never echoed.
+     * @param {string} [params.remotePath='/tmp/underpost-remote-script.sh'] - Remote path to write the script.
+     * @param {number} [params.port=22] - SSH port.
+     * @param {string} [params.user='root'] - SSH user (key-only).
+     * @param {string} [params.keyPath] - Private key path (defaults to engine deploy key).
+     * @param {number} [params.retries=3] - Retry attempts.
+     * @param {number} [params.waitForPortMs=0] - When > 0, wait for the port first.
+     * @returns {Promise<{ok: boolean, code: number, stdout: string, stderr: string, attempts: number}>}
+     */
+    sshRunScript: async ({
+      host,
+      scriptPath,
+      args = '',
+      env = {},
+      remotePath = '/tmp/underpost-remote-script.sh',
+      port = 22,
+      user = 'root',
+      keyPath = './engine-private/deploy/id_rsa',
+      retries = 3,
+      waitForPortMs = 0,
+    }) => {
+      if (!fs.existsSync(scriptPath)) throw new Error(`sshRunScript: script not found: ${scriptPath}`);
+      const b64 = Buffer.from(fs.readFileSync(scriptPath, 'utf8'), 'utf8').toString('base64');
+      // Inline env assignments (single-quote escaped) so secrets are exported for
+      // the remote run without appearing as logged CLI args.
+      const sq = (v) => `'${String(v).replace(/'/g, "'\\''")}'`;
+      const envPrefix = Object.entries(env)
+        .filter(([, v]) => v !== undefined && v !== null && `${v}` !== '')
+        .map(([k, v]) => `${k}=${sq(v)}`)
+        .join(' ');
+      const command = [
+        'set -e',
+        `echo '${b64}' | base64 -d > ${remotePath}`,
+        `chmod +x ${remotePath}`,
+        `${envPrefix ? `${envPrefix} ` : ''}bash ${remotePath} ${args}`,
+      ].join('\n');
+      return Underpost.ssh.sshExecBatch({ host, port, user, keyPath, retries, waitForPortMs, command });
+    },
+
+    /**
      * Loads saved SSH credentials from config and sets them in the UnderpostRootEnv API.
      * @async
      * @function setDefautlSshCredentials

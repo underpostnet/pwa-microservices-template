@@ -34,6 +34,11 @@ class UnderpostBaremetal {
   // statd=32765 (listen), statdOutgoing=32766 (SM_NOTIFY source port) is the standard split.
   static NFS_V3_PORTS = { mountd: 20048, statd: 32765, statdOutgoing: 32766, lockd: 32803 };
 
+  // Lifecycle events POSTed by the ephemeral runtime to the bootstrap HTTP
+  // server, keyed by hostname. Populated by httpBootstrapServerRunnerFactory's
+  // POST handler and consumed by waitForBootstrapStage during orchestration.
+  static bootstrapStatusEvents = new Map();
+
   static API = {
     /**
      * @method callback
@@ -87,6 +92,20 @@ class UnderpostBaremetal {
      * @param {boolean} [options.nfsUnmount=false] - Flag to unmount the NFS root filesystem.
      * @param {boolean} [options.nfsSh=false] - Flag to chroot into the NFS environment for shell access.
      * @param {string} [options.logs=''] - Specifies which logs to display ('dhcp', 'cloud', 'machine', 'cloud-config').
+     * @param {string} [options.installDisk=''] - Specifies the disk to install the OS on (e.g., /dev/sda).
+     * @param {boolean} [options.autoInstall=true] - Flag to enable automatic installation of the OS on the baremetal machine.
+     * @param {boolean} [options.remoteInstall=true] - Flag to enable remote installation of the OS on the baremetal machine.
+     * @param {boolean} [options.worker=false] - Flag to designate the machine as a worker node.
+     * @param {string} [options.control=''] - Specifies the control node for the baremetal machine.
+     * @param {string} [options.sshKeyDir=''] - Specifies the directory containing SSH keys for the baremetal machine.
+     * @param {string} [options.deployId=''] - Specifies the deployment ID for SSH key resolution.
+     * @param {string} [options.engineRepo=''] - Specifies the custom engine repository URL.
+     * @param {string} [options.engineBranch=''] - Specifies the custom engine repository branch.
+     * @param {string} [options.enginePrivateRepo=''] - Specifies the custom private engine repository URL.
+     * @param {string} [options.enginePrivateBranch=''] - Specifies the custom private engine repository branch.
+     * @param {string} [options.user=''] - Specifies the SSH user for the baremetal machine.
+     * @param {boolean} [options.resumeInfraSetup=false] - Flag to skip commissioning and OS install, resuming SSH-based infra setup on an already installed node.
+     * @param {boolean} [options.resumeJoin=false] - Flag to skip everything except the kubeadm join command.
      * @memberof UnderpostBaremetal
      * @returns {void}
      */
@@ -138,6 +157,20 @@ class UnderpostBaremetal {
         nfsUnmount: false,
         nfsSh: false,
         logs: '',
+        installDisk: '',
+        autoInstall: true,
+        remoteInstall: true,
+        worker: false,
+        control: '',
+        sshKeyDir: '',
+        user: '',
+        deployId: '',
+        engineRepo: '',
+        engineBranch: '',
+        enginePrivateRepo: '',
+        enginePrivateBranch: '',
+        resumeInfraSetup: false,
+        resumeJoin: false,
       },
     ) {
       let { ipAddress, hostname, ipFileServer, ipConfig, netmask, dnsServer } = options;
@@ -212,6 +245,60 @@ class UnderpostBaremetal {
 
       // Log the initiation of the baremetal callback with relevant metadata.
       logger.info('Baremetal callback', callbackMetaData);
+
+      // --resume-infra-setup: skip commissioning, OS install, and all PXE/TFTP/MAAS
+      // bootstrapping; directly resume the SSH-based infra setup on a node that
+      // already has the OS installed and is reachable via SSH.
+      if (options.resumeInfraSetup) {
+        const { privateKeyPath, user: resolvedUser } = Underpost.baremetal.resolveSshKeyPaths({
+          options,
+          workflowsConfig,
+          workflowId,
+        });
+        logger.info('--resume-infra-setup: skipping commission/bootstrapping; resuming SSH infra setup', {
+          hostname,
+          ipAddress,
+          keyPath: privateKeyPath,
+          user: resolvedUser,
+          workflowId,
+          infraSetup: workflowsConfig[workflowId]?.infraSetup || 'none',
+        });
+        return await Underpost.baremetal.postInstallDispatcher({
+          workflowId,
+          workflowsConfig,
+          hostname,
+          ipAddress,
+          options,
+          underpostRoot,
+          keyPath: privateKeyPath,
+          controlUser: resolvedUser,
+        });
+      }
+
+      // --resume-join: skip everything except the kubeadm join command.
+      // Even lighter than --resume-infra-setup: no engine setup, no npm install,
+      // no init-host, no config. Assumes all infra is already installed.
+      if (options.resumeJoin) {
+        const { privateKeyPath, user: resolvedUser } = Underpost.baremetal.resolveSshKeyPaths({
+          options,
+          workflowsConfig,
+          workflowId,
+        });
+        logger.info('--resume-join: skipping all bootstrapping; joining cluster directly with minimal SSH command', {
+          hostname,
+          ipAddress,
+          keyPath: privateKeyPath,
+          user: resolvedUser,
+        });
+        return await Underpost.baremetal.infraSetupKubeadm({
+          hostname,
+          ipAddress,
+          options,
+          underpostRoot,
+          keyPath: privateKeyPath,
+          controlUser: resolvedUser,
+        });
+      }
 
       // Create a new machine in MAAS if the option is set.
       let machine;
@@ -908,12 +995,60 @@ rm -rf ${artifacts.join(' ')}`);
       // Rocky/RHEL Kickstart generation
       let kickstartSrc = '';
       if (Underpost.baremetal.getFamilyBaseOs(workflowsConfig[workflowId].osIdLike).isRhelBased) {
+        const bootstrapPort = Underpost.baremetal.bootstrapHttpServerPortFactory({
+          port: options.bootstrapHttpServerPort,
+          workflowId,
+          workflowsConfig,
+        });
+        // Base URL the ephemeral runtime POSTs lifecycle events to:
+        // http://<controller-ip>:<port>/<hostname>  ->  .../status
+        const bootstrapUrl = `http://${callbackMetaData.runnerHost.ip}:${bootstrapPort}/${hostname}`;
+        const { publicKeyPath } = Underpost.baremetal.resolveSshKeyPaths({ options, workflowsConfig, workflowId });
+        if (!fs.existsSync(publicKeyPath)) {
+          throw new Error(
+            `SSH public key not found at ${publicKeyPath}. Set --ssh-key-dir <dir> (expects <dir>/id_rsa.pub) or the workflow "sshKeyDir".`,
+          );
+        }
+        const { rootPassword, adminUsername, adminPassword, deployUsername, deployPassword } =
+          Underpost.baremetal.resolveInstallCredentials({ options, workflowsConfig, workflowId });
+        const { netIp, netPrefix, netGateway, netDns } = Underpost.baremetal.resolveInstalledNetwork({
+          ipAddress,
+          netmask,
+          dnsServer,
+        });
+        logger.info('Resolved installed-OS login + network', {
+          adminUsername,
+          adminPasswordSet: Boolean(adminPassword),
+          deployUsername: deployUsername || '(none)',
+          rootPasswordSet: Boolean(rootPassword),
+          staticIp: `${netIp}/${netPrefix}`,
+          gateway: netGateway,
+        });
         kickstartSrc = Underpost.kickstart.kickstartFactory({
           lang: 'en_US.UTF-8',
           keyboard: workflowsConfig[workflowId].keyboard?.layout,
           timezone: workflowsConfig[workflowId].chronyc?.timezone,
-          rootPassword: process.env.MAAS_ADMIN_PASS,
-          authorizedKeys: fs.readFileSync('/home/dd/engine/engine-private/deploy/id_rsa.pub', 'utf8').trim(),
+          chronyConfPath: workflowsConfig[workflowId].chronyc?.chronyConfPath,
+          rootPassword,
+          adminUsername,
+          adminPassword,
+          deployUsername,
+          deployPassword,
+          netIp,
+          netPrefix,
+          netGateway,
+          netDns,
+          authorizedKeys: fs.readFileSync(publicKeyPath, 'utf8').trim(),
+          bootstrapUrl,
+          workflowId,
+          systemId: machine?.system_id || '',
+          targetHostname: hostname,
+          sshPort: 22,
+          installDiskHint:
+            (typeof options.installDisk === 'string' ? options.installDisk : '') ||
+            workflowsConfig[workflowId].installDisk ||
+            '',
+          autoInstall: options.autoInstall !== false,
         });
       }
 
@@ -975,14 +1110,10 @@ rm -rf ${artifacts.join(' ')}`);
           shellExec(`mkdir -p ${nfsHostPath}/casper`);
         }
 
-        // Clean and create TFTP root path.
+        // Clean and create TFTP root path. The iPXE EFI binary is restored from
+        // cache (or rebuilt) later by the gated build block, so no early copy here.
         shellExec(`sudo rm -rf ${tftpRootPath}`);
         shellExec(`mkdir -p ${tftpRootPath}/pxe`);
-
-        // Restore iPXE build from cache if available and not forcing rebuild
-        if (fs.existsSync(`${ipxeCacheDir}/ipxe.efi`) && !options.ipxeRebuild) {
-          shellExec(`cp ${ipxeCacheDir}/ipxe.efi ${tftpRootPath}/ipxe.efi`);
-        }
 
         // Process firmwares for TFTP.
         for (const firmware of firmwares) {
@@ -1093,14 +1224,32 @@ rm -rf ${artifacts.join(' ')}`);
               embeddedPath: `${tftpRootPath}/boot.ipxe`,
             });
 
-            Underpost.baremetal.ipxeEfiFactory({
-              tftpRootPath,
-              ipxeCacheDir,
-              arch,
-              underpostRoot,
-              embeddedScriptPath: `${tftpRootPath}/boot.ipxe`,
-              forceRebuild: options.ipxeRebuild,
-            });
+            // iPXE EFI binary build policy:
+            //   --ipxe-rebuild        -> always rebuild.
+            //   --ipxe (cache exists) -> reuse the cached binary, no build.
+            //   --ipxe (no cache)     -> warn and build, then cache for reuse.
+            const cachedIpxePath = `${ipxeCacheDir}/ipxe.efi`;
+            const tftpIpxePath = `${tftpRootPath}/ipxe.efi`;
+            if (options.ipxeRebuild || !fs.existsSync(cachedIpxePath)) {
+              if (!options.ipxeRebuild) {
+                logger.warn(
+                  '⚠ No cached iPXE EFI binary found — building now. Later runs reuse the cache; use --ipxe-rebuild to force a rebuild.',
+                );
+              }
+              Underpost.baremetal.ipxeEfiFactory({
+                tftpRootPath,
+                ipxeCacheDir,
+                arch,
+                underpostRoot,
+                embeddedScriptPath: `${tftpRootPath}/boot.ipxe`,
+                forceRebuild: true,
+              });
+            } else {
+              shellExec(`cp ${cachedIpxePath} ${tftpIpxePath}`);
+              logger.info('✓ Using cached iPXE EFI binary (pass --ipxe-rebuild to force a rebuild)', {
+                path: cachedIpxePath,
+              });
+            }
           }
 
           const { grubCfgSrc } = Underpost.baremetal.grubFactory({
@@ -1157,7 +1306,355 @@ rm -rf ${artifacts.join(' ')}`);
         const { discovery, machine: discoveredMachine } =
           await Underpost.baremetal.commissionMonitor(commissionMonitorPayload);
         if (discoveredMachine) machine = discoveredMachine;
+
+        // Rocky/RHEL disk-install orchestration:
+        // Once the ephemeral Kickstart/Anaconda runtime reports key-only SSH
+        // readiness over the bootstrap HTTP POST sink, drive the unattended
+        // install of Rocky onto the detected target disk via a key-only,
+        // non-interactive remote command. The runtime also has an AUTO_INSTALL
+        // fallback, so a missed handshake never blocks installation forever.
+        if (
+          Underpost.baremetal.getFamilyBaseOs(workflowsConfig[workflowId].osIdLike).isRhelBased &&
+          options.remoteInstall !== false
+        ) {
+          const { privateKeyPath, user: resolvedUser } = Underpost.baremetal.resolveSshKeyPaths({
+            options,
+            workflowsConfig,
+            workflowId,
+          });
+
+          await Underpost.baremetal.remoteInstallOrchestrator({
+            hostname,
+            ipAddress,
+            sshPort: 22,
+            keyPath: privateKeyPath,
+          });
+
+          // After the OS is installed and the node reboots into the deployed
+          // disk, run the post-install dispatcher: it reads the workflow's
+          // infraSetup field and provisions the requested infrastructure (e.g.
+          // a kubeadm control-plane or worker) over key-only SSH. The resolved
+          // user is used when authenticating to an EXISTING control-plane (e.g.
+          // admin@dd-core); fresh nodes are always reached as root.
+          await Underpost.baremetal.postInstallDispatcher({
+            workflowId,
+            workflowsConfig,
+            hostname,
+            ipAddress,
+            options,
+            underpostRoot,
+            keyPath: privateKeyPath,
+            controlUser: resolvedUser,
+          });
+        }
       }
+    },
+
+    /**
+     * @method postInstallDispatcher
+     * @description Generic first-boot post-install dispatcher. Reads the workflow's
+     * `infraSetup` field and runs the matching infrastructure setup on the freshly
+     * deployed node. Easy to extend: add a new case per supported infraSetup type.
+     * Fails with a clear error if the workflow requests an unsupported type.
+     * @param {object} params
+     * @param {string} params.workflowId - Active workflow id.
+     * @param {object} params.workflowsConfig - Loaded workflows config.
+     * @param {string} params.hostname - Node hostname.
+     * @param {string} params.ipAddress - Node IP (installed OS, key-only SSH).
+     * @param {object} params.options - CLI options (carries --worker / --control).
+     * @param {string} params.underpostRoot - Engine root for resolving scripts.
+     * @param {string} [params.keyPath] - Private key path for key-only SSH.
+     * @param {string} [params.controlUser='root'] - SSH user for an existing control-plane.
+     * @returns {Promise<void>}
+     * @memberof UnderpostBaremetal
+     */
+    async postInstallDispatcher({
+      workflowId,
+      workflowsConfig,
+      hostname,
+      ipAddress,
+      options,
+      underpostRoot,
+      keyPath,
+      controlUser = 'root',
+    }) {
+      const infraSetup = workflowsConfig[workflowId]?.infraSetup;
+      if (!infraSetup) {
+        logger.info('No infraSetup configured for workflow; skipping post-install setup', { workflowId });
+        return;
+      }
+
+      logger.info('Post-install dispatcher selecting infra setup', { workflowId, infraSetup });
+      switch (infraSetup) {
+        case 'underpost-kubeadm-contour':
+          await Underpost.baremetal.infraSetupKubeadm({
+            hostname,
+            ipAddress,
+            options,
+            underpostRoot,
+            keyPath,
+            controlUser,
+          });
+          break;
+        default:
+          throw new Error(
+            `Unsupported infraSetup "${infraSetup}" for workflow "${workflowId}". Supported: underpost-kubeadm-contour`,
+          );
+      }
+    },
+
+    /**
+     * @method infraSetupKubeadm
+     * @description Provisions a kubeadm node on the freshly deployed machine over
+     * key-only SSH. Control mode (default) initializes a new control-plane. Worker
+     * mode (`--worker`) joins an existing cluster: the join token is retrieved
+     * dynamically over SSH from the control-plane node (`--control <ip>`) — never
+     * pasted manually — and passed to the node setup script.
+     * @param {object} params
+     * @param {string} params.hostname - Node hostname (logging).
+     * @param {string} params.ipAddress - Target node IP (installed OS).
+     * @param {object} params.options - CLI options; options.worker, options.control.
+     * @param {string} params.underpostRoot - Engine root for resolving the script.
+     * @param {string} [params.keyPath] - Private key path for key-only SSH.
+     * @param {string} [params.controlUser='root'] - SSH login user for an existing control-plane (e.g. admin).
+     * @returns {Promise<void>}
+     * @memberof UnderpostBaremetal
+     */
+    async infraSetupKubeadm({
+      hostname,
+      ipAddress,
+      options,
+      underpostRoot,
+      keyPath = 'engine-private/deploy/id_rsa',
+      controlUser = 'root',
+    }) {
+      const role = options.worker ? 'worker' : 'control';
+      const scriptPath = `${underpostRoot}/scripts/kubeadm-node-setup.sh`;
+      const installedOsTimeoutMs = 15 * 60 * 1000;
+
+      logger.info(`Kubeadm post-install setup (${role}) on ${hostname} (${ipAddress})`);
+
+      if (!options.resumeInfraSetup && !options.resumeJoin) {
+        // The node is rebooting from the ephemeral installer into the deployed OS.
+        // First wait for the (ephemeral) SSH port to CLOSE so we don't latch onto
+        // the pre-reboot sshd, then wait for the installed OS sshd to come UP.
+        logger.info('Waiting for node to reboot into the deployed OS (port close → reopen)...', { ipAddress });
+        await Underpost.ssh.waitForSshPortClosed({ host: ipAddress, port: 22, timeoutMs: 4 * 60 * 1000 });
+        const reachable = await Underpost.ssh.waitForSshPort({
+          host: ipAddress,
+          port: 22,
+          timeoutMs: installedOsTimeoutMs,
+        });
+        if (!reachable) {
+          logger.error('Installed OS SSH not reachable after reboot; cannot run kubeadm setup', { ipAddress });
+          return;
+        }
+        // The first time the port opens the node is still early in boot and
+        // NetworkManager may re-apply the static profile, resetting in-flight TCP
+        // connections. Let the network settle before driving the long node setup.
+        logger.info('Deployed OS SSH is up; letting the network settle before node setup...', { ipAddress });
+        await timer(30000);
+      } else {
+        logger.info('--resume-infra-setup: SSH already up, skipping port close/reopen wait', { ipAddress });
+      }
+
+      let scriptArgs;
+      if (role === 'worker') {
+        const controlIp = options.control;
+        if (!controlIp || typeof controlIp !== 'string') {
+          throw new Error('Worker mode requires the control-plane IP via --control <ip>');
+        }
+
+        // Retrieve the join command dynamically from the control-plane node over
+        // SSH (reuses the same key-only SSH execution path). No manual token paste.
+        // The control-plane may be an existing deploy reached as a non-root user
+        // (e.g. admin@dd-core), selected via --user/--deploy-id.
+        logger.info('Retrieving kubeadm join command from control-plane over SSH', {
+          controlIp,
+          controlUser,
+          keyPath,
+        });
+        const joinResult = await Underpost.ssh.sshExecBatch({
+          host: controlIp,
+          port: 22,
+          user: controlUser,
+          keyPath,
+          retries: 4,
+          waitForPortMs: 5 * 60 * 1000,
+          command: 'sudo kubeadm token create --print-join-command',
+        });
+
+        let joinCommand = (joinResult.stdout || '')
+          .split('\n')
+          .map((l) => l.trim())
+          .find((l) => l.startsWith('kubeadm join'));
+        if (!joinResult.ok || !joinCommand) {
+          throw new Error(
+            `Failed to retrieve kubeadm join command from control-plane ${controlUser}@${controlIp} using key "${keyPath}" (code ${joinResult.code}). ` +
+              `Ensure that key authorizes ${controlUser}@${controlIp} — pass --deploy-id <id> --user <user> (key from engine-private/conf/<id>/users/<user>) ` +
+              `or --ssh-key-dir <dir> to use the key/user the control-plane accepts. stderr: ${joinResult.stderr.slice(-300)}`,
+          );
+        }
+        // kubeadm prints the API endpoint as the control-plane's hostname (often
+        // localhost.localdomain), which the worker cannot resolve/route. Capture
+        // that original endpoint host (so the worker can map it -> control IP in
+        // /etc/hosts; the cluster-info / kubeadm-config ConfigMaps reference it),
+        // then rewrite the join positional endpoint to the real control-plane IP.
+        const endpointMatch = joinCommand.match(/kubeadm join\s+([^\s:]+):\d+/);
+        const endpointHost = endpointMatch ? endpointMatch[1] : '';
+        joinCommand = joinCommand.replace(/kubeadm join\s+\S+:(\d+)/, `kubeadm join ${controlIp}:$1`);
+        logger.info('✓ Retrieved kubeadm join command from control-plane', { controlIp, endpointHost, joinCommand });
+        scriptArgs = `--worker --join-command="${joinCommand}" --control-ip=${controlIp}`;
+        if (endpointHost && endpointHost !== controlIp) {
+          scriptArgs += ` --control-endpoint-host=${endpointHost}`;
+        }
+        // --resume-join: skip all node prep and go straight to the kubeadm join.
+        if (options.resumeJoin) scriptArgs += ' --join-only';
+      } else {
+        scriptArgs = '--control';
+      }
+
+      // Secrets needed on the node to clone the private engine-private repo
+      // (engine-private/conf/.../.env.production for `node bin run secret`).
+      const githubUsername = Underpost.baremetal.readEngineConfig('GITHUB_USERNAME') || 'underpostnet';
+      const githubEnv = {
+        GITHUB_TOKEN: Underpost.baremetal.readEngineConfig('GITHUB_TOKEN'),
+        GITHUB_USERNAME: githubUsername,
+      };
+      if (!githubEnv.GITHUB_TOKEN) {
+        logger.warn('GITHUB_TOKEN not resolved on controller; engine-private clone on the node will be skipped');
+      }
+
+      // Resolve the engine + engine-private repos the node clones and normalizes
+      // to /home/dd/engine and /home/dd/engine/engine-private. CLI overrides win;
+      // otherwise default to the base engine and the deployId's private repo
+      // (engine-<id>-private), mirroring repository.privateEngineRepoFactory.
+      const deployIdSuffix = options.deployId ? options.deployId.split('-')[1] : '';
+      const engineRepo = options.engineRepo || `https://github.com/${githubUsername}/engine.git`;
+      const enginePrivateRepo =
+        options.enginePrivateRepo ||
+        (deployIdSuffix
+          ? `https://github.com/${githubUsername}/engine-${deployIdSuffix}-private.git`
+          : `https://github.com/${githubUsername}/engine-private.git`);
+      const repoArgs = [
+        `--engine-repo=${engineRepo}`,
+        `--engine-private-repo=${enginePrivateRepo}`,
+        ...(options.engineBranch ? [`--engine-branch=${options.engineBranch}`] : []),
+        ...(options.enginePrivateBranch ? [`--engine-private-branch=${options.enginePrivateBranch}`] : []),
+      ].join(' ');
+      scriptArgs = `${scriptArgs} ${repoArgs}`.trim();
+      logger.info('Node engine repos', { engineRepo, enginePrivateRepo });
+
+      logger.info(`Running kubeadm-node-setup.sh (${role}) on ${ipAddress}... (this can take several minutes)`);
+      // The node setup is a long, mostly-idempotent install. Keep retries low so
+      // a late failure doesn't re-run the whole thing many times; the script
+      // skips already-completed steps (Node, engine clone) on a re-run.
+      const result = await Underpost.ssh.sshRunScript({
+        host: ipAddress,
+        scriptPath,
+        args: scriptArgs,
+        env: githubEnv,
+        remotePath: '/tmp/kubeadm-node-setup.sh',
+        keyPath,
+        retries: 2,
+        waitForPortMs: 5 * 60 * 1000,
+      });
+
+      if (result.ok) {
+        logger.info(`✓ Kubeadm ${role} node setup completed on ${hostname}`, {
+          stdout: result.stdout.split('\n').slice(-12).join('\n'),
+        });
+      } else {
+        logger.error(`✗ Kubeadm ${role} node setup failed on ${hostname}`, {
+          code: result.code,
+          stderr: result.stderr.slice(-600),
+        });
+      }
+    },
+
+    /**
+     * @method remoteInstallOrchestrator
+     * @description Waits for the ephemeral runtime's 'ssh-ready' lifecycle event,
+     * then triggers the unattended Rocky install over a key-only SSH batch
+     * command. Returns structured success/failure information. Non-fatal: logs
+     * and returns on failure so the runtime's AUTO_INSTALL fallback can proceed.
+     * @param {object} params
+     * @param {string} params.hostname - Hostname key used by the bootstrap POST sink.
+     * @param {string} params.ipAddress - Fallback IP if the runtime did not report one.
+     * @param {number} [params.sshPort=22] - SSH port of the ephemeral runtime.
+     * @param {string} [params.keyPath] - Private key path for key-only auth.
+     * @returns {Promise<{ok: boolean, host: string, result?: object, reason?: string}>}
+     * @memberof UnderpostBaremetal
+     */
+    async remoteInstallOrchestrator({ hostname, ipAddress, sshPort = 22, keyPath = 'engine-private/deploy/id_rsa' }) {
+      logger.info('Awaiting ephemeral runtime ssh-ready handshake...', { hostname, ipAddress });
+      const readyEvent = await Underpost.baremetal.waitForBootstrapStage({ hostname, stage: 'ssh-ready' });
+
+      const host = readyEvent?.ip && readyEvent.ip !== 'UNKNOWN' ? readyEvent.ip : ipAddress;
+      if (!readyEvent) {
+        logger.warn('No ssh-ready event received; relying on runtime AUTO_INSTALL fallback', { host });
+        return { ok: false, host, reason: 'no ssh-ready event' };
+      }
+      logger.info('SSH-ready event received', { host, metadata: readyEvent });
+
+      // Key-only, non-interactive trigger of the on-host installer. We only DROP
+      // the trigger file here; the persistent %pre lifecycle loop (a child of
+      // Anaconda, not of this sshd session) launches the installer fully
+      // detached. Running the installer directly as an sshd child causes it to
+      // be torn down when the SSH channel closes, before it can even start.
+      const result = await Underpost.ssh.sshExecBatch({
+        host,
+        port: sshPort,
+        user: 'root',
+        keyPath,
+        waitForPortMs: 5 * 60 * 1000,
+        retries: 4,
+        command: ['set -e', 'touch /tmp/.underpost-install-trigger', 'echo "install trigger dropped"'].join('\n'),
+      });
+
+      if (result.ok) {
+        logger.info('✓ Remote install trigger dropped', { host, stdout: result.stdout.trim() });
+      } else {
+        logger.error('Remote install trigger failed; runtime AUTO_INSTALL fallback will cover it', {
+          host,
+          code: result.code,
+          stderr: result.stderr.slice(-400),
+        });
+      }
+
+      // Follow the install lifecycle so the controller reflects real progress.
+      const started = await Underpost.baremetal.waitForBootstrapStage({
+        hostname,
+        stage: 'install-start',
+        timeoutMs: 3 * 60 * 1000,
+      });
+      if (!started) {
+        logger.warn('Installer did not report install-start within 3m; check /tmp/underpost-install.log on the node', {
+          host,
+        });
+        return { ok: false, host, reason: 'no install-start', result };
+      }
+      logger.info('Installer launched on node', { host });
+
+      // Wait for a terminal stage. The node reboots on success, so 'completed'
+      // is the last event we will receive.
+      const terminal = await Underpost.baremetal.waitForBootstrapStage({
+        hostname,
+        stage: 'completed',
+        timeoutMs: 40 * 60 * 1000,
+      });
+      if (terminal) {
+        logger.info('✓ Rocky install completed; node rebooting into deployed OS', { host, event: terminal });
+        return { ok: true, host, result, terminal };
+      }
+
+      const failed = (UnderpostBaremetal.bootstrapStatusEvents.get(hostname) || []).find((e) => e.stage === 'failed');
+      if (failed) {
+        logger.error('✗ Rocky install reported failure', { host, event: failed });
+        return { ok: false, host, reason: 'install failed', result, failed };
+      }
+      logger.warn('Install did not reach a terminal stage within timeout', { host });
+      return { ok: false, host, reason: 'no terminal stage', result };
     },
 
     /**
@@ -2095,6 +2592,136 @@ shell
     },
 
     /**
+     * @method resolveSshKeyPaths
+     * @description Resolves the SSH key pair and login user for commissioning/
+     * orchestration. The key pair always lives at `<dir>/id_rsa` + `<dir>/id_rsa.pub`.
+     *
+     * Key-dir precedence:
+     *   1. `--ssh-key-dir <dir>` (explicit path)
+     *   2. `--deploy-id <id>` (+ `--user <user>`) → `engine-private/conf/<id>/users/<user>`
+     *      (the same user↔deployId↔key convention `src/cli/ssh.js` writes; no key path needed)
+     *   3. workflow `sshKeyDir`
+     *   4. workflow `deployId` (+ `user`)
+     *   5. default `engine-private/deploy`
+     *
+     * User precedence: `--user` > workflow `user` > `root`. A leading `~` in the
+     * resolved dir is expanded to the user's home.
+     * @param {object} params
+     * @param {object} [params.options={}] - CLI options (sshKeyDir, deployId, user).
+     * @param {object} [params.workflowsConfig={}] - Loaded workflows config.
+     * @param {string} [params.workflowId=''] - Active workflow id.
+     * @returns {{ keyDir: string, privateKeyPath: string, publicKeyPath: string, user: string, deployId: string }}
+     * @memberof UnderpostBaremetal
+     */
+    resolveSshKeyPaths({ options = {}, workflowsConfig = {}, workflowId = '' } = {}) {
+      const wf = workflowsConfig?.[workflowId] || {};
+      const user = options.user || wf.user || 'root';
+      const deployId = options.deployId || wf.deployId || '';
+
+      let dir;
+      if (options.sshKeyDir) dir = options.sshKeyDir;
+      else if (options.deployId) dir = `engine-private/conf/${options.deployId}/users/${user}`;
+      else if (wf.sshKeyDir) dir = wf.sshKeyDir;
+      else if (deployId) dir = `engine-private/conf/${deployId}/users/${user}`;
+      else dir = 'engine-private/deploy';
+
+      if (dir.startsWith('~')) dir = path.join(process.env.HOME || '', dir.slice(1));
+      return { keyDir: dir, privateKeyPath: `${dir}/id_rsa`, publicKeyPath: `${dir}/id_rsa.pub`, user, deployId };
+    },
+
+    /**
+     * @method resolveInstallCredentials
+     * @description Resolves the login accounts baked into the deployed OS. Always
+     * creates TWO admin accounts so a console login is guaranteed:
+     *   1. the MAAS admin (MAAS_ADMIN_USERNAME / MAAS_ADMIN_PASS) — password login,
+     *   2. the deploy user (`--user`, e.g. admin) — its conf.node.json
+     *      password (or MAAS_ADMIN_PASS), plus the SSH key.
+     * root always gets MAAS_ADMIN_PASS. The deploy user/password come from
+     * `engine-private/conf/<deployId>/conf.node.json` (`users[user]`).
+     * @param {object} params
+     * @param {object} [params.options={}] - CLI options.
+     * @param {object} [params.workflowsConfig={}] - Loaded workflows config.
+     * @param {string} [params.workflowId=''] - Active workflow id.
+     * @returns {{ rootPassword: string, adminUsername: string, adminPassword: string, deployUsername: string, deployPassword: string, confUser: object }}
+     * @memberof UnderpostBaremetal
+     */
+    resolveInstallCredentials({ options = {}, workflowsConfig = {}, workflowId = '' } = {}) {
+      const { user, deployId } = Underpost.baremetal.resolveSshKeyPaths({ options, workflowsConfig, workflowId });
+
+      let confUser = {};
+      if (deployId) {
+        const confPath = `engine-private/conf/${deployId}/conf.node.json`;
+        if (fs.existsSync(confPath)) {
+          try {
+            confUser = JSON.parse(fs.readFileSync(confPath, 'utf8'))?.users?.[user] || {};
+          } catch (error) {
+            logger.warn(`Failed to parse ${confPath}: ${error.message}`);
+          }
+        } else {
+          logger.warn(`conf.node.json not found at ${confPath}; using MAAS_ADMIN_* defaults`);
+        }
+      }
+
+      const maasPass = process.env.MAAS_ADMIN_PASS || '';
+      const rootPassword = maasPass;
+      // User 1: the MAAS admin — guaranteed password login on the console.
+      const adminUsername = process.env.MAAS_ADMIN_USERNAME || 'maas';
+      const adminPassword = maasPass;
+      // User 2: the deploy user (only when distinct from root/maas admin).
+      const deployUsername = deployId && user && user !== 'root' && user !== adminUsername ? user : '';
+      const deployPassword = deployUsername ? confUser.password || maasPass : '';
+
+      if (!rootPassword) {
+        logger.warn(
+          'MAAS_ADMIN_PASS is empty — console password login will not work. Set MAAS_ADMIN_PASS in .env so root/admin have a usable password.',
+        );
+      }
+      return { rootPassword, adminUsername, adminPassword, deployUsername, deployPassword, confUser };
+    },
+
+    /**
+     * @method readEngineConfig
+     * @description Reads an engine config/secret value (e.g. GITHUB_TOKEN) on the
+     * controller. Prefers the loaded process env, falling back to
+     * `node bin config get --plain <key>`.
+     * @param {string} key - Config/env key name.
+     * @returns {string} The resolved value, or '' if unset.
+     * @memberof UnderpostBaremetal
+     */
+    readEngineConfig(key) {
+      if (process.env[key]) return process.env[key];
+      const out = shellExec(`node bin config get --plain ${key}`, {
+        stdout: true,
+        silent: true,
+        silentOnError: true,
+        disableLog: true,
+      });
+      const value = `${out || ''}`.trim();
+      return value && value !== 'undefined' ? value : '';
+    },
+
+    /**
+     * @method resolveInstalledNetwork
+     * @description Resolves the static network config written into the deployed OS
+     * so the controller can reach it at a known IP after reboot. Uses the same IP
+     * the commission flow assigned, a /prefix from the netmask, the subnet's `.1`
+     * as gateway, and the configured DNS.
+     * @param {object} params
+     * @param {string} params.ipAddress - Static IP for the deployed OS.
+     * @param {string} params.netmask - Dotted netmask (e.g. 255.255.255.0).
+     * @param {string} params.dnsServer - DNS server.
+     * @returns {{ netIp: string, netPrefix: number, netGateway: string, netDns: string }}
+     * @memberof UnderpostBaremetal
+     */
+    resolveInstalledNetwork({ ipAddress, netmask, dnsServer }) {
+      const prefix = `${netmask || ''}`
+        .split('.')
+        .reduce((acc, oct) => acc + ((parseInt(oct, 10).toString(2).match(/1/g) || []).length || 0), 0);
+      const netGateway = `${ipAddress || ''}`.replace(/\.\d+$/, '.1');
+      return { netIp: ipAddress || '', netPrefix: prefix || 24, netGateway, netDns: dnsServer || '8.8.8.8' };
+    },
+
+    /**
      * @method commissioningWriteFilesFactory
      * @description Generates the write_files configuration for the commissioning script.
      * @param {object} params
@@ -2211,6 +2838,38 @@ fi
       const app = express();
 
       app.use(loggerMiddleware(import.meta, 'debug', () => false));
+
+      // Lifecycle event sink. The ephemeral Kickstart/Anaconda runtime POSTs
+      // stage transitions (ssh-ready, installing, completed, …) here so the
+      // controller can observe progress without polling the machine itself.
+      // Events are kept in-memory (consumed by the orchestration step) and
+      // mirrored to disk for auditing.
+      app.use(express.json({ limit: '256kb' }));
+      app.post('/:hostname/status', (req, res) => {
+        const reqHostname = req.params.hostname;
+        const event = {
+          ...(req.body && typeof req.body === 'object' ? req.body : {}),
+          receivedAt: new Date().toISOString(),
+          remoteIp: (req.headers['x-forwarded-for'] || req.socket?.remoteAddress || '').toString(),
+        };
+        const stage = event.stage || 'unknown';
+
+        const events = UnderpostBaremetal.bootstrapStatusEvents.get(reqHostname) || [];
+        events.push(event);
+        UnderpostBaremetal.bootstrapStatusEvents.set(reqHostname, events);
+
+        try {
+          const statusDir = `${bootstrapHttpServerPath}/${reqHostname}/status`;
+          fs.ensureDirSync(statusDir);
+          fs.writeFileSync(`${statusDir}/${stage}.json`, JSON.stringify(event, null, 2), 'utf8');
+          fs.appendFileSync(`${statusDir}/events.log`, `${JSON.stringify(event)}\n`, 'utf8');
+        } catch (error) {
+          logger.warn('Failed to persist bootstrap status event', { error: error.message });
+        }
+
+        logger.info(`Bootstrap status event [${reqHostname}] stage=${stage}`, event);
+        res.json({ ok: true, stage });
+      });
 
       app.use('/', express.static(bootstrapHttpServerPath));
 
@@ -2479,6 +3138,48 @@ fi
       logger.info('Constructed kernel command line');
       console.log(newInstance(cmdStr).bgRed.bold.black);
       return { cmd: cmdStr };
+    },
+
+    /**
+     * @method waitForBootstrapStage
+     * @description Polls the in-memory bootstrap status events (populated by the
+     * bootstrap HTTP server POST sink) until the target stage is reported by the
+     * ephemeral runtime, or the timeout elapses.
+     * @param {object} params
+     * @param {string} params.hostname - Hostname key the runtime reports under.
+     * @param {string} params.stage - Stage to wait for (e.g. 'ssh-ready').
+     * @param {number} [params.timeoutMs=900000] - Maximum wait time in ms.
+     * @param {number} [params.intervalMs=2000] - Poll interval in ms.
+     * @returns {Promise<object|null>} The matching event, or null on timeout.
+     * @memberof UnderpostBaremetal
+     */
+    async waitForBootstrapStage({ hostname, stage, timeoutMs = 15 * 60 * 1000, intervalMs = 2000 }) {
+      const deadline = Date.now() + timeoutMs;
+      let lastSeenCount = -1;
+      let lastHeartbeat = 0;
+      const heartbeatMs = 15000;
+      while (Date.now() < deadline) {
+        const events = UnderpostBaremetal.bootstrapStatusEvents.get(hostname) || [];
+        const match = events.find((e) => e.stage === stage);
+        if (match) return match;
+
+        const now = Date.now();
+        if (events.length !== lastSeenCount || now - lastHeartbeat >= heartbeatMs) {
+          lastSeenCount = events.length;
+          lastHeartbeat = now;
+          const remainingSec = Math.max(0, Math.round((deadline - now) / 1000));
+          logger.info(`Waiting for stage '${stage}' from ${hostname}`, {
+            stagesSeen: events.map((e) => e.stage),
+            eventCount: events.length,
+            remainingSec,
+          });
+        }
+        await timer(intervalMs);
+      }
+      logger.warn(`Timed out waiting for bootstrap stage '${stage}' from ${hostname}`, {
+        stagesSeen: (UnderpostBaremetal.bootstrapStatusEvents.get(hostname) || []).map((e) => e.stage),
+      });
+      return null;
     },
 
     /**
