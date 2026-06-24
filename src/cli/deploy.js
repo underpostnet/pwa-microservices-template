@@ -383,6 +383,10 @@ spec:
      * @param {string} [options.imagePullPolicy] - Container imagePullPolicy override (`Always`, `IfNotPresent`, `Never`); forwarded to deploymentYamlPartsFactory. Defaults to `Never` for `localhost/` images and `IfNotPresent` otherwise.
      * @param {boolean} [options.disableRuntimeProbes] - Omit internal-status HTTP probes from generated manifests. When true no readiness/liveness/startup probes are emitted.
      * @param {boolean} [options.tcpProbes] - Emit legacy TCP socket probes instead of HTTP internal-status probes (migration path).
+     * @param {string} [options.node] - Explicit target node for hostPath PV nodeAffinity pinning; resolved through {@link UnderpostDeploy.resolveDeployNode} together with the cluster flags.
+     * @param {boolean} [options.kind] - Kind cluster context; affects the cluster-type node default when no explicit node is set.
+     * @param {boolean} [options.kubeadm] - Kubeadm cluster context; affects the cluster-type node default when no explicit node is set.
+     * @param {boolean} [options.k3s] - K3s cluster context; affects the cluster-type node default when no explicit node is set.
      * @returns {Promise<void>} - Promise that resolves when the manifest is built.
      * @memberof UnderpostDeploy
      */
@@ -455,6 +459,15 @@ ${Underpost.deploy
           ? JSON.parse(fs.readFileSync(`./engine-private/conf/${deployId}/conf.volume.json`, 'utf8'))
           : [];
         if (confVolume.length > 0) {
+          // Mirror deployVolume's data-node resolution so the generated manifest
+          // pins the PV to the same node that physically receives the volume data.
+          const pvDataNode = Underpost.deploy.resolveDeployNode({
+            node: options.node,
+            kind: options.kind,
+            kubeadm: options.kubeadm,
+            k3s: options.k3s,
+            env,
+          });
           let volumeYaml = '';
           for (const deploymentVersion of deploymentVersions) {
             for (const volume of confVolume) {
@@ -466,6 +479,7 @@ ${Underpost.deploy
                 pvcId,
                 namespace: options.namespace,
                 hostPath,
+                nodeName: pvDataNode,
               })}\n`;
             }
           }
@@ -720,7 +734,8 @@ spec:
      * @param {string} options.image - Docker image for the deployment.
      * @param {string} options.traffic - Traffic status for the deployment.
      * @param {string} options.replicas - Number of replicas for the deployment.
-     * @param {string} options.node - Node name for resource allocation.
+     * @param {string} options.node - Explicit target node (highest precedence in the node chain). When empty, {@link UnderpostDeploy.resolveDeployNode} falls back to the cluster-type default (`kind-worker` for kind, host for kubeadm/k3s). Used for both volume placement and hostPath PV nodeAffinity.
+     * @param {string} [options.sshKeyPath] - Private key path for node SSH operations, forwarded to deployVolume when shipping a hostPath volume to a remote target node over SSH. Defaults to engine-private/deploy/id_rsa.
      * @param {boolean} options.disableUpdateDeployment - Whether to disable deployment updates.
      * @param {boolean} options.disableUpdateProxy - Whether to disable proxy updates.
      * @param {boolean} options.disableDeploymentProxy - Whether to disable deployment proxy.
@@ -938,9 +953,16 @@ EOF`);
                   env,
                   version,
                   namespace,
-                  nodeName: options.node ? options.node : env === 'development' ? 'kind-worker' : os.hostname(),
+                  nodeName: Underpost.deploy.resolveDeployNode({
+                    node: options.node,
+                    kind: options.kind,
+                    kubeadm: options.kubeadm,
+                    k3s: options.k3s,
+                    env,
+                  }),
                   clusterContext: options.k3s ? 'k3s' : options.kubeadm ? 'kubeadm' : 'kind',
                   gitClean: options.gitClean || false,
+                  sshKeyPath: options.sshKeyPath || '',
                 });
           }
 
@@ -1037,6 +1059,37 @@ EOF`);
     },
 
     /**
+     * Resolves the effective target node for a deployment, applying a single
+     * precedence chain shared by every deploy workflow — the default `deploy`
+     * callback, `run sync`, and custom `run instance` — so node customization
+     * behaves identically everywhere:
+     *
+     *   1. **Explicit node** — `node` (the resolved `--node` value). Upstream
+     *      runners derive it from the comma-path field or `--node-name`
+     *      (`run sync`: `path.split(',')[4]` > `--node-name` > default) and from
+     *      `--node-name` directly (`run instance`).
+     *   2. **Cluster-type default** — when no explicit node is given: `kind-worker`
+     *      for a kind cluster (the node that hosts kind hostPath volumes),
+     *      otherwise the control-plane / current host (`os.hostname()`) for
+     *      kubeadm / k3s. With no explicit cluster flag, `development` is treated
+     *      as kind and `production` as the host, preserving legacy behaviour.
+     *
+     * @param {object} params
+     * @param {string} [params.node=''] - Explicit node (`--node`); highest precedence.
+     * @param {boolean} [params.kind=false] - Kind cluster context.
+     * @param {boolean} [params.kubeadm=false] - Kubeadm cluster context.
+     * @param {boolean} [params.k3s=false] - K3s cluster context.
+     * @param {string} [params.env=''] - Deployment environment; tie-breaker when no cluster flag is set.
+     * @returns {string} The effective node name.
+     * @memberof UnderpostDeploy
+     */
+    resolveDeployNode({ node = '', kind = false, kubeadm = false, k3s = false, env = '' } = {}) {
+      if (node) return node;
+      const isKind = kind || (!kubeadm && !k3s && env !== 'production');
+      return isKind ? 'kind-worker' : os.hostname();
+    },
+
+    /**
      * Deploys a volume for a deployment.
      * @param {object} volume - Volume configuration.
      * @param {string} volume.claimName - Name of the persistent volume claim.
@@ -1047,9 +1100,10 @@ EOF`);
      * @param {string} options.env - Environment for the deployment.
      * @param {string} options.version - Version of the deployment.
      * @param {string} options.namespace - Kubernetes namespace for the deployment.
-     * @param {string} options.nodeName - Node name for the deployment.
+     * @param {string} options.nodeName - Effective target node (already resolved via {@link UnderpostDeploy.resolveDeployNode}). The volume data is written/shipped here and the PV is pinned to it; an empty value falls back to the cluster-type default inside this method.
      * @param {string} [options.clusterContext='kind'] - Cluster context type ('kind', 'kubeadm', or 'k3s').
      * @param {boolean} [options.gitClean=false] - Whether to run git clean on volumeMountPath before copying.
+     * @param {string} [options.sshKeyPath=''] - Private key path used when the target node is remote and the volume is shipped over SSH. Empty falls back to copyDirToNode's default (engine-private/deploy/id_rsa).
      * @memberof UnderpostDeploy
      */
     deployVolume(
@@ -1062,6 +1116,7 @@ EOF`);
         nodeName: '',
         clusterContext: 'kind',
         gitClean: false,
+        sshKeyPath: '',
       },
     ) {
       if (!volume.claimName) {
@@ -1076,16 +1131,48 @@ EOF`);
       if (options.gitClean && volume.volumeMountPath) {
         Underpost.repo.clean({ paths: [volume.volumeMountPath] });
       }
+      // The node that physically receives the volume data. hostPath volumes are
+      // node-local, so the data must land on the node where the pod will run, and
+      // the PV is pinned there (nodeAffinity) so the scheduler co-locates the pod
+      // with its volume — never mounting an empty DirectoryOrCreate on another node.
+      let dataNode;
       if (clusterContext === 'kind') {
         const kindNode = options.nodeName || 'kind-worker';
+        dataNode = kindNode;
         shellExec(`docker exec -i ${kindNode} bash -c "mkdir -p ${rootVolumeHostPath}"`);
         shellExec(`tar -C ${volume.volumeMountPath} -c . | docker cp - ${kindNode}:${rootVolumeHostPath}`);
         shellExec(
           `docker exec -i ${kindNode} bash -c "chown -R 1000:1000 ${rootVolumeHostPath}; chmod -R 755 ${rootVolumeHostPath}"`,
         );
       } else {
-        if (!fs.existsSync(rootVolumeHostPath)) fs.mkdirSync(rootVolumeHostPath, { recursive: true });
-        fs.copySync(volume.volumeMountPath, rootVolumeHostPath);
+        const localHost = os.hostname();
+        dataNode = options.nodeName || localHost;
+        if (dataNode === localHost) {
+          // Target node is the control plane / current host: write directly.
+          if (!fs.existsSync(rootVolumeHostPath)) fs.mkdirSync(rootVolumeHostPath, { recursive: true });
+          fs.copySync(volume.volumeMountPath, rootVolumeHostPath);
+        } else {
+          // Target node is remote: fs.copySync would only write the control-plane
+          // filesystem, leaving the real node's hostPath empty. Ship the folder to
+          // the node over SSH so the data exists where the pod is pinned.
+          const nodeHost =
+            shellExec(
+              `kubectl get node ${dataNode} -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'`,
+              { stdout: true, silent: true, silentOnError: true },
+            ).trim() || dataNode;
+          logger.info('Shipping volume to remote node over SSH', {
+            node: dataNode,
+            host: nodeHost,
+            src: volume.volumeMountPath,
+            dest: rootVolumeHostPath,
+          });
+          Underpost.ssh.copyDirToNode({
+            host: nodeHost,
+            localDir: volume.volumeMountPath,
+            remoteDir: rootVolumeHostPath,
+            ...(options.sshKeyPath ? { keyPath: options.sshKeyPath } : {}),
+          });
+        }
       }
       shellExec(`kubectl delete pvc ${pvcId} -n ${namespace} --ignore-not-found`);
       shellExec(`kubectl delete pv ${pvId} --ignore-not-found`);
@@ -1094,6 +1181,7 @@ ${Underpost.deploy.persistentVolumeFactory({
   hostPath: rootVolumeHostPath,
   pvcId,
   namespace,
+  nodeName: dataNode,
 })}
 EOF
 `);
@@ -1182,11 +1270,28 @@ ${secret ? `          readOnly: true\n` : ''}`;
      * @param {string} options.hostPath - Host path for the persistent volume.
      * @param {string} options.pvcId - Persistent volume claim ID.
      * @param {string} [options.namespace='default'] - Kubernetes namespace for the PVC claimRef.
+     * @param {string} [options.nodeName=''] - Node name to which the persistent volume is pinned (optional).
      * @returns {string} - YAML configuration for the persistent volume and claim.
      * @memberof UnderpostDeploy
      */
-    persistentVolumeFactory({ hostPath, pvcId, namespace = 'default' }) {
+    persistentVolumeFactory({ hostPath, pvcId, namespace = 'default', nodeName = '' }) {
       const pvId = pvcId.replace(/^pvc-/, 'pv-');
+      // hostPath volumes are node-local: deployVolume writes the content to the
+      // filesystem of a single node. Without nodeAffinity the scheduler can place
+      // the pod on a different node and mount an empty DirectoryOrCreate hostPath
+      // (missing the materialized assets). Pin the PV to the node that holds the
+      // data so the pod is always co-located with its volume.
+      const nodeAffinity = nodeName
+        ? `
+  nodeAffinity:
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values:
+                - ${nodeName}`
+        : '';
       return `apiVersion: v1
 kind: PersistentVolume
 metadata:
@@ -1197,7 +1302,7 @@ spec:
   accessModes:
     - ReadWriteOnce
   persistentVolumeReclaimPolicy: Retain
-  storageClassName: manual
+  storageClassName: manual${nodeAffinity}
   claimRef:
     apiVersion: v1
     kind: PersistentVolumeClaim

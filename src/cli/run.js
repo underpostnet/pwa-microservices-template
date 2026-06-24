@@ -56,6 +56,7 @@ const logger = loggerFactory(import.meta);
  * @property {boolean} dev - Whether to run in development mode.
  * @property {string} podName - The name of the pod to run.
  * @property {string} nodeName - The name of the node to run.
+ * @property {string} sshKeyPath - Private key path for node SSH operations, forwarded to volume shipping over SSH.
  * @property {number} port - Custom port to use.
  * @property {string} volumeHostPath - The host path for the volume.
  * @property {string} volumeMountPath - The mount path for the volume.
@@ -127,6 +128,7 @@ const DEFAULT_OPTION = {
   dev: false,
   podName: '',
   nodeName: '',
+  sshKeyPath: '',
   port: 0,
   volumeHostPath: '',
   volumeMountPath: '',
@@ -444,7 +446,15 @@ class UnderpostRun {
 
       // Kinds that own a pod template we can patch; rolloutKinds additionally
       // support `kubectl rollout restart` to reschedule existing pods now.
-      const templated = ['deployment', 'statefulset', 'daemonset', 'replicaset', 'job', 'cronjob', 'replicationcontroller'];
+      const templated = [
+        'deployment',
+        'statefulset',
+        'daemonset',
+        'replicaset',
+        'job',
+        'cronjob',
+        'replicationcontroller',
+      ];
       const rolloutKinds = ['deployment', 'statefulset', 'daemonset'];
       const templateSelectorPath = (kind) =>
         kind === 'cronjob'
@@ -456,7 +466,10 @@ class UnderpostRun {
       let selector = { 'kubernetes.io/hostname': node };
       if (!remove && options.labels) {
         selector = {};
-        for (const pair of `${options.labels}`.split(',').map((s) => s.trim()).filter(Boolean)) {
+        for (const pair of `${options.labels}`
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)) {
           const eq = pair.indexOf('=');
           if (eq < 0) continue;
           selector[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
@@ -483,8 +496,11 @@ class UnderpostRun {
 
       const kubectlNames = (kind) =>
         (
-          shellExec(`kubectl get ${kind} -n ${ns} -o name`, { silent: true, stdout: true, silentOnError: true }).trim() ||
-          ''
+          shellExec(`kubectl get ${kind} -n ${ns} -o name`, {
+            silent: true,
+            stdout: true,
+            silentOnError: true,
+          }).trim() || ''
         )
           .split('\n')
           .map((s) => s.trim())
@@ -613,7 +629,9 @@ class UnderpostRun {
      * @memberof UnderpostRun
      */
     'cluster-build': (path, options = DEFAULT_OPTION) => {
-      const nodeOptions = options.nodeName ? ` --node-name ${options.nodeName}` : '';
+      const nodeOptions =
+        (options.nodeName ? ` --node-name ${options.nodeName}` : '') +
+        (options.sshKeyPath ? ` --ssh-key-path ${options.sshKeyPath}` : '');
       shellExec(`node bin run clean`);
       shellExec(`node bin run --dev sync-replica template-deploy${nodeOptions}`);
       shellExec(`node bin run sync-replica template-deploy${nodeOptions}`);
@@ -909,7 +927,7 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
       replicas = replicas ? replicas : defaultPath[1];
       versions = versions ? versions.replaceAll('+', ',') : defaultPath[2];
       image = image ? image : defaultPath[3];
-      node = node ? node : defaultPath[4];
+      node = node ? node : options.nodeName ? options.nodeName : defaultPath[4];
       shellExec(`${baseCommand} cluster --ns-use ${options.namespace}`);
 
       if (image && !image.startsWith('localhost'))
@@ -950,13 +968,14 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
       const skipFullBuildFlag = options.skipFullBuild ? ' --skip-full-build' : '';
       const pullBundleFlag = options.pullBundle ? ' --pull-bundle' : '';
       const imagePullPolicyFlag = options.imagePullPolicy ? ` --image-pull-policy ${options.imagePullPolicy}` : '';
+      const sshKeyPathFlag = options.sshKeyPath ? ` --ssh-key-path ${options.sshKeyPath}` : '';
 
       shellExec(
         `${baseCommand} deploy${clusterFlag} --build-manifest --sync --info-router --replicas ${replicas} --node ${node}${
           image ? ` --image ${image}` : ''
         }${versions ? ` --versions ${versions}` : ''}${
           options.namespace ? ` --namespace ${options.namespace}` : ''
-        }${timeoutFlags}${cmdString}${gitCleanFlag}${skipFullBuildFlag}${pullBundleFlag}${imagePullPolicyFlag} ${deployId} ${env}`,
+        }${timeoutFlags}${cmdString}${gitCleanFlag}${skipFullBuildFlag}${pullBundleFlag}${imagePullPolicyFlag}${sshKeyPathFlag} ${deployId} ${env}`,
       );
 
       if (isDeployRunnerContext(path, options)) {
@@ -965,9 +984,9 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
           `${baseCommand} db ${deployId} ${clusterFlag}${baseClusterCommand} --repo-backup --primary-pod --git --force-clone --preserveUUID ${options.namespace ? ` --ns ${options.namespace}` : ''}`,
         );
         shellExec(
-          `${baseCommand} deploy${clusterFlag}${cmdString} --replicas ${replicas} --disable-update-proxy ${deployId} ${env} --versions ${versions}${
+          `${baseCommand} deploy${clusterFlag}${cmdString} --replicas ${replicas} --node ${node} --disable-update-proxy ${deployId} ${env} --versions ${versions}${
             options.namespace ? ` --namespace ${options.namespace}` : ''
-          }${timeoutFlags}${gitCleanFlag}${imagePullPolicyFlag}`,
+          }${timeoutFlags}${gitCleanFlag}${imagePullPolicyFlag}${sshKeyPathFlag}`,
         );
         if (!targetTraffic)
           targetTraffic = Underpost.deploy.getCurrentTraffic(deployId, { namespace: options.namespace });
@@ -1327,9 +1346,16 @@ EOF
               deployId: _deployId,
               env,
               version: targetTraffic,
-              nodeName: options.nodeName,
+              nodeName: Underpost.deploy.resolveDeployNode({
+                node: options.nodeName,
+                kind: options.kind,
+                kubeadm: options.kubeadm,
+                k3s: options.k3s,
+                env,
+              }),
               clusterContext: options.k3s ? 'k3s' : options.kubeadm ? 'kubeadm' : 'kind',
               gitClean: options.gitClean || false,
+              sshKeyPath: options.sshKeyPath || '',
             });
         // Regenerate the parent deploy's gRPC ClusterIP service pointing to the
         // parent's current traffic colour and apply it before the instance pod starts so

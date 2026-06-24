@@ -132,6 +132,12 @@ program
     '--has-changes',
     'Prints "1" if there are staged or unstaged git changes in the repository, empty string otherwise.',
   )
+  .option('--remote-url', 'Prints the current git remote URL (origin) in plain text.')
+  .option(
+    '--switch-repo <url>',
+    'Switches the git remote (origin) to <url> and force-pulls the target branch, overwriting the current working tree (discards local commits and tracked changes). Accepts a full URL or "owner/repo".',
+  )
+  .option('--target-branch <branch>', 'Target branch for --switch-repo (default: master).')
   .description('Manages commits to a GitHub repository, supporting various commit types and options.')
   .action(Underpost.repo.commit);
 
@@ -330,6 +336,10 @@ program
       'Enables TLS in the Contour HTTPProxy virtualhost without requiring a production ClusterIssuer.',
   )
   .option('--node <node>', 'Sets optional node for deployment operations.')
+  .option(
+    '--ssh-key-path <path>',
+    'Private key path for node SSH operations. Currently used when shipping a hostPath volume to a remote target node over SSH. Defaults to engine-private/deploy/id_rsa.',
+  )
   .option(
     '--build-manifest',
     'Builds Kubernetes YAML manifests, including deployments, services, proxies, and secrets.',
@@ -630,6 +640,10 @@ program
   .option('--replicas <replicas>', 'Sets a custom number of replicas for deployment.')
   .option('--pod-name <pod-name>', 'Optional: Specifies the pod name for execution.')
   .option('--node-name <node-name>', 'Optional: Specifies the node name for execution.')
+  .option(
+    '--ssh-key-path <path>',
+    'Optional: Private key path for node SSH operations, forwarded to volume shipping over SSH. Defaults to engine-private/deploy/id_rsa.',
+  )
   .option('--port <port>', 'Optional: Specifies the port for execution.')
   .option('--etc-hosts', 'Enables etc-hosts context for the runner execution.')
   .option('--volume-host-path <volume-host-path>', 'Optional: Specifies the volume host path for test execution.')
