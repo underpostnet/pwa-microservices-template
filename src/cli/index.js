@@ -434,25 +434,31 @@ program
   .option('--rm <image-id>', 'Removes specified Underpost Dockerfile images.')
   .option('--path [path]', 'The path to the Dockerfile directory.')
   .option('--image-name [image-name]', 'Sets a custom name for the Docker image.')
-  .option('--image-path [image-path]', 'Sets the output path for the tar image archive.')
+  .option('--image-out-path [image-out-path]', 'Sets the output path for the tar image archive.')
   .option('--dockerfile-name [dockerfile-name]', 'Sets a custom name for the Dockerfile.')
   .option('--podman-save', 'Exports the built image as a tar file using Podman.')
-  .option('--pull-base', 'Pulls base images and builds a "rockylinux9-underpost" image.')
+  .option('--pull-base', 'Pulls the base image prerequisites (rockylinux:9) on the host; combine with --build.')
   .option('--spec', 'Get current cached list of container images used by all pods')
   .option('--namespace <namespace>', 'Kubernetes namespace for image operations (defaults to "default").')
   .option('--kind', 'Set kind cluster env image context management.')
   .option('--kubeadm', 'Set kubeadm cluster env image context management.')
   .option('--k3s', 'Set k3s cluster env image context management.')
+  .option('--docker-compose', 'Load the built image tar into the local Docker store for Docker Compose availability.')
   .option('--node-name', 'Set node name for kubeadm or k3s cluster env image context management.')
   .option('--reset', 'Performs a build without using the cache.')
   .option('--dev', 'Use development mode.')
   .option('--pull-dockerhub <dockerhub-image>', 'Sets a custom Docker Hub image for base image pulls.')
+  .option(
+    '--import-tar <tar-path>',
+    'Load a pre-built image tar archive (e.g. ./image-v1.0.0.tar) into the enabled target(s) without building. Combine with --kind, --kubeadm, --k3s and/or --docker-compose; the archive is loaded into each enabled one.',
+  )
   .description('Manages Docker images, including building, saving, and loading into Kubernetes clusters.')
   .action(async (options) => {
     if (options.rm) Underpost.image.rm({ ...options, imageName: options.rm });
     if (options.ls) Underpost.image.list({ ...options, log: true });
     if (options.pullBase) Underpost.image.pullBaseImages(options);
     if (options.build) Underpost.image.build(options);
+    if (options.importTar) Underpost.image.importTar(options);
     if (options.pullDockerhub)
       Underpost.image.pullDockerHubImage({ ...options, dockerhubImage: options.pullDockerhub });
   });
@@ -764,6 +770,12 @@ program
   .option(
     '--deploy-id <deploy-id>',
     "Deployment to run as the app container (default: dd-default). 'dd-default' self-bootstraps a fresh engine; any other id runs the standard 'underpost start' command (mirrors src/cli/deploy.js).",
+  )
+  .option(
+    '--docker-compose-id <docker-compose-id>',
+    'Selects a canonical custom-workflow stack at engine-private/conf/<deploy-id>/docker-compose/<docker-compose-id>/ ' +
+      '(docker-compose.yml + compose.env + nginx.conf, used as-is; nginx/env generation is skipped). ' +
+      'e.g. --deploy-id dd-cyberia --docker-compose-id cyberia for the Cyberia MMO ecosystem.',
   )
   .option('--env <env>', 'Deployment environment for non-default deploy ids (default: development).')
   .option('--generate', 'Render dynamic supporting files (nginx router config, env-file, app-command override).')

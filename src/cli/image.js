@@ -5,9 +5,12 @@
  */
 
 import fs from 'fs-extra';
+import os from 'os';
+import nodePath from 'path';
+import crypto from 'crypto';
 import { loggerFactory } from '../server/logger.js';
 import Underpost from '../index.js';
-import { getNpmRootPath, getUnderpostRootPath } from '../server/conf.js';
+import { getNpmRootPath } from '../server/conf.js';
 import { shellExec } from '../server/process.js';
 
 const logger = loggerFactory(import.meta);
@@ -23,59 +26,32 @@ class UnderpostImage {
   static API = {
     /**
      * @method pullBaseImages
-     * @description Pulls base images and builds a 'rockylinux9-underpost' image,
-     * then loads it into the specified Kubernetes cluster type (Kind, Kubeadm, or K3s).
-     * @param {object} options - Options for pulling and loading images.
-     * @param {boolean} [options.kind=false] - If true, load image into Kind cluster.
-     * @param {boolean} [options.kubeadm=false] - If true, load image into Kubeadm cluster.
-     * @param {boolean} [options.k3s=false] - If true, load image into K3s cluster.
-     * @param {string} [options.path=''] - Path to the Dockerfile context.
-     * @param {boolean} [options.dev=false] - If true, use development mode.
-     * @param {string} [options.version=''] - Version tag for the image.
-     * @param {string} [options.imageName=''] - Custom name for the image.
+     * @description Ensures the base image prerequisites for the runtime Dockerfiles
+     * are present on the host (currently `docker.io/rockylinux/rockylinux:9`). This
+     * only pulls — it does NOT build. Builds run with `podman build --pull=never`,
+     * so the base must exist locally beforehand; that is the sole purpose of this
+     * step. Combine with `--build` in the same command to pull-then-build.
      * @memberof UnderpostImage
      */
-    pullBaseImages(
-      options = {
-        kind: false,
-        kubeadm: false,
-        k3s: false,
-        path: '',
-        dev: false,
-        version: '',
-        imageName: '',
-      },
-    ) {
-      shellExec(`sudo podman pull docker.io/library/rockylinux:9`);
-      const baseCommand = options.dev ? 'node bin' : 'underpost';
-      const baseCommandOption = options.dev ? ' --dev' : '';
-      const IMAGE_NAME = options.imageName
-        ? `options.imageName${options.version ? `:${options.version}` : ''}`
-        : `rockylinux9-underpost:${options.version ? options.version : Underpost.version}`;
-      let LOAD_TYPE = '';
-      if (options.kind === true) LOAD_TYPE = `--kind`;
-      else if (options.kubeadm === true) LOAD_TYPE = `--kubeadm`;
-      else if (options.k3s === true) LOAD_TYPE = `--k3s`;
-      shellExec(
-        `${baseCommand} image${baseCommandOption} --build --podman-save --reset --image-path=. --path ${
-          options.path ? options.path : getUnderpostRootPath()
-        } --image-name=${IMAGE_NAME} ${LOAD_TYPE}`,
-      );
+    pullBaseImages() {
+      shellExec(`sudo podman pull docker.io/rockylinux/rockylinux:9`);
     },
     /**
      * @method build
      * @description Builds a Docker image using Podman, optionally saves it as a tar archive,
-     * and loads it into a specified Kubernetes cluster (Kind, Kubeadm, or K3s).
+     * and loads it into a specified target (Kind, Kubeadm, or K3s cluster, or the local
+     * Docker store for Docker Compose).
      * @param {object} options - Options for building and loading images.
      * @param {string} [options.path=''] - The path to the directory containing the Dockerfile.
      * @param {string} [options.imageName=''] - The name and tag for the image (e.g., 'my-app:latest').
      * @param {string} [options.version=''] - Version tag for the image.
-     * @param {string} [options.imagePath=''] - Directory to save the image tar file.
+     * @param {string} [options.imageOutPath=''] - Directory to save the image tar file.
      * @param {string} [options.dockerfileName=''] - Name of the Dockerfile (defaults to 'Dockerfile').
      * @param {boolean} [options.podmanSave=false] - If true, save the image as a tar archive using Podman.
      * @param {boolean} [options.kind=false] - If true, load the image archive into a Kind cluster.
      * @param {boolean} [options.kubeadm=false] - If true, load the image archive into a Kubeadm cluster (uses 'ctr').
      * @param {boolean} [options.k3s=false] - If true, load the image archive into a K3s cluster (uses 'k3s ctr').
+     * @param {boolean} [options.dockerCompose=false] - If true, load the image archive into the local Docker store for Docker Compose.
      * @param {boolean} [options.reset=false] - If true, perform a no-cache build.
      * @param {boolean} [options.dev=false] - If true, use development mode.
      * @memberof UnderpostImage
@@ -85,42 +61,132 @@ class UnderpostImage {
         path: '',
         imageName: '',
         version: '',
-        imagePath: '',
+        imageOutPath: '',
         dockerfileName: '',
         podmanSave: false,
         kind: false,
         kubeadm: false,
         k3s: false,
+        dockerCompose: false,
         reset: false,
         dev: false,
       },
     ) {
-      let { path, imageName, version, imagePath, dockerfileName, podmanSave, kind, kubeadm, k3s, reset, dev } = options;
+      let { path, imageName, version, imageOutPath, dockerfileName, podmanSave, kind, kubeadm, k3s, dockerCompose, reset, dev } =
+        options;
       if (!path) path = '.';
       if (!imageName) imageName = `rockylinux9-underpost:${Underpost.version}`;
-      if (!imagePath) imagePath = '.';
+      if (!imageOutPath) imageOutPath = '.';
       if (imageName.match('/')) imageName = imageName.split('/')[1];
       if (!version) version = 'latest';
       version = imageName && imageName.match(':') ? '' : `:${version}`;
       const podManImg = `localhost/${imageName}${version}`;
-      if (imagePath && typeof imagePath === 'string' && !fs.existsSync(imagePath))
-        fs.mkdirSync(imagePath, { recursive: true });
-      const tarFile = `${imagePath}/${imageName.replace(':', '_')}.tar`;
+      if (imageOutPath && typeof imageOutPath === 'string' && !fs.existsSync(imageOutPath))
+        fs.mkdirSync(imageOutPath, { recursive: true });
+      const tarFile = `${imageOutPath}/${imageName.replace(':', '_')}.tar`;
       let cache = '';
       if (reset === true) cache += ' --rm --no-cache';
+
+      // Forward GitHub credentials from the host environment into the build as
+      // podman/BuildKit secrets (`--secret id=...,src=...`), matching the
+      // `RUN --mount=type=secret,id=github_*` contract in the runtime
+      // Dockerfiles (e.g. src/runtime/engine-cyberia). Secrets are written to
+      // short-lived 0600 temp files and removed right after the build — they are
+      // never passed as build-args (which would persist in image history) nor
+      // baked into any layer.
+      const secretTmpFiles = [];
+      const secretFlags = [];
+      const addBuildSecret = (id, value) => {
+        if (!value) return;
+        const file = nodePath.join(os.tmpdir(), `underpost-secret-${id}-${crypto.randomBytes(6).toString('hex')}`);
+        fs.writeFileSync(file, String(value), { mode: 0o600 });
+        secretTmpFiles.push(file);
+        secretFlags.push(`--secret id=${id},src=${file}`);
+      };
+      addBuildSecret('github_token', process.env.GITHUB_TOKEN);
+      addBuildSecret('github_username', process.env.GITHUB_USERNAME);
+      // Cloudinary creds power build-time asset pulls (`node bin fs --pull`).
+      addBuildSecret('cloudinary_cloud_name', process.env.CLOUDINARY_CLOUD_NAME);
+      addBuildSecret('cloudinary_api_key', process.env.CLOUDINARY_API_KEY);
+      addBuildSecret('cloudinary_api_secret', process.env.CLOUDINARY_API_SECRET);
+      const secretArgs = secretFlags.length ? ` ${secretFlags.join(' ')}` : '';
+      if (secretFlags.length)
+        logger.info('Passing host GitHub credentials as build secrets', { ids: secretFlags.length });
+
       if (path)
-        shellExec(
-          `cd ${path} && sudo podman build -f ./${
-            dockerfileName && typeof dockerfileName === 'string' ? dockerfileName : 'Dockerfile'
-          } -t ${imageName} --pull=never --cap-add=CAP_AUDIT_WRITE${cache} --network host`,
-        );
-      if (podmanSave === true) {
+        try {
+          shellExec(
+            `cd ${path} && sudo podman build -f ./${
+              dockerfileName && typeof dockerfileName === 'string' ? dockerfileName : 'Dockerfile'
+            } -t ${imageName} --pull=never --cap-add=CAP_AUDIT_WRITE${cache}${secretArgs} --network host`,
+          );
+        } finally {
+          for (const file of secretTmpFiles) {
+            try {
+              fs.removeSync(file);
+            } catch {
+              /* best-effort cleanup */
+            }
+          }
+        }
+      // Loading into any target requires the tar archive, so imply the save when
+      // one is set (kind/kubeadm/k3s/docker-compose) even if --podman-save was omitted.
+      const loadTarget = kind === true || kubeadm === true || k3s === true || dockerCompose === true;
+      if (podmanSave === true || loadTarget) {
         if (fs.existsSync(tarFile)) fs.removeSync(tarFile);
         shellExec(`podman save -o ${tarFile} ${podManImg}`);
       }
       if (kind === true) shellExec(`sudo kind load image-archive ${tarFile}`);
       else if (kubeadm === true) shellExec(`sudo ctr -n k8s.io images import ${tarFile}`);
       else if (k3s === true) shellExec(`sudo k3s ctr images import ${tarFile}`);
+      // Independent of any cluster target: make the local image available to the
+      // Docker daemon so `docker compose` can resolve it (e.g. ENGINE_CYBERIA_IMAGE).
+      if (dockerCompose === true) shellExec(`sudo docker load -i ${tarFile}`);
+    },
+    /**
+     * @method importTar
+     * @description Loads a pre-built image tar archive into each enabled target
+     * without building anything. Mirrors the load step of {@link build}, but
+     * the archive is supplied directly via `--import-tar <tar-path>` and every
+     * enabled target flag is honored (the same archive is loaded into each), so
+     * `--kind --docker-compose` loads it into both.
+     * @param {object} options - CLI options.
+     * @param {string} options.importTar - Path to the image tar archive (e.g. `./image-v1.0.0.tar`).
+     * @param {boolean} [options.kind] - Load into the Kind cluster (`kind load image-archive`).
+     * @param {boolean} [options.kubeadm] - Import into kubeadm containerd (`ctr -n k8s.io images import`).
+     * @param {boolean} [options.k3s] - Import into k3s containerd (`k3s ctr images import`).
+     * @param {boolean} [options.dockerCompose] - Load into the local Docker daemon (`docker load`) for Docker Compose.
+     * @returns {void}
+     * @memberof UnderpostImage
+     */
+    importTar(options = { importTar: '', kind: false, kubeadm: false, k3s: false, dockerCompose: false }) {
+      const { importTar, kind, kubeadm, k3s, dockerCompose } = options;
+      if (!importTar || typeof importTar !== 'string' || !fs.existsSync(importTar)) {
+        logger.error('image --import-tar: archive not found', { importTar });
+        return;
+      }
+      const targets = [];
+      if (kind === true) {
+        shellExec(`sudo kind load image-archive ${importTar}`);
+        targets.push('kind');
+      }
+      if (kubeadm === true) {
+        shellExec(`sudo ctr -n k8s.io images import ${importTar}`);
+        targets.push('kubeadm');
+      }
+      if (k3s === true) {
+        shellExec(`sudo k3s ctr images import ${importTar}`);
+        targets.push('k3s');
+      }
+      if (dockerCompose === true) {
+        shellExec(`sudo docker load -i ${importTar}`);
+        targets.push('docker-compose');
+      }
+      if (targets.length === 0)
+        logger.warn(
+          'image --import-tar: no target enabled; combine with --kind, --kubeadm, --k3s and/or --docker-compose',
+        );
+      else logger.info('image --import-tar: archive loaded', { importTar, targets });
     },
     /**
      * @method getCurrentLoaded
