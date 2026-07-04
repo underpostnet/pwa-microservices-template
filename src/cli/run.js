@@ -22,7 +22,7 @@ import { actionInitLog, loggerFactory } from '../server/logger.js';
 
 import fs from 'fs-extra';
 import net from 'net';
-import { range, setPad, timer } from '../client/components/core/CommonJs.js';
+import { range, s4, setPad, timer } from '../client/components/core/CommonJs.js';
 
 import os from 'os';
 import Underpost from '../index.js';
@@ -773,7 +773,7 @@ class UnderpostRun {
       const repo = Underpost.repo.resolveInstanceRepo(path);
       Underpost.repo.dispatchWorkflow({
         repo,
-        workflowFile: `docker-image${path ? `.${path}` : ''}.ci.yml`,
+        workflowFile: `docker-image${path ? `.${path}` : ''}${options.dev ? '.dev' : ''}.ci.yml`,
         ref: 'master',
         inputs: {},
       });
@@ -1450,11 +1450,38 @@ EOF
     },
 
     /**
+     * @method deploy-key
+     * @description Copies the deploy key for a specific user and deployId to a temporary location on the local machine.
+     * @param {string} path - The input value, identifier, or path for the operation (not used in this method).
+     * @param {Object} options - The default underpost runner options for customizing workflow
+     * @param {string} options.user - The user for which to copy the deploy key.
+     * @param {string} options.deployId - The deployment identifier associated with the deploy key.
+     * @memberof UnderpostRun
+     */
+    'deploy-key': (path, options = DEFAULT_OPTION) => {
+      const prefix = 'dd-key';
+      if (options.reset) {
+        shellExec(`rm -rf /home/dd/tmp/${prefix}_*`);
+        return;
+      }
+      if (!options.user || !options.deployId) {
+        logger.error('Both --user and --deploy-id options are required to copy the deploy key.');
+        return;
+      }
+      const targetPath = `/home/dd/tmp/${prefix}_${s4()}${s4()}`;
+      fs.mkdirSync('/home/dd/tmp', { recursive: true });
+      fs.copyFileSync(`./engine-private/conf/${options.deployId}/users/${options.user}/id_rsa`, targetPath);
+      logger.info(`Copied deploy key to ${targetPath}`);
+      if (options.copy) pbcopy(targetPath);
+    },
+
+    /**
      * @method instance-build-manifest
      * @description Builds a Kubernetes Deployment + Service manifest for a specific instance entry
-     * from `conf.instances.json` and writes it to a file.
-     * Traffic colour is automatically chosen as the opposite of the current live colour (blue/green),
-     * defaulting to `blue` when no deployment is running yet.
+     * from `conf.instances.json` and writes it to a file. This is a purely local
+     * artifact generator: it never probes a live cluster. Traffic colour defaults
+     * to the canonical initial `blue` and can be overridden with `--traffic`; the
+     * real blue/green swap is resolved at deploy time (`deploy --sync`).
      *
      * If `--build` is supplied the image is built from the project Dockerfile and loaded into the
      * cluster before the manifest is written (kind by default; `--kubeadm` / `--k3s` override).
@@ -1490,7 +1517,6 @@ EOF
 
       let {
         id: _id,
-        host: _host,
         path: _path,
         image: _image,
         fromPort: _fromPort,
@@ -1557,15 +1583,8 @@ EOF
         });
       }
 
-      // Determine target traffic: opposite of current, or 'blue' if nothing is running yet.
-      const currentTraffic = Underpost.deploy.getCurrentTraffic(_deployId, {
-        hostTest: _host,
-        namespace: options.namespace,
-      });
-      const targetTraffic = currentTraffic ? (currentTraffic === 'blue' ? 'green' : 'blue') : 'blue';
-
-      // Resolve {{grpc-service-dns}} using the parent deploy's current (or default) traffic.
-      const parentTraffic = Underpost.deploy.getCurrentTraffic(deployId, { namespace: options.namespace }) || 'blue';
+      const targetTraffic = options.traffic || 'blue';
+      const parentTraffic = targetTraffic;
       const resolvedCmd = _cmd[env].map((c) =>
         c.replaceAll(
           '{{grpc-service-dns}}',
