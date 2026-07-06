@@ -84,7 +84,7 @@ jobs:
 
   engine-ghpkg:
     if: github.repository == 'underpostnet/engine' && github.event_name == 'workflow_dispatch'
-    name: Publish canonical engine github package repo Jobs
+    name: Build engine ${{ github.event.inputs.conf_id || 'cyberia' }} ghpkg repository
     runs-on: ubuntu-latest
     container:
       image: quay.io/rockylinux/rockylinux:9
