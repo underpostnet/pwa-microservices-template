@@ -120,7 +120,14 @@ program
     '--changelog-no-hash',
     'Excludes commit hashes from the generated changelog entries (used with --changelog-build).',
   )
-  .option('--unpush', 'With --log, automatically sets range to unpushed commits ahead of remote.')
+  .option(
+    '--changelog-msg [latest-n]',
+    'Print the sanitized, commit-ready changelog message since the latest CI integration (or last N commits). Prints empty when there are no tagged entries.',
+  )
+  .option(
+    '--unpush',
+    'With --log/--changelog/--changelog-msg, automatically sets range to unpushed commits ahead of remote.',
+  )
   .option('-b', 'Shows the current Git branch name.')
   .option('-p [branch]', 'Shows the reflog for the specified branch.')
   .option('--bc <commit-hash>', 'Shows branches that contain the specified commit.')

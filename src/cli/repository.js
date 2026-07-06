@@ -218,7 +218,7 @@ class UnderpostRepository {
         return;
       }
 
-      if (options.changelog !== undefined || options.changelogBuild) {
+      if (options.changelog !== undefined || options.changelogBuild || options.changelogMsg !== undefined) {
         const releaseMatch = 'New release v:';
         // Helper: parse [<tag>] commits into grouped sections
         const buildSectionChangelog = (commits) => {
@@ -346,15 +346,36 @@ class UnderpostRepository {
           fs.writeFileSync(changelogPath, `# Changelog\n\n${changelog}`);
           logger.info('CHANGELOG.md built at', changelogPath);
         } else {
-          // --changelog [latest-n]: print changelog of last N commits (default: 1)
-          const hasExplicitCount =
-            options.changelog !== undefined && options.changelog !== true && !isNaN(parseInt(options.changelog));
-          const scanLimit = hasExplicitCount ? parseInt(options.changelog) : 1;
-          const allCommits = fetchHistory(scanLimit);
+          // --changelog / --changelog-msg [latest-n]: with an explicit N, use the last N commits.
+          // Without N, scan back to the latest CI integration commit (starting with
+          // 'ci(package-pwa-microservices-') so every [tag] commit in the current build cycle is
+          // captured — not just the single latest commit, which may be a merge with no [tag].
+          const countOpt = options.changelogMsg !== undefined ? options.changelogMsg : options.changelog;
+          const hasExplicitCount = countOpt !== undefined && countOpt !== true && !isNaN(parseInt(countOpt));
+          let allCommits;
+          if (hasExplicitCount) {
+            allCommits = fetchHistory(parseInt(countOpt));
+          } else if (options.unpush) {
+            // No explicit N: use the commits not yet pushed to origin (ahead of remote).
+            const { count } = Underpost.repo.getUnpushedCount(repoPath);
+            allCommits = fetchHistory(count);
+          } else {
+            allCommits = [];
+            for (const commit of fetchHistory()) {
+              if (commit.message.startsWith('ci(package-pwa-microservices-')) break;
+              allCommits.push(commit);
+            }
+          }
 
           const sections = buildVersionSections(allCommits);
-          let changelog = renderSections(sections);
-          console.log(changelog || `No changelog entries found.\n`);
+          const changelog = renderSections(sections);
+          if (options.changelogMsg !== undefined) {
+            // Sanitized, commit-ready message; empty string when there are no tagged entries so
+            // callers fall back to their own generic default instead of a placeholder.
+            console.log(Underpost.repo.sanitizeChangelogMessage(changelog));
+          } else {
+            console.log(changelog || `No changelog entries found.\n`);
+          }
         }
 
         return;
@@ -1451,7 +1472,7 @@ Prevent build private config repo.`,
      */
     sanitizeChangelogMessage(message) {
       if (!message) return '';
-      return message
+      const sanitized = message
         .replace(/^##\s+\d{4}-\d{2}-\d{2}\s*/gm, '')
         .replace(/^###\s+(\S+)\s*/gm, '[$1] ')
         .replace(/^- /gm, '')
@@ -1463,6 +1484,9 @@ Prevent build private config repo.`,
         .join('\n')
         .trim()
         .replaceAll('] - ', '] ');
+      // The empty-changelog placeholder must never become a commit message; return empty so
+      // callers fall back to their own generic default.
+      return sanitized === 'No changelog entries found.' ? '' : sanitized;
     },
     /**
      * Initializes a git repository at the given path and configures user identity
