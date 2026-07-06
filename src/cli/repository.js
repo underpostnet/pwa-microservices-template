@@ -255,7 +255,8 @@ class UnderpostRepository {
             stdout: true,
             silent: true,
             disableLog: true,
-          });
+            silentOnError: true,
+          }).toString();
           return rawLog
             .split('\n')
             .map((line) => {
@@ -1447,17 +1448,31 @@ Prevent build private config repo.`,
      * @memberof UnderpostRepository
      */
     getUnpushedCount(repoPath = '.', fallback = 1) {
+      // Every git call is silentOnError: a detached HEAD (CI checkout) or a missing upstream must
+      // degrade to the fallback, never throw — otherwise the thrown error is logged to stdout and
+      // can be captured as a commit message by callers that read this command's output.
       const branch = shellExec(`cd ${repoPath} && git branch --show-current`, {
         stdout: true,
         silent: true,
         disableLog: true,
-      }).trim();
-      shellExec(`cd ${repoPath} && git fetch origin 2>/dev/null`, { silent: true, disableLog: true });
+        silentOnError: true,
+      })
+        .toString()
+        .trim();
+      if (!branch) return { count: fallback, branch: '', hasUnpushed: false };
+      shellExec(`cd ${repoPath} && git fetch origin 2>/dev/null`, {
+        silent: true,
+        disableLog: true,
+        silentOnError: true,
+      });
       const raw = shellExec(`cd ${repoPath} && git rev-list --count origin/${branch}..HEAD 2>/dev/null`, {
         stdout: true,
         silent: true,
         disableLog: true,
-      }).trim();
+        silentOnError: true,
+      })
+        .toString()
+        .trim();
       const count = parseInt(raw);
       const hasUnpushed = !isNaN(count) && count > 0;
       return { count: hasUnpushed ? count : fallback, branch, hasUnpushed };
