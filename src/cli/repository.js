@@ -347,28 +347,10 @@ class UnderpostRepository {
           fs.writeFileSync(changelogPath, `# Changelog\n\n${changelog}`);
           logger.info('CHANGELOG.md built at', changelogPath);
         } else {
-          // --changelog / --changelog-msg [latest-n]: with an explicit N, use the last N commits.
-          // Without N, scan back to the latest CI integration commit (starting with
-          // 'ci(package-pwa-microservices-') so every [tag] commit in the current build cycle is
-          // captured — not just the single latest commit, which may be a merge with no [tag].
-          const countOpt = options.changelogMsg !== undefined ? options.changelogMsg : options.changelog;
-          const hasExplicitCount = countOpt !== undefined && countOpt !== true && !isNaN(parseInt(countOpt));
-          let allCommits;
-          if (hasExplicitCount) {
-            allCommits = fetchHistory(parseInt(countOpt));
-          } else if (options.unpush) {
-            // No explicit N: use the commits not yet pushed to origin (ahead of remote).
-            const { count } = Underpost.repo.getUnpushedCount(repoPath);
-            allCommits = fetchHistory(count);
-          } else {
-            allCommits = [];
-            for (const commit of fetchHistory()) {
-              if (commit.message.startsWith('ci(package-pwa-microservices-')) break;
-              allCommits.push(commit);
-            }
-          }
-
-          const sections = buildVersionSections(allCommits);
+          // --changelog / --changelog-msg: message from the last N commits, where N is --from-n-commit
+          // (default 1, last commit only). No auto-detection.
+          const n = parseInt(options.fromNCommit) > 0 ? parseInt(options.fromNCommit) : 1;
+          const sections = buildVersionSections(fetchHistory(n));
           const changelog = renderSections(sections);
           if (options.changelogMsg !== undefined) {
             // Sanitized, commit-ready message; empty string when there are no tagged entries so
