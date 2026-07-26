@@ -24,6 +24,7 @@ import fs from 'fs-extra';
 import dotenv from 'dotenv';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import path from 'node:path';
 import Underpost from '../index.js';
 
 /**
@@ -744,6 +745,165 @@ spec:
         : ''
     }
   routes:`;
+    },
+
+    // Application images own the status-page files; Envoy owns the external
+    // response. page404 is retained only as a compatibility shim for old
+    // instance descriptors. New descriptors use customStatusPages.
+    customStatusPagesFactory({ deployId, customStatusPages, page404, projectPath = '.' }) {
+      const configured = Array.isArray(customStatusPages)
+        ? customStatusPages
+        : page404
+          ? [{ status: '404', hostPath: typeof page404 === 'string' ? page404 : './public/404/index.html' }]
+          : [];
+      const seen = new Set();
+      return configured.map((entry) => {
+        const status = String(entry?.status || '');
+        if (!/^[1-5][0-9]{2}$/.test(status))
+          throw new Error('[customStatusPages] ' + deployId + ': invalid HTTP status ' + entry?.status);
+        if (!entry?.hostPath || typeof entry.hostPath !== 'string')
+          throw new Error('[customStatusPages] ' + deployId + ': status ' + status + ' needs a hostPath');
+        if (seen.has(status)) throw new Error('[customStatusPages] ' + deployId + ': duplicate status ' + status);
+        seen.add(status);
+
+        const absoluteHostPath = path.resolve(projectPath, entry.hostPath);
+        const absoluteProjectPath = path.resolve(projectPath);
+        if (absoluteHostPath !== absoluteProjectPath && !absoluteHostPath.startsWith(absoluteProjectPath + path.sep))
+          throw new Error('[customStatusPages] ' + deployId + ': hostPath escapes project root: ' + entry.hostPath);
+        if (!fs.existsSync(absoluteHostPath) || !fs.statSync(absoluteHostPath).isFile())
+          throw new Error('[customStatusPages] ' + deployId + ': status ' + status + ' page was not built: ' + absoluteHostPath);
+
+        return {
+          status,
+          hostPath: entry.hostPath,
+          absoluteHostPath,
+          configMap: deployId + '-html-' + status,
+          volumeName: k8sVolumeName(deployId + '-html-' + status),
+          mountPath: '/var/www/html/status-pages/' + status,
+        };
+      });
+    },
+
+    // Render the Envoy strategic-merge Deployment patch and HCM route
+    // fragment. ConfigMaps are deliberately created from hostPath at deploy
+    // time, so generated YAML never embeds a copy of the HTML asset.
+    customStatusPagesManifestFactory({ deployId, pages, namespace = 'default', envoyDeployment = 'envoy' }) {
+      const shellQuote = (value) => "'" + String(value).replaceAll("'", "'\\''") + "'";
+      const configMapCommands = [
+        '#!/usr/bin/env sh',
+        'set -eu',
+        ...pages.map(
+          (page) =>
+            'kubectl create configmap ' +
+            shellQuote(page.configMap) +
+            ' --from-file=index.html=' +
+            shellQuote(page.absoluteHostPath) +
+            ' --dry-run=client -o yaml | kubectl apply -f - --namespace ' +
+            shellQuote(namespace),
+        ),
+        '',
+      ].join('\n');
+      const volumes = pages
+        .map((page) =>
+          [
+            '        - name: ' + page.volumeName,
+            '          configMap:',
+            '            name: ' + page.configMap,
+            '            items:',
+            '              - key: index.html',
+            '                path: index.html',
+          ].join('\n'),
+        )
+        .join('\n');
+      const mounts = pages
+        .map((page) =>
+          [
+            '        - name: ' + page.volumeName,
+            '          mountPath: ' + page.mountPath,
+            '          readOnly: true',
+          ].join('\n'),
+        )
+        .join('\n');
+      const explicitRoutes = pages
+        .map((page) =>
+          [
+            '            - match: { path: "/_envoy/status-pages/' + page.status + '" }',
+            '              direct_response:',
+            '                status: ' + page.status,
+            '                body:',
+            '                  filename: "' + page.mountPath + '/index.html"',
+          ].join('\n'),
+        )
+        .join('\n');
+      const notFound = pages.find((page) => page.status === '404');
+      const fallbackRoute = notFound
+        ? [
+            '',
+            '            # Keep this last: application and multi-path routes precede it.',
+            '            - match: { prefix: "/" }',
+            '              direct_response:',
+            '                status: 404',
+            '                body:',
+            '                  filename: "' + notFound.mountPath + '/index.html"',
+          ].join('\n')
+        : '';
+
+      return {
+        configMapCommands,
+        envoyDeploymentPatchObject: {
+          spec: {
+            template: {
+              spec: {
+                containers: [
+                  {
+                    name: 'envoy',
+                    volumeMounts: pages.map((page) => ({
+                      name: page.volumeName,
+                      mountPath: page.mountPath,
+                      readOnly: true,
+                    })),
+                  },
+                ],
+                volumes: pages.map((page) => ({
+                  name: page.volumeName,
+                  configMap: {
+                    name: page.configMap,
+                    items: [{ key: 'index.html', path: 'index.html' }],
+                  },
+                })),
+              },
+            },
+          },
+        },
+        envoyDeploymentPatch: [
+          'apiVersion: apps/v1',
+          'kind: Deployment',
+          'metadata:',
+          '  name: ' + envoyDeployment,
+          '  namespace: ' + namespace,
+          'spec:',
+          '  template:',
+          '    spec:',
+          '      containers:',
+          '        - name: envoy',
+          '          volumeMounts:',
+          mounts,
+          '      volumes:',
+          volumes,
+          '',
+        ].join('\n'),
+        // Each status has an explicit route. Only 404 is a catch-all: two
+        // catch-alls would make every status after the first unreachable.
+        envoyHcmFragment: [
+          'route_config:',
+          '  virtual_hosts:',
+          '    - name: ' + deployId + '-custom-status-pages',
+          '      domains: ["*"]',
+          '      routes:',
+          explicitRoutes + fallbackRoute,
+          '',
+        ].join('\n'),
+      };
     },
 
     /**
