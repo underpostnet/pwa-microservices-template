@@ -23,11 +23,80 @@ import { shellExec } from '../server/process.js';
 import { SitemapStream, streamToPromise } from 'sitemap';
 import { Readable } from 'stream';
 import { buildIcons } from './client-icons.js';
+import { statusPageBuildSegment } from '../server/underpost-gateway.js';
 import Underpost from '../index.js';
 import { buildDocs } from './client-build-docs.js';
 import { ssrFactory } from './ssr.js';
 
 // Static Site Generation (SSG)
+
+const STATUS_PAGE_VIEW_PATH = /^\/([1-5]\d{2})$/;
+
+// Views a route intercepts before the workload sees the request. They are
+// declared by the flag that already marks them as the app's default for that
+// condition, so a new one becomes edge-served by adding its flag here rather
+// than by naming its path in a second place.
+const INTERCEPT_VIEW_FLAGS = ['maintenanceDefault', 'offlineDefault'];
+
+/**
+ * Resolves the SSR views that render an HTTP status page into the static
+ * artifacts they build to. A view is a status page when its route path is a
+ * bare status code (`/404`, `/500`, `/503`), which the build writes to
+ * `<path>/index.html` inside the served bundle.
+ *
+ * Single source of truth for PWA status-page routing: this build writes the
+ * artifact, and `deploy --build-manifest` points its HTTPRoute rules at the
+ * same resolved URL — neither side hardcodes a status code.
+ * @function statusPageRoutesFactory
+ * @param {Array<object>} [views] - SSR view entries from `conf.ssr.json`.
+ * @param {string} [proxyPath] - The client's proxy sub-path (`/`, `/peer`, ...).
+ * @returns {Array<{status: string, routePath: string, indexUrl: string, title: string, client: string}>}
+ *   One entry per status view, in declaration order.
+ * @memberof clientBuild
+ */
+const statusPageRoutesFactory = ({ views = [], proxyPath = '/' } = {}) => {
+  const prefix = !proxyPath || proxyPath === '/' ? '' : proxyPath.replace(/\/$/, '');
+  return (Array.isArray(views) ? views : [])
+    .map((view) => ({ view, status: STATUS_PAGE_VIEW_PATH.exec(view?.path || '')?.[1] }))
+    .filter(({ status }) => status !== undefined)
+    .map(({ view, status }) => ({
+      status,
+      routePath: `${prefix}${view.path}`,
+      indexUrl: `${prefix}${view.path}/index.html`,
+      title: view.title,
+      client: view.client,
+    }));
+};
+
+/**
+ * Resolves the SSR views a gateway route intercepts and serves statically —
+ * the maintenance and offline documents. They carry no request-time logic, so
+ * the workload never needs to see them; the same build that writes the artifact
+ * hands `deploy --build-manifest` the URL its HTTPRoute rule targets.
+ * @function staticContextRoutesFactory
+ * @param {Array<object>} [views] - SSR view entries from `conf.ssr.json`.
+ * @param {string} [proxyPath] - The client's proxy sub-path (`/`, `/peer`, ...).
+ * @returns {Array<{context: string, routePath: string, indexUrl: string, title: string, client: string}>}
+ *   One entry per intercepted view, in declaration order.
+ * @memberof clientBuild
+ */
+const staticContextRoutesFactory = ({ views = [], proxyPath = '/' } = {}) => {
+  const prefix = !proxyPath || proxyPath === '/' ? '' : proxyPath.replace(/\/$/, '');
+  return (Array.isArray(views) ? views : [])
+    .filter(
+      (view) =>
+        view?.path &&
+        !STATUS_PAGE_VIEW_PATH.test(view.path) &&
+        INTERCEPT_VIEW_FLAGS.some((flag) => view[flag] === true),
+    )
+    .map((view) => ({
+      context: view.path.replace(/^\/+|\/+$/g, ''),
+      routePath: `${prefix}${view.path}`,
+      indexUrl: `${prefix}${view.path}/index.html`,
+      title: view.title,
+      client: view.client,
+    }));
+};
 
 /**
  * Recursively copies files from source to destination, but only files that don't exist in destination.
@@ -742,14 +811,12 @@ const buildClient = async (
       }
 
       if (views) {
-        if (
-          !(
-            enableLiveRebuild &&
-            !options.liveClientBuildPaths.find(
-              (p) => p.srcBuildPath.startsWith(`./src/client/ssr`) || p.srcBuildPath.slice(-9) === '.index.js',
-            )
+        if (!(
+          enableLiveRebuild &&
+          !options.liveClientBuildPaths.find(
+            (p) => p.srcBuildPath.startsWith(`./src/client/ssr`) || p.srcBuildPath.slice(-9) === '.index.js',
           )
-        )
+        ))
           for (const view of views) {
             const buildPath = `${
               rootClientPath[rootClientPath.length - 1] === '/' ? rootClientPath.slice(0, -1) : rootClientPath
@@ -977,6 +1044,8 @@ Sitemap: ${sitemapBaseUrl}/sitemap.xml`,
         // when the network is unreachable.
         const ssrClientConf = confSSR[getCapVariableName(client)] || {};
         const ssrViews = Array.isArray(ssrClientConf.views) ? ssrClientConf.views : [];
+        const statusPageRoutes = statusPageRoutesFactory({ views: ssrViews, proxyPath: path });
+        if (statusPageRoutes.length > 0) logger.info('ssr status page routes', statusPageRoutes);
         const PRE_CACHED_RESOURCES = [];
         let offlineFallbackUrl = null;
         let maintenanceFallbackUrl = null;
@@ -999,9 +1068,16 @@ Sitemap: ${sitemapBaseUrl}/sitemap.xml`,
             renderApi: { JSONweb },
           });
 
-          const buildPath = `${
-            rootClientPath[rootClientPath.length - 1] === '/' ? rootClientPath.slice(0, -1) : rootClientPath
-          }${view.path === '/' ? view.path : `${view.path}/`}`;
+          // A status view is built under `status-pages/<status>/`, not on its own
+          // `/<status>` route: the gateway serves it by intercepting the
+          // runtime's error, and a document on that route would give the runtime
+          // a page of its own to serve or redirect to for the same condition.
+          const statusCode = statusPageRoutes.find((route) => route.routePath === `${proxyPrefix}${view.path}`)?.status;
+          const clientRoot =
+            rootClientPath[rootClientPath.length - 1] === '/' ? rootClientPath.slice(0, -1) : rootClientPath;
+          const buildPath = statusCode
+            ? `${clientRoot}/${dir.dirname(statusPageBuildSegment(statusCode))}/`
+            : `${clientRoot}${view.path === '/' ? view.path : `${view.path}/`}`;
 
           const indexUrl = buildIndexUrl(view.path);
           if (view.offlineDefault) {
@@ -1089,4 +1165,11 @@ ${swTransformedJs}`,
   }
 };
 
-export { buildClient, copyNonExistingFiles, unzipClientBuild, mergeClientBuildZip };
+export {
+  buildClient,
+  copyNonExistingFiles,
+  unzipClientBuild,
+  mergeClientBuildZip,
+  staticContextRoutesFactory,
+  statusPageRoutesFactory,
+};
