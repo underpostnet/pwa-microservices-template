@@ -998,6 +998,15 @@ spec:
      * Split out of {@link UnderpostDeploy.getCurrentTraffic} so a report covering
      * many deployments and environments can read each host once instead of once
      * per row.
+     *
+     * The stack the flags select is read first, and the other one is read when
+     * that finds nothing. Which kind describes a host is a property of the
+     * cluster, not of the invocation: a command run without `--disable-gateway-api`
+     * against a Contour-routed host would otherwise report it as having no colour
+     * at all, and silently act on that — stopping the wrong half of a blue/green
+     * pair, or reporting a live host as unrouted. When neither kind exists the
+     * host genuinely has no route and the caller proceeds with the Nginx block
+     * alone.
      * @param {string} host - Hostname whose routing is read.
      * @param {object} [options] - Options carrying namespace, gateway stack and gateway root.
      * @returns {string} Route object YAML and Nginx block, concatenated; empty when neither exists.
@@ -1007,13 +1016,33 @@ spec:
       const namespace = options.namespace || 'default';
       // A missing route object is the canonical "no traffic colour set yet"
       // state for blue/green rollouts. silentOnError swallows kubectl's NotFound
-      // exit so the caller sees empty text rather than a throw.
-      const kind = gatewayApiEnabledFactory(options) ? 'HTTPRoute' : 'HTTPProxy';
-      const routeInfo = shellExec(`sudo kubectl get ${kind}/${host} -n ${namespace} -o yaml`, {
-        silent: true,
-        stdout: true,
-        silentOnError: true,
-      });
+      // exit so this returns empty text rather than throwing. The `kind:` check
+      // is what distinguishes a real object from anything kubectl printed while
+      // failing — an empty answer has to mean "absent", or the fallback below
+      // would never run.
+      const readRouteObject = (kind) => {
+        const out = shellExec(`sudo kubectl get ${kind}/${host} -n ${namespace} -o yaml`, {
+          silent: true,
+          stdout: true,
+          silentOnError: true,
+        });
+        return `${out || ''}`.includes(`kind: ${kind}`) ? `${out}` : '';
+      };
+
+      const preferred = gatewayApiEnabledFactory(options) ? 'HTTPRoute' : 'HTTPProxy';
+      const fallback = preferred === 'HTTPRoute' ? 'HTTPProxy' : 'HTTPRoute';
+      let routeInfo = readRouteObject(preferred);
+      if (!routeInfo) {
+        routeInfo = readRouteObject(fallback);
+        if (routeInfo)
+          logger.warn('Host is routed by the other stack than the flags select; reading it instead', {
+            host,
+            selected: preferred,
+            found: fallback,
+            namespace,
+          });
+      }
+
       const gatewayConfPath = nodePath.join(
         Underpost.deploy.underpostGatewayRootFactory(options),
         UNDERPOST_GATEWAY.confDir,
@@ -1088,15 +1117,20 @@ spec:
      *     reaches the gateway directly, and QUIC gets UDP/443 for free.
      *   - production — NodePort, mirroring the ports the Contour envoy service
      *     already publishes (`manifests/envoy-service-nodeport.yaml`).
+     *
+     * `sharedIngress` overrides the development binding: with Contour also
+     * installed the node's 80/443 belong to the shared edge, and a data plane on
+     * the host network would be competing for the port it is meant to sit behind.
+     * The listener ports are unchanged — only where they are published moves.
      * @param {string} env - `development` | `production`.
-     * @param {object} [options] - Deploy/run options (gateway class override).
+     * @param {object} [options] - Deploy/run options (gateway class override, shared edge).
      * @returns {string} GatewayClass + EnvoyProxy YAML.
      * @memberof UnderpostDeploy
      */
     gatewayClassYamlFactory({ env, options = {} }) {
       const { gatewayClassName } = Underpost.deploy.gatewayApiConfigFactory(options);
       const namespace = 'envoy-gateway-system';
-      const hostBound = env === 'development';
+      const hostBound = env === 'development' && options.sharedIngress !== true;
       // `hostNetwork` is not a field of EnvoyProxy's KubernetesPodSpec — the
       // deployment `patch` (StrategicMerge) is the supported way to set plain
       // PodSpec fields. `dnsPolicy` must move with it: on the host network the
@@ -1137,6 +1171,14 @@ spec:
       useListenerPortAsContainerPort: false
       envoyService:
         type: NodePort`;
+      // Behind the shared edge the data plane is reached by ClusterIP, so it
+      // needs neither the host network nor a node port — it is an ordinary
+      // upstream, and publishing it anywhere else would only re-create the
+      // contention the edge exists to remove.
+      const sharedProvider = `
+      useListenerPortAsContainerPort: false
+      envoyService:
+        type: ClusterIP`;
       return `
 ---
 apiVersion: ${GATEWAY_EXTENSION_GROUP_VERSION}
@@ -1155,7 +1197,7 @@ spec:
   mergeGateways: true
   provider:
     type: Kubernetes
-    kubernetes:${hostBound ? developmentProvider : productionProvider}
+    kubernetes:${options.sharedIngress === true ? sharedProvider : hostBound ? developmentProvider : productionProvider}
 ---
 apiVersion: ${GATEWAY_API_GROUP_VERSION}
 kind: GatewayClass
@@ -2129,6 +2171,11 @@ EOF`);
                   shellExec(`sudo kubectl apply -f ${gatewayApiPath} -n ${namespace}`);
               }
             } else shellExec(`sudo kubectl apply -f ./${manifestsPath}/proxy.yaml -n ${namespace}`);
+            // The hostnames just published have to reach the data plane that now
+            // describes them. A shared edge built before this apply still sends
+            // them to the other stack, which answers 404 for a healthy workload.
+            // No-op when no shared edge is installed.
+            Underpost.cluster.refreshUnderpostIngress({ namespace, options });
           }
 
           if (Underpost.deploy.isCertManagerContext({ host: Object.keys(confServer)[0], env, options })) {
