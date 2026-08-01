@@ -7,16 +7,19 @@ import {
   clusterInstancesFactory,
   clusterTypeFactory,
   deployHostsFactory,
+  etcHostFactory,
   gatewayApiEnabledFactory,
   instanceInterceptStatusesFactory,
   instanceProjectPathFactory,
   instanceStatusPageEntriesFactory,
   loadConfInstances,
+  loadProjectInstanceEnvBuilder,
   normalizeInstanceTopology,
 } from '../src/server/conf.js';
 import { statusPageAssetPathFactory } from '../src/server/underpost-gateway.js';
+import UnderpostDockerCompose from '../src/cli/docker-compose.js';
 
-test; // `clusterInstancesFactory` reads `./engine-private/conf/<deployId>/conf.instances.json`
+// `clusterInstancesFactory` reads `./engine-private/conf/<deployId>/conf.instances.json`
 // relative to the process cwd, mirroring every other conf loader. engine-private
 // is a private repository, so each fixture gets its own deploy directory, that
 // directory is removed whole afterwards, and an existing one is never touched.
@@ -66,6 +69,10 @@ describe('cluster custom instances', () => {
       fs.outputJsonSync(`${dir}/conf.server.json`, SERVER_FIXTURE[deployId]);
       created.push(dir);
     }
+    const customComposeDir = `${CONF_DIR('dd-fixture-a')}/docker-compose/custom-stack`;
+    fs.outputFileSync(`${customComposeDir}/docker-compose.yml`, 'services: {}\n');
+    fs.outputFileSync(`${customComposeDir}/compose.env`, 'FIXTURE=true\n');
+    fs.outputFileSync(`${customComposeDir}/project-router.conf`, 'project-owned\n');
   });
 
   after(() => {
@@ -117,12 +124,50 @@ describe('cluster custom instances', () => {
         path: '/FOREST',
         isDefaultInstance: false,
       });
+      expect(forest).not.to.have.property('pathRewritePolicy');
     });
 
     it('rejects the legacy topology env map with migration guidance', () => {
       expect(() => loadConfInstances('dd-fixture-legacy-env')).to.throw(
         /uses removed multiInstance\.env.*dispatch env builder/,
       );
+    });
+
+    it('loads an optional project env builder by deploy-id convention', async () => {
+      const builder = await loadProjectInstanceEnvBuilder('dd-cyberia');
+      if (fs.existsSync('./src/projects/cyberia/instance-data.js'))
+        expect(builder).to.be.a('function').and.have.property('name', 'buildCyberiaMmoInstanceEnv');
+      else expect(builder).to.equal(null);
+      expect(await loadProjectInstanceEnvBuilder('dd-fixture-a')).to.equal(null);
+    });
+
+    it('uses a named compose workflow without rewriting project-owned files', () => {
+      const options = { deployId: 'dd-fixture-a', dockerComposeId: 'custom-stack' };
+      const customComposeDir = 'engine-private/conf/dd-fixture-a/docker-compose/custom-stack';
+      const routerPath = `${customComposeDir}/project-router.conf`;
+      expect(UnderpostDockerCompose.composeIdBase(options)).to.equal(customComposeDir);
+      expect(() => UnderpostDockerCompose.generate(options)).not.to.throw();
+      expect(fs.readFileSync(routerPath, 'utf8')).to.equal('project-owned\n');
+      expect(UnderpostDockerCompose.baseCmd(options)).to.include(
+        `--project-directory ${process.cwd()}/${customComposeDir}`,
+      );
+    });
+
+    it('writes one idempotent identified hosts block without replacing unrelated entries', () => {
+      const customComposeDir = 'engine-private/conf/dd-fixture-a/docker-compose/custom-stack';
+      const hostsPath = `${customComposeDir}/hosts`;
+      fs.writeFileSync(hostsPath, '127.0.0.1 localhost\n', 'utf8');
+      const options = { path: hostsPath, append: true, blockId: 'fixture-docker-compose' };
+      expect(etcHostFactory(['fixture-client', 'fixture-server', 'fixture-engine'], options).changed).to.equal(
+        true,
+      );
+      expect(etcHostFactory(['fixture-client', 'fixture-server', 'fixture-engine'], options).changed).to.equal(
+        false,
+      );
+      const hosts = fs.readFileSync(hostsPath, 'utf8');
+      expect(hosts.match(/underpost hosts fixture-docker-compose:begin/g)).to.have.length(1);
+      expect(hosts).to.include('127.0.0.1 localhost');
+      expect(hosts).to.include('fixture-client fixture-server fixture-engine');
     });
   });
 

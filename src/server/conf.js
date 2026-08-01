@@ -1893,6 +1893,27 @@ const dispatchBuildInstanceEnv = ({
 };
 
 /**
+ * Loads a deploy project's optional instance env builder by convention.
+ * `dd-cyberia` resolves to `src/projects/cyberia/instance-data.js`, whose
+ * public integration export is `buildInstanceEnv`. Missing modules mean the
+ * canonical env is copied unchanged; malformed exports fail explicitly.
+ * @param {string} deployId - Deployment id in `dd-<project>` form.
+ * @returns {Promise<Function|null>} Project env builder, when provided.
+ * @memberof ServerConfBuilder
+ */
+const loadProjectInstanceEnvBuilder = async (deployId) => {
+  const match = /^dd-([a-z0-9][a-z0-9-]*)$/.exec(`${deployId || ''}`);
+  if (!match) return null;
+  const moduleUrl = new URL(`../projects/${match[1]}/instance-data.js`, import.meta.url);
+  if (!fs.existsSync(moduleUrl)) return null;
+  const projectModule = await import(moduleUrl.href);
+  if (projectModule.buildInstanceEnv === undefined) return null;
+  if (typeof projectModule.buildInstanceEnv !== 'function')
+    throw new TypeError(`${moduleUrl.pathname}: buildInstanceEnv must be a function`);
+  return projectModule.buildInstanceEnv;
+};
+
+/**
  * @method loadConfInstances
  * @description Loads `conf.instances.json` and expands every entry carrying a
  * `multiInstance` block into one concrete instance per declared variant.
@@ -1903,9 +1924,9 @@ const dispatchBuildInstanceEnv = ({
  * throughout. The `/` variant keeps the template id verbatim, so pre-existing
  * deployments, PVCs and env directories survive multi-instance expansion.
  *
- * Nothing here is application-specific: the path variants and prefix-stripping
- * (`stripPathPrefix`) are declared per entry under
- * `entry.multiInstance`. Project-specific env behavior is delegated through
+ * Nothing here is application-specific: variants preserve their public path
+ * through the ingress and the runtime owns that base-path contract.
+ * Project-specific env behavior is delegated through
  * {@link dispatchBuildInstanceEnv} rather than encoded in topology configuration.
  *
  * Every expanded entry carries normalized metadata consumed by deploy runners:
@@ -1942,12 +1963,6 @@ const loadConfInstances = (deployId) => {
       instance.instanceSlug = variant.slug;
       instance.isDefaultInstance = variant.isDefault;
       instance.templateId = entry.id;
-
-      // A backend that serves its routes at the root knows nothing about the
-      // variant prefix — it is selected by env instead. Strip the prefix at the
-      // proxy so the runtime stays instance-agnostic.
-      if (spec.stripPathPrefix && variant.path !== '/')
-        instance.pathRewritePolicy = [{ prefix: variant.path, replacement: '/' }];
       expanded.push(instance);
     }
   }
@@ -2511,10 +2526,9 @@ const instanceProxyRoutesFactory = ({ deployId, instances, env, trafficById }) =
  * the workload rule for each instance sub-path, plus the edge-served status page
  * rules declared by that instance's `customStatusPages`.
  *
- * Relative asset loading under a variant sub-path is preserved by carrying the
- * instance `pathRewritePolicy` through verbatim: an instance that declares
- * `stripPathPrefix` gets a ReplacePrefixMatch rewrite, and one that does not
- * keeps its prefix so the workload still sees the URLs the browser requested.
+ * Variant paths are preserved by default, so the selected runtime receives the
+ * same URL that the client requested. An explicit generic `pathRewritePolicy`
+ * is still passed through for unrelated workloads that define one directly.
  * @param {string} deployId - Parent deployment identifier.
  * @param {Array<object>} instances - Expanded instance entries bound to one host.
  * @param {string} env - `development` | `production`.
@@ -2544,8 +2558,8 @@ const instanceHttpRouteRulesFactory = ({ deployId, instances, env, trafficById, 
     // An instance that declares a status page is reached through the shared
     // gateway, which proxies to its workload and intercepts the errors. One that
     // declares none is routed straight there, so the extra hop only exists where
-    // it buys something. `pathRewritePolicy` moves to the gateway with it: the
-    // prefix strip belongs to whoever dials the workload.
+    // it buys something. Any explicit generic `pathRewritePolicy` moves to the
+    // gateway with the workload route.
     const intercepted = Object.keys(instanceInterceptStatusesFactory(instance)).length > 0;
     rules += Underpost.deploy.httpRouteRuleFactory({
       path: instance.path,
@@ -2665,7 +2679,9 @@ const waitForPort = async ({
  * @param {Array<string>} hosts - List of hosts to be added to the hosts file.
  * @param {object} options - Options for the hosts file creation.
  * @param {boolean} options.append - Whether to append to the existing hosts file.
- * @returns {object} - Object containing the rendered hosts file.
+ * @param {string} [options.blockId] - Replace an idempotent owned block while preserving unrelated entries.
+ * @param {string} [options.path=/etc/hosts] - Hosts file path; injectable for tests.
+ * @returns {{renderHosts: string, changed: boolean}} Rendered content and whether the file changed.
  * @memberof ServerConfBuilder
  */
 const etcHostFactory = (hosts = [], options = { append: false }) => {
@@ -2685,16 +2701,35 @@ const etcHostFactory = (hosts = [], options = { append: false }) => {
   )} localhost localhost.localdomain localhost4 localhost4.localdomain4
 ::1         localhost localhost.localdomain localhost6 localhost6.localdomain6`;
 
-  if (options && options.append && fs.existsSync(`/etc/hosts`)) {
+  const hostsPath = options?.path || '/etc/hosts';
+  if (options?.blockId) {
+    if (!/^[A-Za-z0-9._-]+$/.test(options.blockId))
+      throw new Error(`Invalid /etc/hosts block id: ${options.blockId}`);
+    const beginMarker = `# underpost hosts ${options.blockId}:begin`;
+    const endMarker = `# underpost hosts ${options.blockId}:end`;
+    const existing = fs.existsSync(hostsPath) ? fs.readFileSync(hostsPath, 'utf8') : '';
+    const begin = existing.indexOf(beginMarker);
+    const end = begin === -1 ? -1 : existing.indexOf(endMarker, begin);
+    let outsideBlock = existing;
+    if (begin !== -1)
+      outsideBlock = `${existing.slice(0, begin)}${end === -1 ? '' : existing.slice(end + endMarker.length)}`;
+    outsideBlock = outsideBlock.trimEnd();
+    const updated = `${outsideBlock}${outsideBlock ? '\n' : ''}${beginMarker}\n${renderHosts}\n${endMarker}\n`;
+    const changed = updated !== existing;
+    if (changed) fs.writeFileSync(hostsPath, updated, 'utf8');
+    return { renderHosts, changed };
+  }
+
+  if (options && options.append && fs.existsSync(hostsPath)) {
     fs.writeFileSync(
-      `/etc/hosts`,
-      fs.readFileSync(`/etc/hosts`, 'utf8') +
+      hostsPath,
+      fs.readFileSync(hostsPath, 'utf8') +
         `
 ${renderHosts}`,
       'utf8',
     );
-  } else fs.writeFileSync(`/etc/hosts`, renderHosts, 'utf8');
-  return { renderHosts };
+  } else fs.writeFileSync(hostsPath, renderHosts, 'utf8');
+  return { renderHosts, changed: true };
 };
 
 /**
@@ -3036,6 +3071,7 @@ export {
   loadConfInstances,
   normalizeInstanceTopology,
   dispatchBuildInstanceEnv,
+  loadProjectInstanceEnvBuilder,
   loadInstanceTopology,
   readConfInstances,
   selectConfInstances,
