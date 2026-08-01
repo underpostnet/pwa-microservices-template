@@ -15,6 +15,11 @@ import {
   dispatchBuildInstanceEnv,
   deployHostsFactory,
   etcHostFactory,
+  exposePartialMatchesFactory,
+  exposePathPartsFactory,
+  exposePortListFactory,
+  exposePortPlanFactory,
+  exposeTcpPortsFactory,
   gatewayApiEnabledFactory,
   getNpmRootPath,
   instanceHttpRouteRulesFactory,
@@ -34,6 +39,7 @@ import {
   writeEnv,
   clusterInstancesFactory,
   deployTrafficEntriesFactory,
+  curlStatusChainFactory,
   hostIngressFactsFactory,
   hostRenderInstancesFactory,
   instanceTrafficPlanFactory,
@@ -75,8 +81,12 @@ const logger = loggerFactory(import.meta);
  * @property {boolean} dev - Whether to run in development mode.
  * @property {string} podName - The name of the pod to run.
  * @property {string} nodeName - The name of the node to run.
+ * @property {string} ingressNode - Dedicated node for the host-network public ingress; never inherited from nodeName.
  * @property {string} sshKeyPath - Private key path for node SSH operations, forwarded to volume shipping over SSH.
  * @property {number} port - Custom port to use.
+ * @property {string} exposeContainerPorts - Comma-separated Service/container destination ports.
+ * @property {string} exposeHostPorts - Comma-separated host listening ports.
+ * @property {boolean} localProxy - Start the development path proxy after exposing matched resources.
  * @property {string} volumeHostPath - The host path for the volume.
  * @property {string} volumeMountPath - The mount path for the volume.
  * @property {string} imageName - The name of the image to run.
@@ -165,8 +175,12 @@ const DEFAULT_OPTION = {
   dev: false,
   podName: '',
   nodeName: '',
+  ingressNode: '',
   sshKeyPath: '',
   port: 0,
+  exposeContainerPorts: '',
+  exposeHostPorts: '',
+  localProxy: false,
   volumeHostPath: '',
   volumeMountPath: '',
   imageName: '',
@@ -266,6 +280,180 @@ class UnderpostRun {
    */
   static RUNNERS = {
     /**
+     * @method status
+     * @description Reports deployment traffic, routing, Pods, expanded instances, and host capacity.
+     * @param {string} path - Deploy id, comma-separated ids, or `dd`; empty uses the router/configured projects.
+     * @param {UnderpostRunDefaultOptions} options - Namespace, environment (`--dev`), cluster, and node options.
+     * @returns {Promise<{deployments: object[], machine: object}>} Structured status report.
+     * @memberof UnderpostRun
+     */
+    status: async (path = '', options = DEFAULT_OPTION) => {
+      options = {
+        ...options,
+        gatewayApi: gatewayApiEnabledFactory(options),
+        namespace: options.namespace || 'default',
+      };
+      if (!/^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/.test(options.namespace))
+        throw new Error(`Invalid Kubernetes namespace: ${options.namespace}`);
+      if (options.nodeName && !/^[a-zA-Z0-9._-]+$/.test(options.nodeName))
+        throw new Error(`Invalid Kubernetes node name: ${options.nodeName}`);
+      const env = options.dev ? 'development' : 'production';
+      const requestedDeploys = `${path || options.deployId || ''}`.trim();
+      const routerPath = './engine-private/deploy/dd.router';
+      const confRoot = './engine-private/conf';
+      const deployIds = [
+        ...new Set(
+          requestedDeploys
+            ? resolveDeployList(requestedDeploys)
+            : fs.existsSync(routerPath)
+              ? resolveDeployList('dd')
+              : fs.existsSync(confRoot)
+                ? fs
+                    .readdirSync(confRoot)
+                    .filter(
+                      (deployId) =>
+                        fs.existsSync(`${confRoot}/${deployId}/conf.server.json`) ||
+                        fs.existsSync(`${confRoot}/${deployId}/conf.instances.json`),
+                    )
+                    .sort()
+                : [],
+        ),
+      ];
+      if (deployIds.length === 0) throw new Error('No deployments found for status');
+      if (deployIds.some((deployId) => !/^[a-zA-Z0-9._-]+$/.test(deployId)))
+        throw new Error(`Invalid deployment status path: ${requestedDeploys}`);
+
+      const deployments = [];
+      for (const deployId of deployIds) {
+        const instances = [];
+        if (fs.existsSync(`${confRoot}/${deployId}/conf.instances.json`)) {
+          for (const instance of loadConfInstances(deployId)) {
+            const instanceDeployId = `${deployId}-${instance.id}`;
+            instances.push({
+              id: instance.id,
+              host: instance.host,
+              path: instance.path,
+              fromPort: instance.fromPort,
+              toPort: instance.toPort,
+              fromDebugPort: instance.fromDebugPort,
+              toDebugPort: instance.toDebugPort,
+              traffic: Underpost.deploy.getCurrentTraffic(instanceDeployId, {
+                namespace: options.namespace,
+                hostTest: instance.host,
+                env,
+                gatewayApi: options.gatewayApi,
+              }),
+            });
+          }
+        }
+        const deployment = {
+          deployId,
+          env,
+          traffic: Underpost.deploy.getCurrentTraffic(deployId, {
+            namespace: options.namespace,
+            env,
+            gatewayApi: options.gatewayApi,
+          }),
+          router: await Underpost.deploy.routerFactory(deployId, env),
+          pods: Underpost.kubectl.get(deployId, 'pods', options.namespace),
+          instances,
+        };
+        deployments.push(deployment);
+        logger.info('', deployment);
+      }
+
+      const interfaceName = Underpost.dns.getDefaultNetworkInterface();
+      const machine = {
+        hostname: os.hostname(),
+        arch: Underpost.baremetal.getHostArch(),
+        clusterType: clusterTypeFactory(options),
+        ipv4Public: await Underpost.dns.getPublicIp(),
+        ipv4Local: Underpost.dns.getLocalIPv4Address(),
+        resources: Underpost.cluster.getResourcesCapacity(options.nodeName),
+        defaultInterfaceName: interfaceName,
+        defaultInterfaceInfo: os.networkInterfaces()[interfaceName],
+      };
+      logger.info('Machine', machine);
+      return { deployments, machine };
+    },
+
+    /**
+     * @method expose
+     * @description Port-forwards every Service whose name partially matches path, falling back to matching Pods.
+     * Works through the active kubeconfig for Kind, k3s, and kubeadm clusters.
+     * Comma-separated path fragments determine resource index order; host and
+     * container port lists are paired against that same order.
+     * @param {string} path - One or more comma-separated literal Service/Pod name fragments.
+     * @param {UnderpostRunDefaultOptions} options - Namespace, cluster type, and optional port overrides.
+     * @returns {Array<{kindType: string, name: string, localPort: number, remotePort: number}>} Forward plan.
+     * @memberof UnderpostRun
+     */
+    expose: (path, options = DEFAULT_OPTION) => {
+      const namespace = options.namespace || 'default';
+      const clusterType = clusterTypeFactory(options);
+      const pathParts = exposePathPartsFactory(path || options.podName);
+      if (!/^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/.test(namespace))
+        throw new Error(`Invalid Kubernetes namespace: ${namespace}`);
+      let kindType = 'svc';
+      let resources = exposePartialMatchesFactory(Underpost.kubectl.get('', kindType, namespace), pathParts);
+
+      if (resources.length === 0) {
+        kindType = 'pod';
+        resources = exposePartialMatchesFactory(Underpost.kubectl.get('', 'pods', namespace), pathParts);
+      }
+      if (resources.length === 0)
+        throw new Error(`No Service or Pod partially matching '${pathParts.join(',')}' in namespace '${namespace}'`);
+
+      const containerPorts = exposePortListFactory(options.exposeContainerPorts, '--expose-container-ports');
+      const hostPorts = exposePortListFactory(options.exposeHostPorts, '--expose-host-ports');
+      const portsOf = (resource) => {
+        let declaredPorts = exposeTcpPortsFactory(resource);
+        if (kindType === 'pod' && declaredPorts.length === 0) {
+          const podJson = shellExec(`sudo kubectl get pod ${resource.NAME} -n ${namespace} -o json`, {
+            stdout: true,
+            silent: true,
+          });
+          const pod = JSON.parse(podJson);
+          declaredPorts = (pod.spec?.containers || [])
+            .flatMap((container) => container.ports || [])
+            .map(({ containerPort }) => parseInt(containerPort))
+            .filter((port) => Number.isInteger(port) && port > 0);
+        }
+        return declaredPorts;
+      };
+      const plan = exposePortPlanFactory({ resources, kindType, containerPorts, hostPorts, portsOf });
+
+      logger.info('[expose] Kubernetes port-forward plan', {
+        clusterType,
+        namespace,
+        matches: pathParts,
+        plan,
+      });
+      for (const { kindType, name, localPort, remotePort } of plan)
+        shellExec(`sudo kubectl port-forward -n ${namespace} ${kindType}/${name} ${localPort}:${remotePort}`, {
+          async: true,
+        });
+
+      if (options.localProxy) {
+        const deployId = options.deployId || pathParts[0];
+        const env = options.dev ? 'development' : 'production';
+        const envFile = `./engine-private/conf/${deployId}/.env.${env}`;
+        let basePort = plan[0].localPort - 1;
+        if (fs.existsSync(envFile)) {
+          const portMatch = fs.readFileSync(envFile, 'utf8').match(/^PORT=(\d+)/m);
+          if (portMatch) basePort = parseInt(portMatch[1]);
+        }
+        const tlsFlag = options.tls ? ' tls' : '';
+        shellExec(
+          `NODE_ENV=${env} PORT=${basePort} DEV_PROXY_PORT_OFFSET=0 node src/proxy proxy ${deployId} ${env}${tlsFlag}`,
+          { async: true },
+        );
+      }
+
+      return plan;
+    },
+
+    /**
      * @method dev-cluster
      * @description Resets and deploys a full development cluster including MongoDB, Valkey, exposes services, and updates `/etc/hosts` for local access.
      * @param {string} path - The input value, identifier, or path for the operation.
@@ -276,26 +464,21 @@ class UnderpostRun {
       const baseCommand = options.dev ? 'node bin' : 'underpost';
       const mongoHosts = ['mongodb-0.mongodb-service'];
       let primaryMongoHost = 'mongodb-0.mongodb-service';
-      if (!options.expose) {
-        shellExec(`${baseCommand} cluster${options.dev ? ' --dev' : ''} --reset`);
-        shellExec(`${baseCommand} cluster${options.dev ? ' --dev' : ''}`);
+      const clusterType = clusterTypeFactory(options);
+      const clusterFlag = ` --${clusterType}`;
+      const clusterInitFlag = clusterType === 'kind' ? '' : clusterFlag;
+      const clusterOptions = `${options.dev ? ' --dev' : ''}${clusterInitFlag} --namespace ${options.namespace}`;
+      if (!options.expose && !options.remove) {
+        shellExec(`${baseCommand} cluster${clusterOptions} --reset`);
+        shellExec(`${baseCommand} cluster${clusterOptions}`);
 
         shellExec(
-          `${baseCommand} cluster${options.dev ? ' --dev' : ''} --mongodb --service-host ${mongoHosts.join(
-            ',',
-          )} --pull-image`,
+          `${baseCommand} cluster${clusterOptions} --mongodb --service-host ${mongoHosts.join(',')} --pull-image`,
         );
-        shellExec(`${baseCommand} cluster${options.dev ? ' --dev' : ''} --valkey --pull-image`);
+        shellExec(`${baseCommand} cluster${clusterOptions} --valkey --pull-image`);
       }
-      if (options.k3s) {
-        if (options.remove) {
-          shellExec(`${baseCommand} lxd --delete-expose k3s-control:27017`);
-          shellExec(`${baseCommand} lxd --delete-expose k3s-control:6379`);
-        } else {
-          shellExec(`${baseCommand} lxd --expose k3s-control:27017 --node-port 32017`);
-          shellExec(`${baseCommand} lxd --expose k3s-control:6379 --node-port 32079`);
-        }
-        shellExec(`lxc config device show k3s-control`);
+      if (options.remove) {
+        shellExec(`${baseCommand} run kill '6379,27017'`);
       } else {
         try {
           const primaryPodName =
@@ -304,37 +487,24 @@ class UnderpostRun {
               podName: 'mongodb-0',
               disableAuth: options.dev,
             }) || 'mongodb-0';
-          shellExec(
-            `${baseCommand} deploy --expose --namespace ${options.namespace} --disable-update-underpost-config mongo`,
-            { async: true },
-          );
-          shellExec(
-            `${baseCommand} deploy --expose --namespace ${options.namespace} --disable-update-underpost-config valkey`,
-            { async: true },
-          );
+          primaryMongoHost = `${primaryPodName}.mongodb-service`;
         } catch (error) {
           logger.warn('Failed to detect MongoDB primary pod, using default', {
             error: error.message,
             default: primaryMongoHost,
           });
         }
+        shellExec(
+          `${baseCommand} run expose mongodb-service --namespace ${options.namespace}${clusterFlag} --expose-container-ports 27017 --expose-host-ports 27017`,
+          { async: true },
+        );
+        shellExec(
+          `${baseCommand} run expose valkey-service --namespace ${options.namespace}${clusterFlag} --expose-container-ports 6379 --expose-host-ports 6379`,
+          { async: true },
+        );
       }
       const hostListenResult = etcHostFactory([primaryMongoHost]);
       logger.info(hostListenResult.renderHosts);
-    },
-
-    /**
-     * @method ipfs-expose
-     * @description Exposes IPFS Cluster services on specified ports for local access.
-     * @type {Function}
-     * @memberof UnderpostRun
-     */
-    'ipfs-expose': (path, options = DEFAULT_OPTION) => {
-      const ports = [5001, 9094, 8080];
-      for (const port of ports)
-        shellExec(`node bin deploy --expose ipfs-cluster --expose-port ${port} --disable-update-underpost-config`, {
-          async: true,
-        });
     },
 
     /**
@@ -358,6 +528,16 @@ class UnderpostRun {
       shellExec(`node bin metadata --generate ${path}`);
       shellExec(`node bin db --dev --clean-fs-collection dd`);
       shellExec(`node bin run kill '${ports}'`);
+    },
+
+    /**
+     * @method ipfs-expose
+     * @description Exposes every declared TCP port on the matching IPFS Cluster Service.
+     * @type {Function}
+     * @memberof UnderpostRun
+     */
+    'ipfs-expose': (path, options = DEFAULT_OPTION) => {
+      shellExec(`node bin run expose ipfs --expose-host-ports 5002,5001,8081,8080,9094,9095,9096`);
     },
 
     /**
@@ -464,8 +644,8 @@ class UnderpostRun {
           services: 'service',
         })[k] || k;
 
-      // Kinds that own a pod template we can patch; rolloutKinds additionally
-      // support `kubectl rollout restart` to reschedule existing pods now.
+      // Kinds that own a pod template we can patch. Changing that template is
+      // itself the controller's rollout trigger.
       const templated = [
         'deployment',
         'statefulset',
@@ -475,7 +655,6 @@ class UnderpostRun {
         'cronjob',
         'replicationcontroller',
       ];
-      const rolloutKinds = ['deployment', 'statefulset', 'daemonset'];
       const templateSelectorPath = (kind) =>
         kind === 'cronjob'
           ? ['spec', 'jobTemplate', 'spec', 'template', 'spec', 'nodeSelector']
@@ -564,10 +743,9 @@ class UnderpostRun {
           continue;
         }
 
-        // Idempotency: skip the patch + rollout if the resource is already where
-        // we want it. Compares the live pod-template nodeSelector against the
-        // desired placement so a repeated run does not trigger an unnecessary
-        // rollout restart.
+        // Idempotency: skip the patch if the resource is already where we want
+        // it. Compares the live pod-template nodeSelector against the desired
+        // placement so a repeated run does not trigger an unnecessary rollout.
         const basePath = kind === 'cronjob' ? 'spec.jobTemplate.spec.template.spec' : 'spec.template.spec';
         const jsonpath = (expr) =>
           shellExec(`kubectl get ${kind} ${name} -n ${ns} -o jsonpath='${expr}'`, {
@@ -597,16 +775,17 @@ class UnderpostRun {
         }
 
         const patchCmd = `kubectl patch ${kind} ${name} -n ${ns} --type=merge -p '${buildPatch(kind)}'`;
-        const restartCmd = `kubectl rollout restart ${kind} ${name} -n ${ns}`;
         if (dryRun) {
           logger.info(`[dry-run] ${patchCmd}`);
-          if (rolloutKinds.includes(kind)) logger.info(`[dry-run] ${restartCmd}`);
           results.push({ ref, kind, status: 'dry-run', node: remove ? undefined : node });
           continue;
         }
 
         shellExec(patchCmd);
-        if (rolloutKinds.includes(kind)) shellExec(restartCmd);
+        // nodeSelector is part of the pod template, so this patch already
+        // creates a new controller revision. A rollout restart here creates a
+        // second, immediately superseding revision and can strand the previous
+        // Ready replica in "pending termination" while the newest pod starts.
         logger.info(remove ? `Cleared node placement: ${kind}/${name}` : `Moved ${kind}/${name} -> ${node}`, {
           namespace: ns,
         });
@@ -1229,12 +1408,20 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
      * of them is readable from the route object alone: the kind is which object
      * exists, TLS lives on the Gateway's listener or an HTTPProxy's
      * `virtualhost.tls`, and HTTP/3 is a `ClientTrafficPolicy` targeting that
-     * Gateway. `REPLICAS` is the routed colour's own `ready/desired`.
+     * Gateway. `CURRENT` and `OPPOSITE` show each colour's Deployment name,
+     * `ready/desired` replicas and readiness; `CURRENT` also reports whether the
+     * stable traffic Service has a ready endpoint.
      *
      * The stable traffic Service selector is the colour authority. Legacy
      * HTTPRoute/HTTPProxy backend parsing remains as a fallback for workloads
      * that have not migrated yet. `serving` checks the Service that actually
      * carries traffic, so an endpointless stable selector reports correctly.
+     * Every declared host/path is also requested through the public chain with
+     * `curl -L -v -i -s`; PATH displays the ordered response codes beside the
+     * path. OPPOSITE is always displayed: when the other blue/green Deployment
+     * does not exist, its expected name is reported with a `missing` state.
+     * There is no separate environment column because the Deployment names
+     * already contain `development` or `production`.
      * @param {string} [path] - Comma-separated hosts to report on; empty reports every host.
      * @param {UnderpostRunDefaultOptions} options - The default underpost runner options for customizing workflow
      * @memberof UnderpostRun
@@ -1267,9 +1454,6 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
 
       const deployments = Underpost.kubectl.get('', 'deployment', options.namespace);
       const deployedNames = deployments.map((entry) => entry.NAME);
-      // `kubectl get -o wide` already carries READY as `ready/desired`, so the
-      // replica count costs nothing beyond the read that decides what is listed.
-      const replicasOf = (name) => deployments.find((entry) => entry.NAME === name)?.READY || '-';
 
       // Four cluster-wide reads, correlated once: which kind describes a host,
       // whether its listener terminates TLS, and whether QUIC is enabled on it.
@@ -1333,6 +1517,18 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
           service: legacyTraffic ? `${entry.deployment}-${legacyTraffic}-service` : '',
         });
       };
+      const servingState = {};
+      const servesTraffic = (entry, env) => {
+        const service = liveTrafficStateOf(entry, env).service;
+        if (!service) return false;
+        const key = `${options.namespace}/${service}`;
+        if (servingState[key] === undefined)
+          servingState[key] = Underpost.deploy.serviceHasReadyEndpoints({
+            service,
+            namespace: options.namespace,
+          });
+        return servingState[key];
+      };
 
       const rows = envs.flatMap((env) =>
         trafficTableRowsFactory({
@@ -1345,11 +1541,7 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
             .filter((entry) => deployedNames.some((name) => name.startsWith(`${entry.deployment}-`))),
           hosts,
           liveTrafficOf: (entry) => liveTrafficStateOf(entry, env).colour,
-          servesTraffic: (entry) =>
-            Underpost.deploy.serviceHasReadyEndpoints({
-              service: liveTrafficStateOf(entry, env).service,
-              namespace: options.namespace,
-            }),
+          servesTraffic: (entry) => servesTraffic(entry, env),
         }),
       );
 
@@ -1363,51 +1555,129 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
         return rows;
       }
 
+      // Probe the exact public URL represented by each host/path row. PWA rows
+      // can carry several configured paths in one cell, while instance rows
+      // carry one; cache by URL so shared rows never repeat network work.
+      const shellArg = (value) => `'${`${value}`.replaceAll("'", "'\\''")}'`;
+      const probeCache = new Map();
+      const probePath = (host, routePath, tls) => {
+        const normalizedPath = `${routePath || '/'}`.startsWith('/') ? `${routePath || '/'}` : `/${routePath}`;
+        let url;
+        try {
+          url = new URL(normalizedPath, `${tls ? 'https' : 'http'}://${host}`).href;
+        } catch {
+          return { path: normalizedPath, url: '', statuses: ['000'] };
+        }
+        if (!probeCache.has(url)) {
+          // -L follows the real redirect chain, -v supplies one response line
+          // per hop, -i keeps full response headers available, and -s removes
+          // only the progress meter. The body is discarded to keep a status
+          // report bounded even when a host returns a large application page.
+          const raw = shellExec(
+            `curl -L -v -i -s --connect-timeout 3 --max-time 12 --max-redirs 10 ` +
+              `-o /dev/null -w '\nUNDERPOST_CURL_FINAL=%{http_code}\n' ${shellArg(url)} 2>&1 || true`,
+            { stdout: true, silent: true, silentOnError: true, disableLog: true },
+          );
+          probeCache.set(url, curlStatusChainFactory(raw));
+        }
+        return { path: normalizedPath, url, statuses: probeCache.get(url) };
+      };
+
+      const deploymentByName = new Map(deployments.map((deployment) => [deployment.NAME, deployment]));
+      const readinessOf = (deployment) => {
+        const replicas = deployment?.READY || '-';
+        const [ready, desired] = `${replicas}`.split('/').map(Number);
+        return {
+          replicas,
+          exists: Boolean(deployment),
+          ready: Number.isFinite(ready) && Number.isFinite(desired) && desired > 0 && ready === desired,
+        };
+      };
+      const deploymentStatusOf = (row, traffic) => {
+        if (!traffic) return null;
+        const deployment = `${row.deployment}-${traffic}`;
+        return {
+          deployment,
+          traffic,
+          ...readinessOf(deploymentByName.get(deployment)),
+        };
+      };
+      const reportRows = rows.map((row) => {
+        const facts = ingressFacts[row.host] || {};
+        const probes = [...new Set(`${row.path || '/'}`.split(/\s+/).filter(Boolean))].map((routePath) =>
+          probePath(row.host, routePath, facts.tls),
+        );
+        const oppositeTraffic = row.traffic ? nextTrafficFactory(row.traffic) : '';
+        const current = deploymentStatusOf(row, row.traffic);
+        const opposite = deploymentStatusOf(row, oppositeTraffic);
+        return {
+          ...row,
+          probes,
+          current: current ? { ...current, serving: row.serving } : null,
+          opposite,
+        };
+      });
+
       // Padded on the raw values, coloured afterwards: an ANSI escape counts
       // toward String.length and would skew every column right of it.
       const columns = [
         'HOST',
         'PATH',
         'KIND',
-        'ENV',
         'ROUTE',
         'TLS',
         'HTTP3',
-        'DEPLOYMENT',
-        'TRAFFIC',
-        'REPLICAS',
-        'SERVING',
+        'CURRENT',
+        'OPPOSITE',
       ];
-      const cells = rows.map((row) => {
+      const cells = reportRows.map((row) => {
         const facts = ingressFacts[row.host] || {};
-        const deployment = `${row.deployment}-${row.traffic || '?'}`;
+        const pathStatus = row.probes.map((probe) => `${probe.path} [${probe.statuses.join('→')}]`).join(' ');
+        const deploymentStatus = (status, includeServing = false) => {
+          if (!status) return `unrouted - missing${includeServing ? ' not-serving' : ''}`;
+          return [
+            status.deployment,
+            status.replicas,
+            status.exists ? (status.ready ? 'ready' : 'not-ready') : 'missing',
+            ...(includeServing ? [status.serving ? 'serving' : 'not-serving'] : []),
+          ].join(' ');
+        };
         return [
           row.host,
-          row.path,
+          pathStatus,
           row.kind,
-          row.env,
           facts.route || 'none',
           facts.tls ? 'yes' : 'no',
           facts.http3 ? 'yes' : 'no',
-          deployment,
-          row.traffic || 'none',
-          row.traffic ? replicasOf(deployment) : '-',
-          row.serving ? 'yes' : 'no',
+          deploymentStatus(row.current, true),
+          deploymentStatus(row.opposite),
         ];
       });
       const widths = columns.map((column, i) => Math.max(column.length, ...cells.map((cell) => `${cell[i]}`.length)));
       const paint = (value, i) => {
-        if (columns[i] === 'TRAFFIC')
-          return value === 'blue' ? value.bgBlue.bold.black : value === 'green' ? value.bgGreen.bold.black : value.red;
-        if (columns[i] === 'SERVING') return value === 'yes' ? value.green : value.red;
+        if (columns[i] === 'PATH')
+          return value.replace(/\b(?:000|[1-5][0-9]{2})\b/g, (status) => {
+            if (/^1/.test(status)) return status.cyan;
+            if (/^2/.test(status)) return status.green;
+            if (/^3/.test(status)) return status.cyan;
+            if (/^4/.test(status)) return status.yellow;
+            return status.red;
+          });
+        if (columns[i] === 'CURRENT' || columns[i] === 'OPPOSITE') {
+          if (value === '-') return value;
+          const [deployment, replicas, status, serving] = value.split(' ');
+          const deploymentDisplay = deployment.replace(/-(blue|green)$/, (_, traffic) =>
+            `-${traffic === 'blue' ? traffic.bgBlue.bold.black : traffic.bgGreen.bold.black}`,
+          );
+          const replicasDisplay = readinessOf({ READY: replicas }).ready ? replicas.green : replicas.red;
+          const statusDisplay = status === 'ready' ? status.green : status.red;
+          const servingDisplay = serving ? (serving === 'serving' ? serving.green : serving.red) : '';
+          return [deploymentDisplay, replicasDisplay, statusDisplay, servingDisplay].filter(Boolean).join(' ');
+        }
         // TLS and HTTP/3 being off is a normal development state, not a fault, so
         // only the affirmative is highlighted.
         if (columns[i] === 'TLS' || columns[i] === 'HTTP3') return value === 'yes' ? value.green : value;
         if (columns[i] === 'ROUTE') return value === 'none' ? value.red : value;
-        if (columns[i] === 'REPLICAS') {
-          const [ready, desired] = `${value}`.split('/');
-          return ready === desired && parseInt(ready, 10) > 0 ? value.green : value.red;
-        }
         return value;
       };
       const line = (values, painted) =>
@@ -1418,7 +1688,36 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
       console.log(widths.map((width) => '-'.repeat(width)).join('  '));
       for (const cell of cells) console.log(line(cell, true));
       console.log('');
-      return rows;
+      return reportRows;
+    },
+
+    /**
+     * @method ingress-refresh
+     * @description Rebuilds the shared HTTPProxy/HTTPRoute host map without
+     * inheriting application workload placement. Supplying a path or
+     * `--ingress-node` is the explicit recovery mechanism for relocating the
+     * public 80/443 listener.
+     * @param {string} [path] - Optional ingress node name.
+     * @param {UnderpostRunDefaultOptions} options - Runner options.
+     * @returns {boolean} True after the ingress is Ready with the refreshed map.
+     * @memberof UnderpostRun
+     */
+    'ingress-refresh': (path = '', options = DEFAULT_OPTION) => {
+      const namespace = options.namespace || 'default';
+      const ingressNode = options.ingressNode || `${path || ''}`.trim();
+      const updated = Underpost.cluster.refreshUnderpostIngress({
+        namespace,
+        options: { ...options, ingressNode },
+      });
+      if (!updated)
+        throw new Error(
+          `[ingress-refresh] ${UNDERPOST_INGRESS.name} is not installed; install both ingress stacks first`,
+        );
+      logger.info('[ingress-refresh] Shared ingress is operational', {
+        namespace,
+        node: ingressNode || '(preserved)',
+      });
+      return true;
     },
 
     'instance-promote': async (path, options = DEFAULT_OPTION) => {
@@ -1841,6 +2140,18 @@ ${Underpost.deploy
     livenessProbe: resolveEnvScoped(_livenessProbe, env),
     containerPort: _toPort,
     imagePullPolicy: instanceImagePullPolicy,
+    // Pin the pod in the manifest submitted for its only rollout. Volumes were
+    // already resolved against this node; leaving the pod unconstrained could
+    // schedule it away from its data and require a second, post-ready move.
+    nodeName: options.nodeName
+      ? Underpost.deploy.resolveDeployNode({
+          node: options.nodeName,
+          kind: options.kind,
+          kubeadm: options.kubeadm,
+          k3s: options.k3s,
+          env,
+        })
+      : '',
   })
   .replace('{{ports}}', buildKindPorts(_fromPort, _toPort))}
 `;
@@ -2068,6 +2379,15 @@ EOF
             livenessProbe: resolveEnvScoped(_livenessProbe, env),
             containerPort: _toPort,
             imagePullPolicy: instanceImagePullPolicy,
+            nodeName: options.nodeName
+              ? Underpost.deploy.resolveDeployNode({
+                  node: options.nodeName,
+                  kind: options.kind,
+                  kubeadm: options.kubeadm,
+                  k3s: options.k3s,
+                  env,
+                })
+              : '',
           })
           .replace('{{ports}}', buildKindPorts(_fromPort, _toPort));
 
@@ -2475,9 +2795,7 @@ EOF`);
       shellExec(`kubectl apply -k ${underpostRoot}/manifests/deployment/adminer/. -n ${options.namespace}`);
       const successInstance = await Underpost.test.statusMonitor('adminer', 'Running', 'pods', 1000, 60 * 10);
 
-      if (successInstance) {
-        shellExec(`underpost deploy --expose adminer --namespace ${options.namespace}`);
-      }
+      if (successInstance) return UnderpostRun.RUNNERS.expose(path || 'adminer', options);
     },
 
     /**
