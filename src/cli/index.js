@@ -143,7 +143,7 @@ program
     '--switch-repo <url>',
     'Switches the git remote (origin) to <url> and force-pulls the target branch, overwriting the current working tree (discards local commits and tracked changes). Accepts a full URL or "owner/repo".',
   )
-  .option('--target-branch <branch>', 'Target branch for --switch-repo (default: master).')
+  .option('--target-branch <branch>', 'Target branch for --switch-repo (default: remote default branch).')
   .description('Manages commits to a GitHub repository, supporting various commit types and options.')
   .action(Underpost.repo.commit);
 
@@ -254,6 +254,10 @@ program
   .option('--ban-egress-clear', 'Clears all banned egress IP addresses.')
   .option('--ban-both-add', 'Adds IP addresses to both banned ingress and egress lists.')
   .option('--ban-both-remove', 'Removes IP addresses from both banned ingress and egress lists.')
+  .option('--block-all-egress', 'Blocks all outbound traffic from this host (keeps established/related connections).')
+  .option('--unblock-all-egress', 'Unblocks all outbound traffic and restores default ACCEPT policy.')
+  .option('--block-all-ingress', 'Blocks all new inbound traffic to this host (keeps established/related connections).')
+  .option('--unblock-all-ingress', 'Unblocks all inbound traffic and restores default ACCEPT policy.')
   .option('--mac', 'Prints the MAC address of the main network interface.')
   .description('Displays the current public machine IP addresses.')
   .action(Underpost.dns.ipDispatcher);
@@ -592,19 +596,23 @@ program
 
 program
   .command('cron')
-  .argument('[deploy-list]', 'A comma-separated list of deployment IDs (e.g., "default-a,default-b").')
+  .argument(
+    '[deploy-list]',
+    'A comma-separated list of deployment IDs (e.g., "default-a,default-b"). In manifest modes its first entry is the manifest owner deploy-id.',
+  )
   .argument(
     '[job-list]',
-    `A comma-separated list of job IDs. Options: ${Underpost.cron.getJobsIDs()}. Defaults to all available jobs.`,
+    `A comma-separated list of job IDs. Options: ${Underpost.cron.getJobsIDs()}. Defaults to all available jobs, and restricts which jobs are generated in manifest modes.`,
   )
   .option('--generate-k8s-cronjobs', 'Generates Kubernetes CronJob YAML manifests from cron configuration.')
-  .option('--apply', 'Applies generated K8s CronJob manifests to the cluster via kubectl.')
+  .option('--apply', 'Generates and applies K8s CronJob manifests to the cluster via kubectl (never runs jobs).')
   .option(
-    '--setup-start [deploy-id]',
-    'Updates deploy-id package.json start script and generates+applies its K8s CronJob manifests.',
+    '--setup-start',
+    'Updates deploy-list package.json start script and generates+applies its K8s CronJob manifests.',
   )
   .option('--namespace <namespace>', 'Kubernetes namespace for the CronJob resources (default: "default").')
   .option('--image <image>', 'Custom container image for the CronJob pods.')
+  .option('--node-name <node-name>', 'Pins the CronJob pods to this node via a kubernetes.io/hostname nodeSelector.')
   .option('--git', 'Pass --git flag to cron job execution.')
   .option('--cmd <cmd>', 'Optional pre-script commands to run before cron execution.')
   .option('--dev', 'Use local ./ base path instead of global underpost installation.')
@@ -614,7 +622,7 @@ program
   .option('--dry-run', 'Preview cron jobs without executing them.')
   .option(
     '--create-job-now',
-    'After applying manifests, immediately create a Job from each CronJob (requires --apply).',
+    'Creates a Job from each CronJob on the cluster now (implies manifest mode; combine with --apply to publish first).',
   )
   .description('Manages cron jobs: execute jobs directly or generate and apply K8s CronJob manifests.')
   .action(Underpost.cron.callback);
@@ -696,6 +704,91 @@ program
   .description('Manages SSH credentials and sessions for remote access to cluster nodes or services.')
   .action(Underpost.ssh.callback);
 
+// `underpost wireguard` and `underpost haproxy` are two entrypoints onto one
+// subsystem: the L3 transport and the gateway in front of it are configured from
+// the same deploy state, so they share a single option set and a single action
+// rather than drifting into two half-overlapping command surfaces.
+const edgeCommandFactory = (name, description) =>
+  program
+    .command(name)
+    .option(
+      '--deploy-id <deploy-id>',
+      'Deploy IDs whose conf.server.json/conf.instances.json define the routes. ' +
+        'Accepts one id or a comma-separated list; defaults to "dd", every deploy in dd.router, ' +
+        'because the edge holds one pair of map files for the whole cluster.',
+    )
+    .option('--interface <name>', 'WireGuard interface name (default: "wg0").')
+    .option('--wireguard-install', 'Installs the wireguard-tools, haproxy and iptables host packages.')
+    .option('--wireguard-setup', 'Generates keys, builds the interface config, and applies local network rules.')
+    .option('--server', 'Configures this node as the hub endpoint accepting inbound tunnel traffic.')
+    .option('--client', 'Configures this node as a spoke endpoint maintaining an outbound tunnel.')
+    .option('--port <port>', 'WireGuard UDP listening port (default: 51820).')
+    .option(
+      '--cidr <cidr>',
+      'Hub interface address with prefix when used with --server (e.g. "10.0.0.1/24"); ' +
+        'the overlay subnet a spoke routes back through the hub when used with --client (default: "10.0.0.0/24").',
+    )
+    .option('--peer-ip <ip>', 'Tunnel address of the target spoke. Required with --client and --peer-add.')
+    .option('--endpoint <host:port>', 'Hub host and port a spoke dials. Required with --client.')
+    .option('--public-key <key>', 'Hub public key with --client; spoke public key with --peer-add.')
+    .option('--peer-add <peer-id>', 'Registers a spoke and applies it to the running hub without a restart.')
+    .option('--peer-remove <peer-id>', 'Removes a spoke from the registry and from the running hub.')
+    .option('--allowed-ips <cidrs>', 'Comma-separated CIDRs routed to the spoke (e.g. "10.0.0.2/32,192.168.10.0/24").')
+    .option('--hosts <hosts>', 'Comma-separated hostnames bound to the spoke, overriding instance resolution.')
+    .option('--instances <instances>', 'Comma-separated conf.instances.json ids bound to the spoke.')
+    .option('--default', 'Marks the spoke as the fallback for hostnames that match no other binding.')
+    .option('--haproxy-setup', 'Installs HAProxy, publishes the current routes, and enables the daemon.')
+    .option('--haproxy-sync', 'Recompiles the SNI/Host maps from deploy config and hot-reloads HAProxy.')
+    .option(
+      '--status',
+      'Prints the whole edge context without changing anything: role, interface, tunnel address, ' +
+        'public key, daemon states, peers with their bindings and link health, and the resolved routing.',
+    )
+    .option(
+      '--build-conf',
+      'Writes only engine-private/deploy/conf.wireguard.json and touches no host state. ' +
+        'Combine with --wireguard-setup / --peer-add / --peer-remove to author the topology off-box; ' +
+        'alone it normalizes and validates the existing registry.',
+    )
+    .option('--wireguard-start', 'Enables and starts wg-quick@<interface> and the QUIC forward.')
+    .option('--wireguard-stop', 'Tears down the interface and removes its transient packet rules.')
+    .option('--wireguard-reset', 'Removes generated configs and packet rules, keeping the key pair and registry.')
+    .option('--wireguard-reinstall', 'Full purge, package reinstall and re-key; every spoke must re-register.')
+    .option('--dry-run', 'Prints the files and commands the run would apply, without touching the host.')
+    .description(description)
+    .action(Underpost.wireguard.callback);
+
+edgeCommandFactory(
+  'wireguard',
+  'Manages the WireGuard L3 hub-and-spoke transport and the HAProxy edge gateway in front of it.',
+);
+edgeCommandFactory(
+  'haproxy',
+  'Manages the HAProxy edge gateway over the WireGuard transport (same subsystem as `underpost wireguard`).',
+);
+
+program
+  .command('vultr')
+  .argument('[deploy-list]', 'A comma-separated list of deployment IDs, logged for attribution.')
+  .option('--instance-id <instance-id>', 'Vultr instance id to meter (default: VULTR_INSTANCE_ID).')
+  .option('--api-key <api-key>', 'Vultr API key (default: VULTR_API_KEY). Prefer the environment over this flag.')
+  .option(
+    '--threshold <ratio>',
+    'Fraction of the plan quota that triggers the egress block; "0.80" and "80" are both accepted (default: 0.80).',
+  )
+  .option('--metric <metric>', '"total" (incoming + outgoing, default) or "outgoing" for egress alone.')
+  .option('--month <yyyy-mm>', 'Billing month to sum (default: the current UTC month).')
+  .option('--all-dates', 'Sum every daily bucket the API returns instead of scoping to one month.')
+  .option('--host <ip>', 'Edge VPS to block (default: VULTR_VPS_IP, then DEFAULT_SSH_HOST).')
+  .option('--user <user>', 'SSH user on the edge VPS (default: VULTR_SSH_USER, then DEFAULT_SSH_USER, then "root").')
+  .option('--key-path <path>', 'SSH private key (default: VULTR_SSH_KEY_PATH, then DEFAULT_SSH_KEY_PATH).')
+  .option('--port <port>', 'SSH port on the edge VPS (default: VULTR_SSH_PORT, then DEFAULT_SSH_PORT, then 22).')
+  .option('--force', 'Re-apply the egress block even if it was already applied for this cycle.')
+  .option('--auto-unblock', 'Restore egress automatically once consumption falls back under the threshold.')
+  .option('--dry-run', 'Reports the consumption and the action it would take, without touching the edge VPS.')
+  .description('Meters the edge VPS bandwidth against its Vultr plan quota and blocks egress before overage accrues.')
+  .action(Underpost.vultr.callback);
+
 program
   .command('run')
   .argument('<runner-id>', `The runner ID to run. Options: ${Underpost.run.RUNNERS}.`)
@@ -769,7 +862,7 @@ program
   .option('--cmd-cron-jobs <cmd-cron-jobs>', 'Pre-script commands to run before cron job execution.')
   .option(
     '--deploy-id-cron-jobs <deploy-id-cron-jobs>',
-    'Specifies deployment IDs to synchronize cron jobs with during execution.',
+    'Cron deploy-id to set up during sync; defaults to dd.cron, "none" skips cron setup entirely.',
   )
   .option('--timezone <timezone>', 'Sets the timezone for the runner execution.')
   .option('--kubeadm', 'Sets the kubeadm cluster context for the runner execution.')

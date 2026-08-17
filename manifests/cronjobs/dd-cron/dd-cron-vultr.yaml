@@ -1,13 +1,13 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: dd-cron-backup
+  name: dd-cron-vultr
   namespace: default
   labels:
-    app: dd-cron-backup
+    app: dd-cron-vultr
     managed-by: underpost
 spec:
-  schedule: "0 1 * * *"
+  schedule: "*/30 * * * *"
   concurrencyPolicy: Forbid
   startingDeadlineSeconds: 200
   successfulJobsHistoryLimit: 3
@@ -16,19 +16,19 @@ spec:
   jobTemplate:
     metadata:
       labels:
-        app: dd-cron-backup
+        app: dd-cron-vultr
         managed-by: underpost
     spec:
       template:
         metadata:
           labels:
-            app: dd-cron-backup
+            app: dd-cron-vultr
             managed-by: underpost
         spec:
           nodeSelector:
             kubernetes.io/hostname: hp-envy-iso-ram-rocky9
           containers:
-            - name: dd-cron-backup
+            - name: dd-cron-vultr
               image: underpost/underpost-engine:v3.2.90
               command:
                 - /bin/sh
@@ -36,7 +36,7 @@ spec:
                 - >
                   cd /home/dd/engine &&
                   node bin env dd-cron production &&
-                  node bin cron dd-lampp,dd-cyberia,dd-core,dd-prototype,dd-test backup --git --kubeadm 
+                  node bin cron dd-cron vultr --git --kubeadm 
               volumeMounts:
                 - mountPath: /home/dd/engine
                   name: underpost-cron-container-volume
