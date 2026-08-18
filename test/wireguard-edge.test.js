@@ -1,6 +1,26 @@
 'use strict';
 
 import { expect } from 'chai';
+import http from 'node:http';
+import net from 'node:net';
+import {
+  FORWARD_PROXY,
+  fetchViaForwardProxy,
+  forwardProxyAuthorizedFactory,
+  forwardProxyCommandFactory,
+  forwardProxyConfigFactory,
+  forwardProxyConnectHandlerFactory,
+  forwardProxyHeadersFactory,
+  forwardProxyNodeCandidatesFactory,
+  forwardProxyNodeProbeCommandFactory,
+  forwardProxyRequestHandlerFactory,
+  forwardProxyServiceCommandsFactory,
+  forwardProxyStartProbeCommandFactory,
+  forwardProxyTargetFactory,
+  forwardProxyTunnelTargetFactory,
+  forwardProxyUnitFactory,
+} from '../src/server/forward-proxy.js';
+import { homeDirectoryPathFactory } from '../src/server/systemd.js';
 import {
   UNDERPOST_EDGE,
   allowedIpsConflictsFactory,
@@ -18,7 +38,10 @@ import {
   peerFactory,
   quicForwardCommandsFactory,
   redirectHostFactory,
+  tunnelAddressFactory,
+  tunnelNetworkCidrFactory,
   wireguardClientConfFactory,
+  wireguardClientSettingsFactory,
   wireguardServerConfFactory,
   wireguardStatusFactory,
 } from '../src/cli/wireguard.js';
@@ -493,6 +516,36 @@ describe('edge hub routing', () => {
     it('gives a bare spoke address a host prefix', () => {
       expect(client).to.include('Address = 10.0.0.2/32');
     });
+
+    it('masquerades pod traffic only when it enters the tunnel', () => {
+      expect(client).to.include(
+        'PostUp = iptables -t nat -C POSTROUTING -o %i -d 10.0.0.0/24 -j MASQUERADE',
+      );
+      expect(client).to.not.include('POSTROUTING -o %i -j MASQUERADE');
+    });
+
+    it('forwards tunnel requests and established replies for spoke workloads', () => {
+      expect(client).to.include('PostUp = iptables -C FORWARD -o %i -d 10.0.0.0/24 -j ACCEPT');
+      expect(client).to.include(
+        'PostUp = iptables -C FORWARD -i %i -s 10.0.0.0/24 -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT',
+      );
+    });
+
+    it('withdraws every spoke forwarding rule with the interface', () => {
+      expect(client).to.include(
+        'PostDown = iptables -t nat -D POSTROUTING -o %i -d 10.0.0.0/24 -j MASQUERADE 2>/dev/null || true',
+      );
+      expect(client).to.include('PostDown = iptables -D FORWARD -o %i -d 10.0.0.0/24 -j ACCEPT');
+    });
+
+    it('recovers repeatable client settings from an installed config without reading a private key', () => {
+      expect(wireguardClientSettingsFactory(client)).to.deep.equal({
+        address: '10.0.0.2/32',
+        hubPublicKey: 'HUB=',
+        endpoint: 'vps.example.com:51820',
+        cidr: '10.0.0.0/24',
+      });
+    });
   });
 
   describe('quicForwardCommandsFactory', () => {
@@ -663,6 +716,412 @@ describe('edge hub routing', () => {
       expect(state.interfaceName).to.equal(UNDERPOST_EDGE.interfaceName);
       expect(state.listenPort).to.equal(UNDERPOST_EDGE.listenPort);
       expect(state.peers).to.deep.equal([]);
+    });
+  });
+});
+
+// The forward proxy is the one outbound path across the tunnel: a spoke's
+// request leaves through the hub, so the origin sees the VPS address. Everything
+// below runs on loopback with no network egress.
+describe('edge hub forward proxy', () => {
+  const API_KEY = 'forward-proxy-test-key';
+
+  describe('forwardProxyAuthorizedFactory', () => {
+    it('accepts the configured key presented as a bearer token', () => {
+      expect(forwardProxyAuthorizedFactory({ header: `Bearer ${API_KEY}`, apiKey: API_KEY })).to.equal(true);
+      expect(forwardProxyAuthorizedFactory({ header: `bearer ${API_KEY}`, apiKey: API_KEY })).to.equal(true);
+    });
+
+    it('refuses a wrong key, a missing header and a bare key with no scheme', () => {
+      expect(forwardProxyAuthorizedFactory({ header: 'Bearer wrong-key', apiKey: API_KEY })).to.equal(false);
+      expect(forwardProxyAuthorizedFactory({ apiKey: API_KEY })).to.equal(false);
+      expect(forwardProxyAuthorizedFactory({ header: API_KEY, apiKey: API_KEY })).to.equal(false);
+      expect(forwardProxyAuthorizedFactory({ header: `Basic ${API_KEY}`, apiKey: API_KEY })).to.equal(false);
+    });
+
+    // A server that read an unset key as "no authentication required" would be
+    // an open relay on the tunnel, which is the one failure that must not be
+    // possible by omission.
+    it('authorizes nothing when no key is configured', () => {
+      expect(forwardProxyAuthorizedFactory({ header: 'Bearer anything' })).to.equal(false);
+      expect(forwardProxyAuthorizedFactory({ header: 'Bearer ', apiKey: '' })).to.equal(false);
+      expect(forwardProxyAuthorizedFactory()).to.equal(false);
+    });
+  });
+
+  describe('forwardProxyTargetFactory', () => {
+    it('reads the origin out of an absolute request URI, keeping the query', () => {
+      expect(forwardProxyTargetFactory('http://api.vultr.com/v2/plans?per_page=500')).to.deep.equal({
+        hostname: 'api.vultr.com',
+        port: 80,
+        path: '/v2/plans?per_page=500',
+        host: 'api.vultr.com',
+      });
+      expect(forwardProxyTargetFactory('http://origin.test:8080/x')).to.include({ port: 8080 });
+    });
+
+    // An https origin arrives as CONNECT. Serving one over the forward path
+    // would mean terminating TLS on the hub, which the whole subsystem avoids.
+    it('refuses a relative URI and any scheme other than http', () => {
+      expect(forwardProxyTargetFactory('/v2/plans')).to.equal(null);
+      expect(forwardProxyTargetFactory('https://api.vultr.com/v2/plans')).to.equal(null);
+      expect(forwardProxyTargetFactory('')).to.equal(null);
+      expect(forwardProxyTargetFactory('http://')).to.equal(null);
+    });
+  });
+
+  describe('forwardProxyTunnelTargetFactory', () => {
+    it('parses a CONNECT authority, defaulting to the https port', () => {
+      expect(forwardProxyTunnelTargetFactory('api.vultr.com:443')).to.deep.equal({
+        hostname: 'api.vultr.com',
+        port: 443,
+      });
+      expect(forwardProxyTunnelTargetFactory('api.vultr.com')).to.deep.equal({
+        hostname: 'api.vultr.com',
+        port: UNDERPOST_EDGE.httpsPort,
+      });
+    });
+
+    it('refuses an authority that is not a bare host and port', () => {
+      expect(forwardProxyTunnelTargetFactory('http://api.vultr.com/')).to.equal(null);
+      expect(forwardProxyTunnelTargetFactory('user@api.vultr.com:443')).to.equal(null);
+      expect(forwardProxyTunnelTargetFactory('api.vultr.com:0')).to.equal(null);
+      expect(forwardProxyTunnelTargetFactory('api.vultr.com:https')).to.equal(null);
+      expect(forwardProxyTunnelTargetFactory('')).to.equal(null);
+    });
+  });
+
+  describe('forwardProxyHeadersFactory', () => {
+    // Relaying the proxy key onward would hand the hub's credential to every
+    // origin a spoke talks to.
+    it('drops the hop-by-hop headers, the proxy credential included', () => {
+      const headers = forwardProxyHeadersFactory({
+        host: 'api.vultr.com',
+        authorization: 'Bearer vultr-key',
+        'proxy-authorization': `Bearer ${API_KEY}`,
+        'Proxy-Connection': 'keep-alive',
+        connection: 'close',
+        'transfer-encoding': 'chunked',
+        upgrade: 'h2c',
+      });
+      expect(headers).to.deep.equal({ host: 'api.vultr.com', authorization: 'Bearer vultr-key' });
+    });
+  });
+
+  describe('forwardProxyConfigFactory', () => {
+    const saved = { ...process.env };
+    afterEach(() => {
+      for (const key of Object.values(FORWARD_PROXY.env))
+        if (saved[key] === undefined) delete process.env[key];
+        else process.env[key] = saved[key];
+    });
+
+    // Asserted against the constants rather than against an unset environment:
+    // the factory also reads `./.env` and the underpost root env, which exist on
+    // a configured host and would make an "unset" expectation depend on the box
+    // the suite runs on.
+    it('falls back to the hub tunnel address and the subsystem port', () => {
+      expect(tunnelAddressFactory(UNDERPOST_EDGE.cidr)).to.equal('10.0.0.1');
+      expect(tunnelAddressFactory('10.0.0.1')).to.equal('10.0.0.1');
+      expect(FORWARD_PROXY.port).to.equal(1080);
+    });
+
+    it('reads the environment, and lets an explicit endpoint win over it', () => {
+      process.env[FORWARD_PROXY.env.host] = '10.0.0.9';
+      process.env[FORWARD_PROXY.env.port] = '3128';
+      process.env[FORWARD_PROXY.env.apiKey] = API_KEY;
+      expect(forwardProxyConfigFactory()).to.deep.equal({ host: '10.0.0.9', port: 3128, apiKey: API_KEY });
+      expect(forwardProxyConfigFactory({ host: '10.0.0.1', port: 1080, apiKey: 'other' })).to.deep.equal({
+        host: '10.0.0.1',
+        port: 1080,
+        apiKey: 'other',
+      });
+    });
+  });
+
+  describe('firewallCommandsFactory', () => {
+    // The listener binds the tunnel address alone, and the rule narrows the port
+    // to the tunnel CIDR on top of that — the port is reachable from nowhere else.
+    it('admits the proxy port from the tunnel only, on the hub only', () => {
+      const hub = firewallCommandsFactory({ role: 'server' }).join('\n');
+      expect(hub).to.include(
+        `--add-rich-rule="rule family=ipv4 source address=${UNDERPOST_EDGE.tunnelCidr} port port=${FORWARD_PROXY.port} protocol=tcp accept"`,
+      );
+      expect(hub).to.not.include(`--add-port=${FORWARD_PROXY.port}`);
+      expect(firewallCommandsFactory({ role: 'client' }).join('\n')).to.not.include('rich-rule');
+    });
+
+    it('admits a custom recorded tunnel subnet instead of the default', () => {
+      expect(firewallCommandsFactory({ role: 'server', tunnelCidr: '10.23.0.0/24' }).join('\n')).to.include(
+        `source address=10.23.0.0/24 port port=${FORWARD_PROXY.port} protocol=tcp accept`,
+      );
+      expect(tunnelNetworkCidrFactory('10.23.7.9/20')).to.equal('10.23.0.0/20');
+    });
+  });
+
+  describe('forwardProxyUnitFactory', () => {
+    const unit = () =>
+      forwardProxyUnitFactory({
+        host: '10.0.0.1',
+        port: 1080,
+        apiKey: API_KEY,
+        interfaceName: 'wg0',
+        workingDirectory: '/home/dd/engine',
+        user: 'dd',
+        command: forwardProxyCommandFactory({
+          host: '10.0.0.1',
+          port: 1080,
+          execPath: '/usr/bin/node',
+          scriptPath: '/home/dd/engine/bin/index.js',
+        }),
+      });
+
+    // The unit runs the same command the operator did, so there is one code path
+    // to the listener rather than a second one only systemd takes.
+    it('runs this CLI with the resolved host and port, marked as supervised', () => {
+      expect(unit()).to.include(
+        'ExecStart=/usr/bin/node /home/dd/engine/bin/index.js wireguard --forward-proxy-server ' +
+          '--forward-proxy-server-host 10.0.0.1 --forward-proxy-server-port 1080',
+      );
+      expect(unit()).to.include(`Environment=${FORWARD_PROXY.supervisedEnv}=1`);
+      expect(unit()).to.include(`Environment=${FORWARD_PROXY.env.apiKey}=${API_KEY}`);
+      expect(unit()).to.include('WorkingDirectory=/home/dd/engine');
+      expect(unit()).to.include('User=dd');
+    });
+
+    it('carries the host and port the flags resolved into the description and the command', () => {
+      const custom = forwardProxyUnitFactory({
+        host: '10.0.0.5',
+        port: 3128,
+        apiKey: API_KEY,
+        execPath: '/usr/bin/node',
+      });
+      expect(custom).to.include('Description=Underpost edge forward proxy on 10.0.0.5:3128');
+      expect(custom).to.include('--forward-proxy-server-host 10.0.0.5 --forward-proxy-server-port 3128');
+    });
+
+    // The address the proxy binds exists only while the interface is up, so the
+    // two units are one lifecycle: the tunnel's stop and restart propagate, and
+    // starting the tunnel brings the proxy back.
+    it('ties the service to the tunnel unit and always restarts', () => {
+      const rendered = forwardProxyUnitFactory({ host: '10.0.0.1', port: 1080, apiKey: API_KEY, interfaceName: 'wg1' });
+      expect(rendered).to.include('Requires=wg-quick@wg1.service');
+      expect(rendered).to.include('PartOf=wg-quick@wg1.service');
+      expect(rendered).to.include('WantedBy=multi-user.target wg-quick@wg1.service');
+      expect(rendered).to.include('Restart=always');
+      expect(rendered).to.include(`RestartSec=${FORWARD_PROXY.restartSeconds}`);
+      // No start-limit window, so a bind that fails while the tunnel comes up
+      // retries instead of latching failed.
+      expect(rendered).to.include('StartLimitIntervalSec=0');
+    });
+  });
+
+  describe('forwardProxyNodeCandidatesFactory', () => {
+    // The failure this ordering exists for: systemd cannot enter /root, so a unit
+    // pointed at an nvm install there restarts on 203/EXEC forever while every
+    // ordinary permission check on the binary passes.
+    it('prefers a system Node and keeps one under a home directory for last', () => {
+      expect(
+        forwardProxyNodeCandidatesFactory({ execPath: '/root/.nvm/versions/node/v24.15.0/bin/node' }),
+      ).to.deep.equal([...FORWARD_PROXY.nodePaths, '/root/.nvm/versions/node/v24.15.0/bin/node']);
+      expect(forwardProxyNodeCandidatesFactory({ execPath: '/home/dd/.nvm/x/bin/node' })).to.deep.equal([
+        ...FORWARD_PROXY.nodePaths,
+        '/home/dd/.nvm/x/bin/node',
+      ]);
+    });
+
+    it('puts the running interpreter first when it is not in a home directory, without duplicating it', () => {
+      expect(forwardProxyNodeCandidatesFactory({ execPath: '/opt/node/bin/node' })).to.deep.equal([
+        '/opt/node/bin/node',
+        ...FORWARD_PROXY.nodePaths,
+      ]);
+      expect(forwardProxyNodeCandidatesFactory({ execPath: '/usr/bin/node' })).to.deep.equal(
+        FORWARD_PROXY.nodePaths,
+      );
+    });
+
+    it('recognises a home directory path without mistaking a lookalike for one', () => {
+      expect(homeDirectoryPathFactory('/root/.nvm/x/node')).to.equal(true);
+      expect(homeDirectoryPathFactory('/root')).to.equal(true);
+      expect(homeDirectoryPathFactory('/home/dd/engine')).to.equal(true);
+      expect(homeDirectoryPathFactory('/usr/bin/node')).to.equal(false);
+      expect(homeDirectoryPathFactory('/rootfs/bin/node')).to.equal(false);
+      expect(homeDirectoryPathFactory('')).to.equal(false);
+    });
+  });
+
+  describe('forward proxy start probes', () => {
+    // `test -x` passes on a binary systemd still refuses, so the only reliable
+    // test is running it through systemd itself, as the unit's own user.
+    it('asks systemd whether it can execute the interpreter', () => {
+      expect(forwardProxyNodeProbeCommandFactory('/usr/bin/node', 'root')).to.equal(
+        'sudo systemd-run --quiet --collect --wait --uid=root --property=Type=oneshot /usr/bin/node --version',
+      );
+    });
+
+    it('asks the same of the whole entry point, from the working directory the service will use', () => {
+      expect(
+        forwardProxyStartProbeCommandFactory({
+          nodePath: '/usr/bin/node',
+          scriptPath: '/opt/underpost/engine/bin',
+          user: 'dd',
+          workingDirectory: '/opt/underpost/engine',
+        }),
+      ).to.equal(
+        'sudo systemd-run --quiet --collect --wait --uid=dd --property=Type=oneshot ' +
+          '--property=WorkingDirectory=/opt/underpost/engine /usr/bin/node /opt/underpost/engine/bin --version',
+      );
+    });
+  });
+
+  describe('forwardProxyServiceCommandsFactory', () => {
+    // Re-running the command must not restart a service that is carrying
+    // connections, and must not fail because one is already up.
+    it('starts an unchanged service without reloading or restarting it', () => {
+      const { ensure } = forwardProxyServiceCommandsFactory({ changed: false });
+      expect(ensure).to.deep.equal([
+        `sudo systemctl enable ${FORWARD_PROXY.serviceName} || true`,
+        `sudo systemctl start ${FORWARD_PROXY.serviceName} || true`,
+      ]);
+      expect(ensure.join('\n')).to.not.include('restart');
+      expect(ensure.join('\n')).to.not.include('daemon-reload');
+    });
+
+    it('reloads and restarts only when the unit file changed', () => {
+      expect(forwardProxyServiceCommandsFactory({ changed: true }).ensure).to.deep.equal([
+        'sudo systemctl daemon-reload',
+        `sudo systemctl enable ${FORWARD_PROXY.serviceName} || true`,
+        `sudo systemctl restart ${FORWARD_PROXY.serviceName} || true`,
+      ]);
+    });
+
+    it('withdraws the unit it installed, reloading after the removal', () => {
+      expect(forwardProxyServiceCommandsFactory().remove).to.deep.equal([
+        `sudo systemctl disable --now ${FORWARD_PROXY.serviceName} 2>/dev/null || true`,
+        `sudo rm -f ${FORWARD_PROXY.unitPath}`,
+        'sudo systemctl daemon-reload',
+      ]);
+    });
+  });
+
+  // Loopback only: an origin, the proxy handlers, and the client that drives
+  // them. No name resolution and no egress, so the path is deterministic.
+  describe('request and CONNECT relay', () => {
+    const listen = (server) => new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server)));
+    const port = (server) => server.address().port;
+    const servers = [];
+    let origin;
+    let proxy;
+    let proxyConfig;
+
+    before(async () => {
+      origin = await listen(
+        http.createServer((req, res) => {
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({ url: req.url, host: req.headers.host, relayed: req.headers['proxy-authorization'] }),
+          );
+        }),
+      );
+      proxy = await listen(http.createServer());
+      proxy.on('request', forwardProxyRequestHandlerFactory({ apiKey: API_KEY }));
+      proxy.on('connect', forwardProxyConnectHandlerFactory({ apiKey: API_KEY }));
+      servers.push(origin, proxy);
+      proxyConfig = { host: '127.0.0.1', port: port(proxy), apiKey: API_KEY };
+    });
+
+    after(() => {
+      for (const server of servers) server.close();
+    });
+
+    it('relays an http request and returns the origin answer', async () => {
+      const response = await fetchViaForwardProxy(
+        `http://127.0.0.1:${port(origin)}/v2/instances?per_page=500`,
+        { proxy: proxyConfig, headers: { authorization: 'Bearer vultr-key' } },
+      );
+      expect(response.status).to.equal(200);
+      const body = JSON.parse(response.body);
+      expect(body.url).to.equal('/v2/instances?per_page=500');
+      expect(body.host).to.equal(`127.0.0.1:${port(origin)}`);
+      expect(body.relayed).to.equal(undefined);
+    });
+
+    it('answers 407 to a request with the wrong key, without reaching the origin', async () => {
+      const response = await fetchViaForwardProxy(`http://127.0.0.1:${port(origin)}/v2/instances`, {
+        proxy: { ...proxyConfig, apiKey: 'wrong-key' },
+      });
+      expect(response.status).to.equal(407);
+      expect(response.headers['proxy-authenticate']).to.include('Bearer');
+    });
+
+    it('answers 502 when the origin cannot be reached', async () => {
+      const response = await fetchViaForwardProxy('http://127.0.0.1:1/dead', { proxy: proxyConfig });
+      expect(response.status).to.equal(502);
+    });
+
+    it('rejects an unsupported target scheme before opening any socket', async () => {
+      try {
+        await fetchViaForwardProxy('ftp://origin.test/file', { proxy: proxyConfig });
+        expect.fail('only http: and https: targets are proxyable');
+      } catch (error) {
+        expect(error.message).to.include('http: and https:');
+      }
+    });
+
+    // CONNECT carries opaque bytes — TLS in production. A byte-echo origin proves
+    // the splice without a certificate, and covers the `head` bytes a client
+    // sends before the tunnel is established.
+    it('splices a CONNECT tunnel, delivering the bytes sent with the request', async () => {
+      const echo = await listen(net.createServer((socket) => socket.pipe(socket)));
+      servers.push(echo);
+      const tunnelled = await new Promise((resolve, reject) => {
+        const request = http.request({
+          host: '127.0.0.1',
+          port: port(proxy),
+          method: 'CONNECT',
+          path: `127.0.0.1:${port(echo)}`,
+          headers: { 'proxy-authorization': `Bearer ${API_KEY}` },
+        });
+        request.on('connect', (res, socket) => {
+          if (res.statusCode !== 200) return void reject(new Error(`CONNECT refused (${res.statusCode})`));
+          let received = '';
+          socket.on('data', (chunk) => {
+            received += chunk;
+            if (received.length >= 6) {
+              socket.destroy();
+              resolve(received);
+            }
+          });
+          socket.write('tunnel');
+        });
+        request.on('error', reject);
+        request.end();
+      });
+      expect(tunnelled).to.equal('tunnel');
+    });
+
+    it('refuses a CONNECT with the wrong key', async () => {
+      const status = await new Promise((resolve, reject) => {
+        const request = http.request({
+          host: '127.0.0.1',
+          port: port(proxy),
+          method: 'CONNECT',
+          path: '127.0.0.1:443',
+          headers: { 'proxy-authorization': 'Bearer wrong-key' },
+        });
+        request.on('connect', (res, socket) => {
+          socket.destroy();
+          resolve(res.statusCode);
+        });
+        // A refused CONNECT never becomes a tunnel, so it arrives as a response.
+        request.on('response', (res) => {
+          res.resume();
+          resolve(res.statusCode);
+        });
+        request.on('error', reject);
+        request.end();
+      });
+      expect(status).to.equal(407);
     });
   });
 });

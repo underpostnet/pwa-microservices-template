@@ -46,6 +46,13 @@ const logger = loggerFactory(import.meta);
 const ENV_REF_PREFIX = 'env:';
 
 /**
+ * Default deploy ID used when no deploy ID is specified.
+ * @constant {string}
+ * @memberof ServerConfBuilder
+ */
+const DEFAULT_DEPLOY_ID = 'dd-default';
+
+/**
  * Resolves a standardized context key from host/path descriptors.
  * The key is used across DB, WS, mailer, and cache registries.
  *
@@ -167,63 +174,6 @@ const getConfFolder = (deployId) => {
 };
 
 /**
- * Reads `engine-private/deploy/dd.cron` and returns the deploy-id string,
- * or `null` if the file does not exist or is empty.
- *
- * @method cronDeployIdResolve
- * @returns {string|null} The deploy-id from dd.cron, or null.
- * @memberof ServerConfBuilder
- */
-const cronDeployIdResolve = () => {
-  const cronDeployFile = './engine-private/deploy/dd.cron';
-  if (fs.existsSync(cronDeployFile)) {
-    const id = fs.readFileSync(cronDeployFile, 'utf8').trim();
-    return id || null;
-  }
-  return null;
-};
-
-/**
- * Loads the deployment-specific `.env` file referenced by `engine-private/deploy/dd.cron`
- * into `process.env`. Uses `NODE_ENV` to select the environment variant
- * (defaults to `production`).
- *
- * Safe to call multiple times; subsequent calls are no-ops once the env is loaded.
- *
- * @method loadCronDeployEnv
- * @memberof ServerConfBuilder
- */
-function loadCronDeployEnv() {
-  const envName = process.env.NODE_ENV || 'production';
-
-  // 1) Load dd.cron env (takes full precedence)
-  const cronDeployId = cronDeployIdResolve();
-  if (cronDeployId) {
-    const cronEnvPath = `./engine-private/conf/${cronDeployId}/.env.${envName}`;
-    if (fs.existsSync(cronEnvPath)) {
-      const cronEnv = dotenv.parse(fs.readFileSync(cronEnvPath, 'utf8'));
-      process.env = { ...process.env, ...cronEnv };
-    }
-  }
-
-  // 2) Load dd.router envs — only keys not already present
-  const routerDeployFile = './engine-private/deploy/dd.router';
-  if (fs.existsSync(routerDeployFile)) {
-    const routerIds = fs.readFileSync(routerDeployFile, 'utf8').trim().split(',');
-    for (const deployId of routerIds) {
-      const id = deployId.trim();
-      if (!id) continue;
-      const envPath = `./engine-private/conf/${id}/.env.${envName}`;
-      if (!fs.existsSync(envPath)) continue;
-      const env = dotenv.parse(fs.readFileSync(envPath, 'utf8'));
-      for (const key of Object.keys(env)) {
-        if (!(key in process.env)) process.env[key] = env[key];
-      }
-    }
-  }
-}
-
-/**
  * Resolves the full path to a specific configuration JSON file for a deploy ID.
  * For `server` configs in development mode with a subConf, it will prefer the
  * dev-specific variant if it exists.
@@ -279,13 +229,6 @@ const readConfJson = (deployId, confType, options = {}) => {
   if (options.resolve) parsed = resolveConfSecrets(parsed);
   return parsed;
 };
-
-/**
- * Default deploy ID used when no deploy ID is specified.
- * @constant {string}
- * @memberof ServerConfBuilder
- */
-const DEFAULT_DEPLOY_ID = 'dd-default';
 
 /**
  * @class Config
@@ -1430,27 +1373,6 @@ const generateSecurePassword = (length = 16) => {
   }
   return chars.join('');
 };
-
-/**
- * @method getNpmRootPath
- * @description Gets the npm root path.
- * @returns {string} - The npm root path.
- * @memberof ServerConfBuilder
- */
-const getNpmRootPath = () =>
-  shellExec(`npm root -g`, {
-    stdout: true,
-    disableLog: true,
-    silent: true,
-  }).trim();
-
-/**
- * @method getUnderpostRootPath
- * @description Gets the underpost root path.
- * @returns {string} - The underpost root path.
- * @memberof ServerConfBuilder
- */
-const getUnderpostRootPath = () => `${getNpmRootPath()}/underpost`;
 
 /**
  * @method writeEnv
@@ -3028,7 +2950,9 @@ ${renderHosts}`,
  * Resolves the concrete deploy ids a build or conf-sync run should iterate over.
  *
  * The meta deploy id `dd` fans out to the comma separated ids declared in
- * `engine-private/deploy/dd.router`; any other value is parsed as a comma separated list.
+ * `engine-private/deploy/dd.router`; when that file is absent (e.g. the private
+ * repository is not checked out) it falls back to {@link ServerConfBuilder.DEFAULT_DEPLOY_ID}.
+ * Any other value is parsed as a comma separated list.
  * Entries are trimmed and empties dropped.
  *
  * @method resolveDeployList
@@ -3037,7 +2961,12 @@ ${renderHosts}`,
  * @memberof ServerConfBuilder
  */
 const resolveDeployList = (deployId) =>
-  (deployId === 'dd' ? fs.readFileSync('./engine-private/deploy/dd.router', 'utf8') : deployId)
+  (deployId === 'dd'
+    ? fs.existsSync('./engine-private/deploy/dd.router')
+      ? fs.readFileSync('./engine-private/deploy/dd.router', 'utf8')
+      : DEFAULT_DEPLOY_ID
+    : deployId
+  )
     .split(',')
     .map((id) => id.trim())
     .filter(Boolean);
@@ -3186,6 +3115,7 @@ const buildTemplate = async ({ srcPath = './', toPath = '../pwa-microservices-te
   }
   shellExec(`rm -rf ${toPath}/.github`);
   shellExec(`rm -rf ${toPath}/manifests/deployment/dd-*`);
+  shellExec(`rm -rf ${toPath}/deploy`);
 
   fs.mkdirSync(`${toPath}/.github/workflows`, { recursive: true });
   for (const restorePath of TEMPLATE_RESTORE_PATHS) {
@@ -3388,8 +3318,6 @@ export {
   splitFileFactory,
   generateSecurePassword,
   resolveReplicaCount,
-  getNpmRootPath,
-  getUnderpostRootPath,
   writeEnv,
   pathPortAssignmentFactory,
   deployRangePortFactory,
@@ -3410,8 +3338,6 @@ export {
   getConfFilePath,
   readConfJson,
   DEFAULT_DEPLOY_ID,
-  loadCronDeployEnv,
-  cronDeployIdResolve,
   clusterContextFactory,
   clusterTypeFactory,
   exposeTcpPortsFactory,

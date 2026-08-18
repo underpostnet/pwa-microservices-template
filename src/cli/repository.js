@@ -11,7 +11,6 @@ import { actionInitLog, loggerFactory } from '../server/logger.js';
 import path from 'path';
 import fs from 'fs-extra';
 import {
-  getNpmRootPath,
   Config,
   loadConf,
   readConfJson,
@@ -23,6 +22,7 @@ import {
   writeEnv,
   readConfInstances,
 } from '../server/conf.js';
+import { getNpmRootPath } from '../server/environment.js';
 import { buildClient, unzipClientBuild, mergeClientBuildZip } from '../client-builder/client-build.js';
 import { DefaultConf } from '../../conf.js';
 import Underpost from '../index.js';
@@ -906,6 +906,7 @@ class UnderpostRepository {
               split: options.split || '',
               fullBuild: options.liteBuild ? false : true,
               iconsBuild: options.iconsBuild || false,
+              ssrOnly: options.ssr || false,
             });
             for (const replicaDeployId of deployIdSingleReplicas) {
               if (!fs.existsSync(`./engine-private/replica/${replicaDeployId}`)) {
@@ -917,6 +918,7 @@ class UnderpostRepository {
                 split: options.split || '',
                 liteBuild: options.liteBuild || false,
                 iconsBuild: options.iconsBuild || false,
+                ssr: options.ssr || false,
               });
             }
 

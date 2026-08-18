@@ -1,56 +1,36 @@
-/**
- * Edge routing for distributed homelab sites: a WireGuard overlay and the public
- * gateway in front of it.
- *
- * Homelab clusters sit behind dynamic ISP addresses and CGNAT, so nothing on the
- * public internet can dial them. A cloud VPS with a static address holds the
- * hostname, and every spoke keeps an outbound UDP session open to it — the only
- * direction a CGNAT boundary lets a session start.
- *
- * Two layers, kept apart:
- *
- * - **WireGuard** is the L3 encrypted transport. It owns one interface, one peer
- *   table and the networks each spoke routes. It knows nothing about hostnames.
- * - **HAProxy** is the public edge gateway. It is the only layer that maps a
- *   hostname to a spoke.
- *
- * The gateway never terminates TLS. HAProxy reads the SNI out of the ClientHello
- * and forwards the still-encrypted stream over the tunnel, so certificates and
- * private keys stay inside the cluster that already owns them and the VPS holds
- * no key material for any hostname it serves. This is the same split
- * {@link module:src/server/underpost-ingress.js} makes inside a node, one hop
- * further out:
- *
- * - `TCP :80`  is routed by `Host` — plaintext carries a readable header, and
- *              ACME http-01 rides this path to the spoke's own ingress.
- * - `TCP :443` is passed through by SNI — no decryption, no ALPN re-negotiation.
- * - `UDP :443` is DNAT'd whole to the default spoke. A QUIC Initial carries its
- *              SNI inside an encrypted frame, so the port cannot be split per
- *              hostname; a client that tries QUIC against another spoke's
- *              hostname gets no answer and falls back to TCP.
- *
- * Routing is derived, never hand-written: `conf.server.json` and
- * `conf.instances.json` say which hostnames exist, and `conf.wireguard.json`
- * says which spoke each one lives behind, through three bindings resolved most
- * specific first — `hosts`, `instances`, `default`.
- *
- * Layout on the host:
- *   /etc/wireguard/<iface>.conf                 interface + peer table
- *   /etc/wireguard/<iface>.key                  private key, 0600, root-only
- *   /etc/wireguard/<iface>.pub                  public key
- *   /etc/haproxy/haproxy.cfg                    generated edge gateway
- *   /etc/haproxy/domain2backend.map             SNI  -> spoke backend
- *   /etc/haproxy/domain2backend-http.map        Host -> spoke backend
- *
- * @module src/cli/wireguard.js
- * @namespace UnderpostWireguard
- */
+/** WireGuard overlay and HAProxy edge routing lifecycle. */
 
 import fs from 'fs-extra';
+import os from 'node:os';
 import nodePath from 'node:path';
-import { getConfFilePath, loadConfInstances, loadConfServerJson, resolveDeployList } from '../server/conf.js';
+import {
+  getConfFilePath,
+  loadConfInstances,
+  loadConfServerJson,
+  resolveDeployList,
+} from '../server/conf.js';
+import {
+  FORWARD_PROXY,
+  forwardProxyCommandFactory,
+  forwardProxyConfigFactory,
+  forwardProxyNodeCandidatesFactory,
+  forwardProxyNodeProbeCommandFactory,
+  forwardProxyServerFactory,
+  forwardProxyServiceCommandsFactory,
+  forwardProxyStartProbeCommandFactory,
+  forwardProxyUnitFactory,
+} from '../server/forward-proxy.js';
 import { loggerFactory } from '../server/logger.js';
 import { shellExec } from '../server/process.js';
+import {
+  homeDirectoryPathFactory,
+  journalctlCommandFactory,
+  runSystemdCommands,
+  systemctlCommandFactory,
+  systemdAvailableCommandFactory,
+  systemdReloadIfActiveCommandFactory,
+  systemdStatusCommandsFactory,
+} from '../server/systemd.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -609,6 +589,52 @@ ${backends}${backends ? '\n\n' : ''}${defaults}
 const wireguardPrivateKeyDirective = (keyPath) => `PostUp = wg set %i private-key ${keyPath}`;
 
 /**
+ * @method wireguardClientForwardingDirectivesFactory
+ * @description Lets workloads behind a spoke reach tunnel services using the
+ * spoke's WireGuard address. The destination-scoped masquerade avoids exposing
+ * Kubernetes pod CIDRs to the hub or changing ordinary pod egress.
+ * @param {string} cidr - Tunnel CIDR reachable through the hub.
+ * @returns {string} Paired `wg-quick` lifecycle directives.
+ * @memberof UnderpostWireguard
+ */
+const wireguardClientForwardingDirectivesFactory = (cidr) => {
+  const outbound = `FORWARD -o %i -d ${cidr} -j ACCEPT`;
+  const inbound = `FORWARD -i %i -s ${cidr} -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT`;
+  const masquerade = `POSTROUTING -o %i -d ${cidr} -j MASQUERADE`;
+  return [
+    'PostUp = sysctl -q -w net.ipv4.ip_forward=1',
+    `PostUp = iptables -C ${outbound} 2>/dev/null || iptables -I ${outbound}`,
+    `PostUp = iptables -C ${inbound} 2>/dev/null || iptables -I ${inbound}`,
+    `PostUp = iptables -t nat -C ${masquerade} 2>/dev/null || iptables -t nat -I ${masquerade}`,
+    `PostDown = iptables -t nat -D ${masquerade} 2>/dev/null || true`,
+    `PostDown = iptables -D ${inbound} 2>/dev/null || true`,
+    `PostDown = iptables -D ${outbound} 2>/dev/null || true`,
+  ].join('\n');
+};
+
+/**
+ * @method wireguardClientSettingsFactory
+ * @description Reads the non-secret settings needed to reconcile an installed
+ * spoke when its shared registry has no machine-local client fields.
+ * @param {string} [conf] - Selected WireGuard configuration directives.
+ * @returns {{address: string, hubPublicKey: string, endpoint: string, cidr: string}}
+ * @memberof UnderpostWireguard
+ */
+const wireguardClientSettingsFactory = (conf = '') => {
+  const values = new Map();
+  for (const line of `${conf}`.split('\n')) {
+    const match = line.match(/^\s*(Address|PublicKey|Endpoint|AllowedIPs)\s*=\s*(.*?)\s*$/i);
+    if (match && !values.has(match[1].toLowerCase())) values.set(match[1].toLowerCase(), match[2]);
+  }
+  return {
+    address: `${values.get('address') || ''}`.split(',')[0].trim(),
+    hubPublicKey: `${values.get('publickey') || ''}`.trim(),
+    endpoint: `${values.get('endpoint') || ''}`.trim(),
+    cidr: `${values.get('allowedips') || ''}`.split(',')[0].trim(),
+  };
+};
+
+/**
  * @method wireguardServerConfFactory
  * @description Renders the hub interface and its spoke table.
  *
@@ -683,6 +709,7 @@ const wireguardClientConfFactory = ({
 [Interface]
 Address = ${`${address}`.includes('/') ? address : `${address}/32`}
 ${wireguardPrivateKeyDirective(keyPath)}
+${wireguardClientForwardingDirectivesFactory(cidr)}
 
 [Peer]
 PublicKey = ${publicKey}
@@ -763,6 +790,7 @@ const quicForwardCommandsFactory = ({
  * @param {string} role - `server` or `client`.
  * @param {string} [interfaceName] - Tunnel interface.
  * @param {number} [listenPort] - UDP listen port.
+ * @param {string} [tunnelCidr] - Tunnel source admitted to the forward proxy.
  * @param {boolean} [remove] - Withdraw the rules instead of adding them.
  * @returns {Array<string>} Shell commands, each a no-op when firewalld is absent.
  * @memberof UnderpostWireguard
@@ -771,6 +799,7 @@ const firewallCommandsFactory = ({
   role,
   interfaceName = UNDERPOST_EDGE.interfaceName,
   listenPort = UNDERPOST_EDGE.listenPort,
+  tunnelCidr = UNDERPOST_EDGE.tunnelCidr,
   remove = false,
 } = {}) => {
   const verb = remove ? 'remove' : 'add';
@@ -781,10 +810,16 @@ const firewallCommandsFactory = ({
           `--${verb}-port=${UNDERPOST_EDGE.httpsPort}/tcp`,
           `--${verb}-port=${UNDERPOST_EDGE.httpsPort}/udp`,
           `--${verb}-port=${listenPort}/udp`,
+          // The forward proxy is admitted from the tunnel only. The listener
+          // already binds the tunnel address alone, so this rule narrows a port
+          // that is unreachable from anywhere else rather than opening one.
+          `--${verb}-rich-rule="rule family=ipv4 source address=${tunnelCidr} port port=${FORWARD_PROXY.port} protocol=tcp accept"`,
           `--${verb}-masquerade`,
         ]
       : [`--zone=trusted --${verb}-interface=${interfaceName}`];
-  const guard = 'command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld';
+  const guard =
+    'command -v firewall-cmd >/dev/null 2>&1 && ' +
+    systemctlCommandFactory({ action: 'is-active --quiet', name: 'firewalld', sudo: false });
   return [
     ...rules.map((rule) => `sudo sh -c '${guard} && firewall-cmd --permanent ${rule} >/dev/null || true'`),
     `sudo sh -c '${guard} && firewall-cmd --reload >/dev/null || true'`,
@@ -932,6 +967,13 @@ const runHostCommands = (commands, dryRun = false) => {
   }
 };
 
+const runServiceCommands = (commands, dryRun = false) =>
+  runSystemdCommands(commands, {
+    dryRun,
+    execute: (command) => shellExec(command, { silent: true }),
+    onDryRun: (command) => logger.info(`[dry-run] ${command}`),
+  });
+
 /**
  * @method csvFactory
  * @description Splits a comma-separated CLI value, or reports that the flag was
@@ -1001,6 +1043,27 @@ const warnRegistryHazards = (peers = []) => {
       conflicts,
       fix: 'give each spoke a distinct tunnel address, and re-number or omit colliding LAN subnets',
     });
+};
+
+/** Return an interface address without its CIDR prefix. */
+const tunnelAddressFactory = (address) => `${address || ''}`.trim().split('/')[0];
+
+const tunnelNetworkCidrFactory = (address, fallback = UNDERPOST_EDGE.tunnelCidr) => {
+  const [host, prefixValue] = `${address || ''}`.trim().split('/');
+  const octets = host.split('.').map(Number);
+  const prefix = Number(prefixValue);
+  if (
+    octets.length !== 4 ||
+    octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255) ||
+    !Number.isInteger(prefix) ||
+    prefix < 0 ||
+    prefix > 32
+  )
+    return fallback;
+  const value = octets.reduce((result, octet) => ((result << 8) | octet) >>> 0, 0);
+  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+  const network = (value & mask) >>> 0;
+  return `${[network >>> 24, (network >>> 16) & 255, (network >>> 8) & 255, network & 255].join('.')}/${prefix}`;
 };
 
 /**
@@ -1105,9 +1168,24 @@ class UnderpostWireguard {
       const interfaceName = `${options.interface || state.interfaceName}`.trim();
       if (options.server === true && options.client === true)
         throw new Error('[wireguard] --server and --client are mutually exclusive');
+      const installedClient = buildConf || options.server === true
+        ? wireguardClientSettingsFactory()
+        : wireguardClientSettingsFactory(
+            shellExec(
+              `sudo sed -n -E '/^[[:space:]]*(Address|PublicKey|Endpoint|AllowedIPs)[[:space:]]*=/p' ${UNDERPOST_EDGE.wireguardDir}/${interfaceName}.conf`,
+              { stdout: true, silent: true, silentOnError: true },
+            ).trim(),
+          );
       // A re-run on a configured host inherits its recorded role, so repeating
       // the setup does not require repeating every flag that established it.
-      const role = options.server === true ? 'server' : options.client === true ? 'client' : state.role;
+      const role =
+        options.server === true
+          ? 'server'
+          : options.client === true
+            ? 'client'
+            : installedClient.endpoint
+              ? 'client'
+              : state.role;
       if (!role) throw new Error('[wireguard] --wireguard-setup requires --server or --client');
       const listenPort = Number(options.port) > 0 ? Number(options.port) : state.listenPort;
       // Authoring the registry must work on a machine that is not the edge — a
@@ -1131,9 +1209,10 @@ class UnderpostWireguard {
         });
         next = { ...state, interfaceName, role, listenPort, address, publicKey };
       } else {
-        const address = `${options.peerIp || state.address || ''}`.trim();
-        const endpoint = `${options.endpoint || state.endpoint || ''}`.trim();
-        const hubPublicKey = `${options.publicKey || state.hubPublicKey || ''}`.trim();
+        const address = `${options.peerIp || installedClient.address || state.address || ''}`.trim();
+        const endpoint = `${options.endpoint || installedClient.endpoint || state.endpoint || ''}`.trim();
+        const hubPublicKey = `${options.publicKey || installedClient.hubPublicKey || state.hubPublicKey || ''}`.trim();
+        const cidr = `${options.cidr || installedClient.cidr || UNDERPOST_EDGE.tunnelCidr}`.trim();
         if (!address) throw new Error('[wireguard] --client requires --peer-ip');
         if (!endpoint) throw new Error('[wireguard] --client requires --endpoint (e.g. vps.example.com:51820)');
         if (!hubPublicKey) throw new Error('[wireguard] --client requires --public-key (the hub public key)');
@@ -1142,7 +1221,7 @@ class UnderpostWireguard {
           keyPath: privateKeyPath,
           publicKey: hubPublicKey,
           endpoint,
-          cidr: options.cidr || UNDERPOST_EDGE.tunnelCidr,
+          cidr,
           keepalive: UNDERPOST_EDGE.keepalive,
         });
         next = { ...state, interfaceName, role, listenPort, address, endpoint, hubPublicKey, publicKey };
@@ -1158,10 +1237,14 @@ class UnderpostWireguard {
         });
         runHostCommands(
           [
-            ...(role === 'server'
-              ? [`sudo sh -c 'echo net.ipv4.ip_forward=1 > ${UNDERPOST_EDGE.sysctlPath}'`, `sudo sysctl -q --system`]
-              : []),
-            ...firewallCommandsFactory({ role, interfaceName, listenPort }),
+            `sudo sh -c 'echo net.ipv4.ip_forward=1 > ${UNDERPOST_EDGE.sysctlPath}'`,
+            `sudo sysctl -q --system`,
+            ...firewallCommandsFactory({
+              role,
+              interfaceName,
+              listenPort,
+              tunnelCidr: tunnelNetworkCidrFactory(next.address),
+            }),
           ],
           options.dryRun,
         );
@@ -1173,7 +1256,10 @@ class UnderpostWireguard {
       const restartRequired =
         confChanged &&
         !options.dryRun &&
-        shellExec(`systemctl is-active --quiet wg-quick@${interfaceName}`, { silent: true, silentOnError: true })
+        shellExec(
+          systemctlCommandFactory({ action: 'is-active --quiet', name: `wg-quick@${interfaceName}`, sudo: false }),
+          { silent: true, silentOnError: true },
+        )
           .code === 0;
       logger.info(buildConf ? 'Registry updated; host untouched' : 'WireGuard interface configured', {
         interfaceName,
@@ -1398,8 +1484,9 @@ class UnderpostWireguard {
         publicKey: state.publicKey,
         ...(probeHost
           ? {
-              wireguard: read(`systemctl is-active wg-quick@${interfaceName}`),
-              haproxy: read('systemctl is-active haproxy'),
+              wireguard: read(systemdStatusCommandsFactory(`wg-quick@${interfaceName}`).active),
+              haproxy: read(systemdStatusCommandsFactory('haproxy').active),
+              forwardProxy: read(systemdStatusCommandsFactory(FORWARD_PROXY.serviceName).active),
               quicTarget: defaultPeerFactory(state.peers)?.address || '',
             }
           : {}),
@@ -1508,10 +1595,7 @@ class UnderpostWireguard {
       // Reload only a daemon that is already up: on a first bring-up the config
       // is written before `--haproxy-setup` enables the service, and reloading a
       // stopped unit is a failure rather than a no-op.
-      if (changed)
-        shellExec(`sudo sh -c 'systemctl is-active --quiet haproxy && systemctl reload haproxy || true'`, {
-          silent: true,
-        });
+      if (changed) shellExec(systemdReloadIfActiveCommandFactory('haproxy'), { silent: true });
 
       const quicTarget = defaultPeer?.address || '';
       runHostCommands(
@@ -1540,8 +1624,223 @@ class UnderpostWireguard {
     haproxySetup(options = {}) {
       UnderpostWireguard.API.install(options);
       UnderpostWireguard.API.haproxySync(options);
-      runHostCommands(['sudo systemctl enable --now haproxy'], options.dryRun);
+      runServiceCommands(
+        [systemctlCommandFactory({ action: 'enable --now', name: 'haproxy' })],
+        options.dryRun,
+      );
       logger.info('HAProxy edge gateway enabled');
+    },
+
+    /**
+     * @method forwardProxyConfig
+     * @description Resolves and validates the hub proxy endpoint.
+     * @param {object} [options] - CLI options.
+     * @returns {{host: string, port: number, apiKey: string, address: string, interfaceName: string, listenPort: number, tunnelCidr: string}} Resolved endpoint; `apiKey` must never be logged.
+     * @throws {Error} When run on a spoke, or with no key configured.
+     * @memberof UnderpostWireguard
+     */
+    forwardProxyConfig(options = {}) {
+      const state = readEdgeState();
+      if (state.role !== 'server')
+        throw new Error(
+          state.role === 'client'
+            ? '[wireguard] --forward-proxy-server runs on the hub: a spoke would relay through its own ISP address'
+            : '[wireguard] --forward-proxy-server requires a configured hub; run --wireguard-setup --server first',
+        );
+      const config = forwardProxyConfigFactory({
+        host: `${options.forwardProxyServerHost || ''}`.trim() || tunnelAddressFactory(state.address),
+        port: options.forwardProxyServerPort,
+      });
+      if (!config.apiKey)
+        throw new Error(
+          `[wireguard] ${FORWARD_PROXY.env.apiKey} is not set; every proxied request is authenticated with it. ` +
+            `Export it, put it in the deploy env selected by \`underpost env <deploy-id> <environment>\` (./.env), ` +
+            `or set it with \`underpost env set ${FORWARD_PROXY.env.apiKey} <key>\``,
+        );
+      if (['0.0.0.0', '::', '*'].includes(config.host))
+        logger.warn('Forward proxy is bound to a wildcard address, not the tunnel', {
+          host: config.host,
+          consequence: 'the proxy is reachable from every interface; only the API key refuses a request',
+          instead: `--forward-proxy-server-host ${tunnelAddressFactory(state.address) || tunnelAddressFactory(UNDERPOST_EDGE.cidr)}`,
+        });
+      return {
+        ...config,
+        address: `${config.host}:${config.port}`,
+        interfaceName: state.interfaceName,
+        listenPort: state.listenPort,
+        tunnelCidr: tunnelNetworkCidrFactory(state.address),
+      };
+    },
+
+    /**
+     * @method forwardProxyNodePath
+     * @description Selects a compatible Node binary that systemd can execute.
+     * @returns {{path: string, probed: boolean, rejected: Array<object>}} The chosen binary, and why each earlier candidate was passed over.
+     * @memberof UnderpostWireguard
+     */
+    forwardProxyNodePath() {
+      const read = (command) => shellExec(command, { stdout: true, silent: true, silentOnError: true }).trim();
+      const ok = (command) => shellExec(command, { silent: true, silentOnError: true }).code === 0;
+      const requiredMajor = Number(`${process.versions.node}`.split('.')[0]) || 0;
+      const probed = read(systemdAvailableCommandFactory()) !== '';
+      const user = os.userInfo().username;
+      const rejected = [];
+      for (const candidate of forwardProxyNodeCandidatesFactory()) {
+        if (!ok(`sudo test -x ${candidate}`)) {
+          rejected.push({ candidate, reason: 'not present' });
+          continue;
+        }
+        const major = Number(read(`sudo ${candidate} --version`).replace(/^v/, '').split('.')[0]) || 0;
+        if (major < requiredMajor) {
+          rejected.push({ candidate, reason: `runs Node v${major || '?'}, the engine needs v${requiredMajor}` });
+          continue;
+        }
+        if (probed && !ok(forwardProxyNodeProbeCommandFactory(candidate, user))) {
+          rejected.push({
+            candidate,
+            reason: homeDirectoryPathFactory(candidate)
+              ? 'systemd cannot execute it: it is under a home directory, whose SELinux label a unit cannot enter'
+              : 'systemd cannot execute it',
+          });
+          continue;
+        }
+        return { path: candidate, probed, rejected };
+      }
+      return { path: '', probed, rejected };
+    },
+
+    /**
+     * @method forwardProxyServer
+     * @description Reconciles the supervised proxy service.
+     * @param {object} [options] - CLI options.
+     * @returns {?object} What was reconciled, or null under `--dry-run`.
+     * @throws {Error} When run on a spoke, or with no key configured.
+     * @memberof UnderpostWireguard
+     */
+    forwardProxyServer(options = {}) {
+      if (`${process.env[FORWARD_PROXY.supervisedEnv] || ''}`.trim())
+        return UnderpostWireguard.API.forwardProxyListen(options);
+
+      const read = (command) => shellExec(command, { stdout: true, silent: true, silentOnError: true }).trim();
+      const ok = (command) => shellExec(command, { silent: true, silentOnError: true }).code === 0;
+      const withdrawBrokenUnit = () => {
+        if (fs.existsSync(FORWARD_PROXY.unitPath))
+          runServiceCommands(forwardProxyServiceCommandsFactory().remove, false);
+      };
+      const config = UnderpostWireguard.API.forwardProxyConfig(options);
+      const node = options.dryRun
+        ? { path: process.execPath, probed: false, rejected: [] }
+        : UnderpostWireguard.API.forwardProxyNodePath();
+      if (!node.path) {
+        logger.error('No Node binary the forward proxy service can execute', {
+          requires: `Node v${`${process.versions.node}`.split('.')[0]}`,
+          rejected: node.rejected,
+          fix: 'install Node system-wide, then re-run: curl -fsSL https://rpm.nodesource.com/setup_24.x | sudo bash - && sudo dnf install -y nodejs',
+        });
+        withdrawBrokenUnit();
+        throw new Error(
+          '[wireguard] No Node binary the forward proxy service can execute; install Node system-wide (a binary under /root or /home cannot be run by a unit) and re-run',
+        );
+      }
+      if (node.probed === false && homeDirectoryPathFactory(node.path))
+        logger.warn('Forward proxy unit points at a Node binary under a home directory', {
+          node: node.path,
+          risk: 'systemd refuses those on an SELinux host and the service restarts on 203/EXEC',
+          fix: 'install Node system-wide, or check `journalctl -u underpost-forward-proxy` after this run',
+        });
+      if (node.probed && !ok(forwardProxyStartProbeCommandFactory({ nodePath: node.path }))) {
+        logger.error('The forward proxy service cannot start this checkout', {
+          node: node.path,
+          cli: process.argv[1],
+          workingDirectory: process.cwd(),
+          likely: homeDirectoryPathFactory(process.cwd())
+            ? 'the checkout is under a home directory, which a unit cannot read on an SELinux host'
+            : 'the service cannot read the checkout; see the journal for the failing command',
+          check: `sudo ${forwardProxyStartProbeCommandFactory({ nodePath: node.path }).replace(/^sudo /, '')}`,
+        });
+        withdrawBrokenUnit();
+        throw new Error(
+          `[wireguard] A systemd unit cannot start ${process.argv[1]} from ${process.cwd()}; move the checkout out of a home directory (e.g. /opt/underpost/engine) and re-run`,
+        );
+      }
+      runHostCommands(
+        firewallCommandsFactory({
+          role: 'server',
+          interfaceName: config.interfaceName,
+          listenPort: config.listenPort,
+          tunnelCidr: config.tunnelCidr,
+        }),
+        options.dryRun,
+      );
+      const unit = forwardProxyUnitFactory({
+        host: config.host,
+        port: config.port,
+        apiKey: config.apiKey,
+        interfaceName: config.interfaceName,
+        command: forwardProxyCommandFactory({ host: config.host, port: config.port, execPath: node.path }),
+      });
+      const changed = writeRootFile({
+        target: FORWARD_PROXY.unitPath,
+        content: unit,
+        mode: '0600',
+        dryRun: options.dryRun,
+      });
+      runServiceCommands(forwardProxyServiceCommandsFactory({ changed }).ensure, options.dryRun);
+      if (options.dryRun) {
+        logger.info('[dry-run] would reconcile the forward proxy service', {
+          service: FORWARD_PROXY.serviceName,
+          address: config.address,
+        });
+        return null;
+      }
+      const statusCommands = systemdStatusCommandsFactory(FORWARD_PROXY.serviceName);
+      const state = read(statusCommands.active);
+      const enabled = read(statusCommands.enabled);
+      logger.info('Forward proxy service reconciled', {
+        service: FORWARD_PROXY.serviceName,
+        address: config.address,
+        tunnel: config.tunnelCidr,
+        node: node.path,
+        unitChanged: changed,
+        state,
+        enabled,
+        logs: journalctlCommandFactory({ name: FORWARD_PROXY.serviceName, follow: true }),
+      });
+      const running = state === 'active' || state === 'activating';
+      if (!running) {
+        logger.error('Forward proxy service did not come up', {
+          state: state || '(unknown)',
+          likely: `${config.host} does not exist yet, so the listener cannot bind — bring the tunnel up with --wireguard-start`,
+          check: journalctlCommandFactory({ name: FORWARD_PROXY.serviceName, lines: 20 }),
+        });
+        process.exitCode = 1;
+      }
+      return { service: FORWARD_PROXY.serviceName, address: config.address, changed, state, enabled };
+    },
+
+    /**
+     * @method forwardProxyListen
+     * @description Starts the authenticated listener on the resolved hub address.
+     * @param {object} [options] - CLI options.
+     * @returns {object} The listening server.
+     * @throws {Error} When run on a spoke, or with no key configured.
+     * @memberof UnderpostWireguard
+     */
+    forwardProxyListen(options = {}) {
+      const config = UnderpostWireguard.API.forwardProxyConfig(options);
+      let server;
+      server = forwardProxyServerFactory({
+        config,
+        onError(error) {
+          logger.error('Forward proxy listener failed', { address: config.address, message: error.message });
+          process.exitCode = 1;
+          server.close(() => {});
+        },
+        onListen() {
+          logger.info('Forward proxy listening', { address: config.address, tunnel: UNDERPOST_EDGE.tunnelCidr });
+        },
+      });
+      return server;
     },
 
     /**
@@ -1554,7 +1853,10 @@ class UnderpostWireguard {
     start(options = {}) {
       const state = readEdgeState();
       const interfaceName = `${options.interface || state.interfaceName}`.trim();
-      runHostCommands([`sudo systemctl enable --now wg-quick@${interfaceName}`], options.dryRun);
+      runServiceCommands(
+        [systemctlCommandFactory({ action: 'enable --now', name: `wg-quick@${interfaceName}` })],
+        options.dryRun,
+      );
       if (state.role === 'server')
         runHostCommands(
           quicForwardCommandsFactory({ interfaceName, target: defaultPeerFactory(state.peers)?.address || '' }).ensure,
@@ -1576,7 +1878,12 @@ class UnderpostWireguard {
       const interfaceName = `${options.interface || state.interfaceName}`.trim();
       runHostCommands(
         [
-          `sudo systemctl disable --now wg-quick@${interfaceName} 2>/dev/null || true`,
+          systemctlCommandFactory({
+            action: 'disable --now',
+            name: `wg-quick@${interfaceName}`,
+            stderr: true,
+            allowFailure: true,
+          }),
           `sudo sh -c 'wg-quick down ${interfaceName} 2>/dev/null || true'`,
           ...quicForwardCommandsFactory({ interfaceName }).remove,
         ],
@@ -1592,10 +1899,10 @@ class UnderpostWireguard {
      *
      * Everything this subsystem writes outside the repo is removed — interface
      * config, sysctl drop-in, both HAProxy map files *and* the generated
-     * `haproxy.cfg`, the NAT chains, and the firewalld rules opened for the
-     * recorded role. Leaving `haproxy.cfg` behind while deleting the maps it
-     * reads is worse than leaving both: the daemon then fails to start on a
-     * config that references files that no longer exist.
+     * `haproxy.cfg`, the forward proxy unit, the NAT chains, and the firewalld
+     * rules opened for the recorded role. Leaving `haproxy.cfg` behind while
+     * deleting the maps it reads is worse than leaving both: the daemon then
+     * fails to start on a config that references files that no longer exist.
      *
      * The key pair and the registry are deliberately kept: destroying the key
      * invalidates every spoke's peer entry, and the registry is authored source
@@ -1614,15 +1921,22 @@ class UnderpostWireguard {
         [
           `sudo rm -f ${UNDERPOST_EDGE.wireguardDir}/${interfaceName}.conf`,
           `sudo rm -f ${UNDERPOST_EDGE.sysctlPath}`,
-          `sudo systemctl disable --now haproxy 2>/dev/null || true`,
+          systemctlCommandFactory({
+            action: 'disable --now',
+            name: 'haproxy',
+            stderr: true,
+            allowFailure: true,
+          }),
           `sudo rm -f ${UNDERPOST_EDGE.haproxyDir}/${UNDERPOST_EDGE.sniMapName}`,
           `sudo rm -f ${UNDERPOST_EDGE.haproxyDir}/${UNDERPOST_EDGE.httpMapName}`,
           `sudo rm -f ${UNDERPOST_EDGE.haproxyDir}/${UNDERPOST_EDGE.haproxyConfName}`,
+          ...forwardProxyServiceCommandsFactory().remove,
           ...(state.role
             ? firewallCommandsFactory({
                 role: state.role,
                 interfaceName,
                 listenPort: state.listenPort,
+                tunnelCidr: tunnelNetworkCidrFactory(state.address),
                 remove: true,
               })
             : []),
@@ -1718,6 +2032,10 @@ class UnderpostWireguard {
       else if (options.haproxySync === true) UnderpostWireguard.API.haproxySync(options);
       if (options.wireguardStop === true) UnderpostWireguard.API.stop(options);
       if (options.wireguardStart === true) UnderpostWireguard.API.start(options);
+      // After the tunnel, because the service requires it and its address only
+      // exists once the interface is up; before `--status`, so a run that
+      // reconciles the service also reports it.
+      if (options.forwardProxyServer === true) UnderpostWireguard.API.forwardProxyServer(options);
       if (options.status === true) UnderpostWireguard.API.status(options);
     },
   };
@@ -1742,7 +2060,10 @@ export {
   quicForwardCommandsFactory,
   readEdgeState,
   redirectHostFactory,
+  tunnelAddressFactory,
+  tunnelNetworkCidrFactory,
   wireguardClientConfFactory,
+  wireguardClientSettingsFactory,
   wireguardServerConfFactory,
   wireguardStatusFactory,
   writeEdgeState,

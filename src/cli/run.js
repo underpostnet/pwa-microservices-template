@@ -4,13 +4,12 @@
  * @namespace UnderpostRun
  */
 
-import { daemonProcess, getTerminalPid, pbcopy, shellCd, shellExec } from '../server/process.js';
+import { daemonProcess, pbcopy, shellCd, shellExec } from '../server/process.js';
 import {
   awaitDeployMonitor,
   buildKindPorts,
   clusterContextFactory,
   clusterTypeFactory,
-  cronDeployIdResolve,
   dispatchBuildInstanceEnv,
   deployHostsFactory,
   etcHostFactory,
@@ -21,7 +20,6 @@ import {
   exposeTcpPortsFactory,
   gatewayApiEnabledFactory,
   generateSecurePassword,
-  getNpmRootPath,
   instanceHttpRouteRulesFactory,
   instanceInterceptStatusesFactory,
   instancePortFactory,
@@ -49,6 +47,8 @@ import {
   stopPlanFactory,
   trafficFromRoutingInfoFactory,
 } from '../server/conf.js';
+import { cronDeployIdResolve } from '../server/cron.js';
+import { getNpmRootPath } from '../server/environment.js';
 import { actionInitLog, loggerFactory } from '../server/logger.js';
 
 import fs from 'fs-extra';
@@ -1228,7 +1228,7 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
       // runner. Build the host-side SSR documents before generating routes unless
       // the caller explicitly selected a pre-built bundle workflow.
       if (isDeployRunnerContext(path, options) && !options.skipFullBuild)
-        shellExec(`${baseCommand} client ${deployId} ${env}`);
+        shellExec(`${baseCommand} client ${deployId} ${env} --ssr`);
 
       shellExec(
         `${baseCommand} deploy${clusterFlag} --build-manifest --sync --info-router --replicas ${replicas} --node ${node}${
