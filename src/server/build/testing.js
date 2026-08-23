@@ -26,6 +26,9 @@
 const UNDERPOST_TESTING = {
   coverageDirectory: 'coverage',
   lcovPath: 'coverage/lcov.info',
+  // Minimum total line coverage a gated run must reach — the same metric Coveralls
+  // reports, so a green build and a green badge mean the same thing.
+  coverageThreshold: 80,
   // Read by vitest.config.js to decide whether the Allure reporter is attached.
   // Absent means a plain local run, so no result files are written at all.
   allureResultsEnvKey: 'UNDERPOST_ALLURE_RESULTS',
@@ -260,6 +263,30 @@ const vitestArgsFactory = ({ projects = [], grep = '', watch = false, coverage =
 ];
 
 /**
+ * @method coverageThresholdFactory
+ * @description Resolves the minimum total line coverage a run must reach, or `null`
+ * when the run reports without gating.
+ *
+ * Gating is opt-in because a tier selection measures a slice of the tree: holding
+ * every partial local run to the whole-suite number would fail runs that never
+ * loaded the code being counted. `npm run test:coverage` and CI opt in; `COVERAGE_MIN`
+ * lowers the bar for a repository whose suite is still catching up to it.
+ * @param {object} [env] - Environment to read `COVERAGE_ENFORCE` and `COVERAGE_MIN` from.
+ * @returns {number|null} Threshold percentage, or `null` to report without gating.
+ * @throws {Error} When `COVERAGE_MIN` is not a percentage.
+ * @memberof UnderpostTesting
+ */
+const coverageThresholdFactory = ({ COVERAGE_ENFORCE, COVERAGE_MIN } = {}) => {
+  if (COVERAGE_MIN !== undefined && COVERAGE_MIN !== '') {
+    const threshold = Number(COVERAGE_MIN);
+    if (!Number.isFinite(threshold) || threshold < 0 || threshold > 100)
+      throw new Error(`[test] COVERAGE_MIN must be a percentage between 0 and 100, got '${COVERAGE_MIN}'`);
+    return threshold;
+  }
+  return COVERAGE_ENFORCE === '1' || COVERAGE_ENFORCE === 'true' ? UNDERPOST_TESTING.coverageThreshold : null;
+};
+
+/**
  * @method allureManifestsFactory
  * @description Renders the Allure dashboard: a claim for the results the runs
  * write, the report server, and the ways in.
@@ -423,6 +450,7 @@ export {
   UNDERPOST_TESTING,
   TEST_TIERS,
   allureManifestsFactory,
+  coverageThresholdFactory,
   resolveTestSelection,
   resolveTestTiers,
   testJobManifestFactory,

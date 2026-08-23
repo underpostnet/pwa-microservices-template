@@ -1,7 +1,14 @@
 'use strict';
 
 import { expect } from 'chai';
-import { TEST_TIERS, resolveTestSelection, testProjectsFactory, testSuiteNames } from '../../src/server/build/testing.js';
+import {
+  TEST_TIERS,
+  UNDERPOST_TESTING,
+  coverageThresholdFactory,
+  resolveTestSelection,
+  testProjectsFactory,
+  testSuiteNames,
+} from '../../src/server/build/testing.js';
 
 // The table declares every tier the platform ships. A product build slices the
 // tree, so whether a tier's directory is present here is a catalog question,
@@ -88,5 +95,34 @@ describe('delegated tier commands', () => {
 
   it('passes a name filter through to its runner', () => {
     for (const { name, delegate } of delegated) expect(delegate({ grep: 'Burning' }), name).to.include('Burning');
+  });
+});
+
+describe('coverage threshold', () => {
+  it('reports without gating until a run opts in', () => {
+    // A tier selection measures a slice of the tree, so the whole-suite number is
+    // not the bar it should be held to.
+    expect(coverageThresholdFactory({})).to.equal(null);
+    expect(coverageThresholdFactory({ COVERAGE_ENFORCE: '0' })).to.equal(null);
+  });
+
+  it('gates an opted-in run on the shipped threshold', () => {
+    for (const COVERAGE_ENFORCE of ['1', 'true'])
+      expect(coverageThresholdFactory({ COVERAGE_ENFORCE }), COVERAGE_ENFORCE).to.equal(
+        UNDERPOST_TESTING.coverageThreshold,
+      );
+  });
+
+  it('lets a repository ratchet its own bar', () => {
+    expect(coverageThresholdFactory({ COVERAGE_MIN: '25' })).to.equal(25);
+    // An unset repository variable arrives as an empty string, not as absent.
+    expect(coverageThresholdFactory({ COVERAGE_ENFORCE: '1', COVERAGE_MIN: '' })).to.equal(
+      UNDERPOST_TESTING.coverageThreshold,
+    );
+  });
+
+  it('refuses a bar that is not a percentage', () => {
+    for (const COVERAGE_MIN of ['eighty', '-1', '101'])
+      expect(() => coverageThresholdFactory({ COVERAGE_MIN }), COVERAGE_MIN).to.throw('COVERAGE_MIN');
   });
 });

@@ -8,6 +8,7 @@
         "start": "node --max-old-space-size=8192 src/server",
         "build": "node bin client",
         "test": "node bin test",
+        "test:coverage": "COVERAGE_ENFORCE=1 node bin test unit,infra,app,cyberia",
         "dev": "NODE_ENV=development nodemon src/server",
         "dev:container": "NODE_ENV=development node src/server",
         "prod:container": "NODE_ENV=production node src/server",

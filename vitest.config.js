@@ -1,7 +1,8 @@
 import { defineConfig } from 'vitest/config';
-import { UNDERPOST_TESTING, testProjectsFactory } from './src/server/build/testing.js';
+import { UNDERPOST_TESTING, coverageThresholdFactory, testProjectsFactory } from './src/server/build/testing.js';
 
 const allureResultsDirectory = process.env[UNDERPOST_TESTING.allureResultsEnvKey];
+const coverageThreshold = coverageThresholdFactory(process.env);
 
 // Spread into every tier: a Vitest project inherits nothing from the root
 // `test` block, and only `coverage` and `reporters` are read from it.
@@ -34,7 +35,20 @@ export default defineConfig({
       // instrumenting them would report a coverage floor no test can move.
       // Keep `test` segment-bound: a checkout named `engine-test-test` must not
       // make the pattern match the repository directory and exclude all source.
-      exclude: ['src/client/public/**', 'src/client/sw/**', '**/test/**'],
+      exclude: [
+        '**/node_modules/**',
+        'dist/**',
+        'build/**',
+        'public/**',
+        'src/client/public/**',
+        'src/client/sw/**',
+        `${UNDERPOST_TESTING.coverageDirectory}/**`,
+        '**/test/**',
+        '**/*.{test,spec}.js',
+      ],
+      // Absent unless the run opted in, so a single-tier run reports its slice
+      // instead of failing against a number it never measured.
+      ...(coverageThreshold === null ? {} : { thresholds: { lines: coverageThreshold } }),
     },
     projects: testProjectsFactory(projectDefaults),
   },
