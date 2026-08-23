@@ -2,13 +2,18 @@ import { DefaultManagement } from '../default/default.management.js';
 import { UserService } from '../user/user.service.js';
 import { InstanceService } from './instance.service.js';
 
-const InstanceManagement = {
-  RenderTable: async ({ Elements }) => {
-    const user = Elements.Data.user.main.model.user;
+class InstanceManagement {
+  static instance = async ({ appStore }) => {
+    const user = appStore.Data.user.main.model.user;
     const { role } = user;
     let columnDefs = [
+      { field: 'deployId', headerName: 'deployId', editable: role === 'admin' },
+      { field: 'port', headerName: 'port', editable: role === 'admin' },
       { field: 'host', headerName: 'host', editable: role === 'admin' },
       { field: 'path', headerName: 'path', editable: role === 'admin' },
+      { field: 'runtime', headerName: 'runtime', editable: role === 'admin' },
+      { field: 'client', headerName: 'client', editable: role === 'admin' },
+      { field: 'apis', headerName: 'apis', editable: role === 'admin' },
       { field: 'createdAt', headerName: 'createdAt', cellDataType: 'date', editable: false },
       { field: 'updatedAt', headerName: 'updatedAt', cellDataType: 'date', editable: false },
     ];
@@ -16,7 +21,6 @@ const InstanceManagement = {
       case 'admin':
         {
           columnDefs = columnDefs.concat([
-            { field: 'deployId', headerName: 'deployId', editable: role === 'admin' },
             {
               field: 'userId',
               headerName: 'User',
@@ -40,7 +44,7 @@ const InstanceManagement = {
       default:
         break;
     }
-    return await DefaultManagement.RenderTable({
+    return await DefaultManagement.instance({
       idModal: 'modal-instance-management',
       serviceId: 'instance-management',
       entity: 'instance',
@@ -68,7 +72,7 @@ const InstanceManagement = {
       defaultColKeyFocus: 'host',
       ServiceProvider: InstanceService,
     });
-  },
-};
+  };
+}
 
 export { InstanceManagement };

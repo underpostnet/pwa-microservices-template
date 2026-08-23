@@ -30,7 +30,10 @@
 import axios from 'axios';
 import { environmentValueFactory } from '../server/environment.js';
 import { FORWARD_PROXY, fetchViaForwardProxy } from '../server/forward-proxy.js';
+import fs from 'fs-extra';
+import nodePath from 'node:path';
 import { loggerFactory } from '../server/logger.js';
+import { UNDERPOST_MONITORING } from '../server/monitoring.js';
 import Underpost from '../index.js';
 
 const logger = loggerFactory(import.meta);
@@ -294,7 +297,7 @@ const vultrRequest = async ({ apiKey, path, params = {}, proxy = null }) => {
     const code = error?.code || error?.cause?.code;
     const proxyHint =
       proxy?.apiKey && ['EHOSTUNREACH', 'ENETUNREACH', 'ECONNREFUSED', 'ETIMEDOUT'].includes(code)
-        ? '; verify wg0 on the spoke; if only pods fail, re-run --wireguard-setup --client and restart wg0; if the host also fails, re-run --forward-proxy-server on the hub'
+        ? '; verify wg0 on the node; if only pods fail, re-run --wireguard-setup and restart wg0; if the host also fails, re-run --forward-proxy-server on the hub'
         : '';
     throw new Error(
       `[vultr] GET /v2${path} failed${responseStatus ? ` (${responseStatus})` : ''}: ${detail}${proxyHint}`,
@@ -353,7 +356,7 @@ class UnderpostVultr {
      * {@link UnderpostCron} job does, so `underpost cron default vultr` dispatches
      * to it unchanged. The deploy list is not used to select an instance — the
      * edge hub is one machine for the whole cluster, exactly as its WireGuard
-     * peer registry is — but it is logged so a run is attributable.
+     * WireGuard topology is — but it is logged so a run is attributable.
      * @param {string} [deployList] - Comma-separated deploy ids, from the cron dispatcher.
      * @param {object} [options] - CLI flags.
      * @returns {Promise<object>} Result from {@link UnderpostVultr.checkBandwidth}.
@@ -361,6 +364,43 @@ class UnderpostVultr {
      */
     callback: async function (deployList = 'default', options = {}) {
       return await UnderpostVultr.API.checkBandwidth({ ...options, deployList });
+    },
+
+    /**
+     * @method publishBandwidthMetrics
+     * @description Publishes the measured quota so the cluster can read it
+     * without calling Vultr.
+     *
+     * The API is rate limited and needs a credential, neither of which belongs
+     * on an alert evaluation path, so the guard — which already holds the
+     * numbers — writes them where the host collector picks them up, and to the
+     * root env store for anything that reads configuration rather than metrics.
+     * The file is renamed into place because the collector may read it mid-write.
+     * @param {{consumedBytes: number, maxBytes: number}} state - Measured quota state.
+     * @returns {boolean} True when the metrics file was written.
+     * @memberof UnderpostVultr
+     */
+    publishBandwidthMetrics({ consumedBytes = 0, maxBytes = 0 } = {}) {
+      Underpost.env.set('VULTR_BANDWIDTH_USAGE_BYTES', `${consumedBytes}`);
+      Underpost.env.set('VULTR_BANDWIDTH_LIMIT_BYTES', `${maxBytes}`);
+
+      const target = `${UNDERPOST_MONITORING.nodeExporter.textfileDirectory}/vultr_bandwidth.prom`;
+      const content =
+        '# HELP vultr_bandwidth_used_bytes Monthly bandwidth consumed by the edge hub.\n' +
+        '# TYPE vultr_bandwidth_used_bytes gauge\n' +
+        `vultr_bandwidth_used_bytes ${consumedBytes}\n` +
+        '# HELP vultr_bandwidth_limit_bytes Monthly bandwidth quota of the edge hub plan.\n' +
+        '# TYPE vultr_bandwidth_limit_bytes gauge\n' +
+        `vultr_bandwidth_limit_bytes ${maxBytes}\n`;
+      try {
+        fs.mkdirpSync(nodePath.dirname(target));
+        fs.writeFileSync(`${target}.tmp`, content, 'utf8');
+        fs.renameSync(`${target}.tmp`, target);
+        return true;
+      } catch (error) {
+        logger.warn('Bandwidth metrics not published to the host collector', { target, error: `${error.message}` });
+        return false;
+      }
     },
 
     /**
@@ -441,6 +481,7 @@ class UnderpostVultr {
       const totals = bandwidthTotalsFactory({ bandwidth, month: config.month });
       const consumedBytes = config.metric === 'outgoing' ? totals.outgoingBytes : totals.totalBytes;
       const state = quotaStateFactory({ consumedBytes, planBandwidthGB, threshold: config.threshold });
+      UnderpostVultr.API.publishBandwidthMetrics(state);
       const latchedAt = `${Underpost.env.get(UNDERPOST_VULTR.latchKey, undefined, { disableLog: true }) ?? ''}`.trim();
 
       const summary = {

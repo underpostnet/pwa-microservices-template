@@ -1,48 +1,75 @@
-import { DataBaseProvider } from '../../db/DataBaseProvider.js';
+import { DataBaseProviderService } from '../../db/DataBaseProvider.js';
 import { loggerFactory } from '../../server/logger.js';
+import { DataQuery } from '../../server/data-query.js';
 import { InstanceDto } from './instance.model.js';
 
 const logger = loggerFactory(import.meta);
 
-const InstanceService = {
-  post: async (req, res, options) => {
+class InstanceService {
+  static post = async (req, res, options) => {
     /** @type {import('./instance.model.js').InstanceModel} */
-    const Instance = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.Instance;
+    const Instance = DataBaseProviderService.getModel("Instance", options);
     return await new Instance(req.body).save();
-  },
-  get: async (req, res, options) => {
+  };
+  static get = async (req, res, options) => {
     /** @type {import('./instance.model.js').InstanceModel} */
-    const Instance = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.Instance;
+    const Instance = DataBaseProviderService.getModel("Instance", options);
 
     /** @type {import('../user/user.model.js').UserModel} */
-    const User = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.User;
+    const User = DataBaseProviderService.getModel("User", options);
 
     const user = await User.findOne({
       _id: req.auth.user._id,
     });
     switch (req.params.id) {
+      case 'count': {
+        switch (user.role) {
+          case 'admin':
+            return { total: await Instance.countDocuments() };
+          default:
+            return { total: await Instance.countDocuments({ userId: req.auth.user._id }) };
+        }
+      }
       default:
+        // Use DataQuery.parse for filtering, sorting, and pagination
+        const defaultSort = { updatedAt: -1 };
+        const baseQuery = user.role === 'admin' ? {} : { userId: req.auth.user._id };
+        const { query, sort, skip, limit, page } = DataQuery.parse({
+          ...req.query,
+          query: baseQuery,
+        });
+
+        // Apply default sort if no sort was specified
+        const finalSort = Object.keys(sort).length > 0 ? sort : defaultSort;
+
         switch (user.role) {
           case 'admin':
             if (req.params.id) return await Instance.findById(req.params.id);
-            return await Instance.find().populate(InstanceDto.populate.get());
-
+            const [dataAdmin, totalAdmin] = await Promise.all([
+              Instance.find(query).sort(finalSort).limit(limit).skip(skip).populate(InstanceDto.populate.get()),
+              Instance.countDocuments(query),
+            ]);
+            return { data: dataAdmin, total: totalAdmin, page, totalPages: Math.ceil(totalAdmin / limit) };
           default:
-            return await Instance.find({ userId: req.auth.user._id }).populate(InstanceDto.populate.get());
+            const [dataUser, totalUser] = await Promise.all([
+              Instance.find(query).sort(finalSort).limit(limit).skip(skip).populate(InstanceDto.populate.get()),
+              Instance.countDocuments(query),
+            ]);
+            return { data: dataUser, total: totalUser, page, totalPages: Math.ceil(totalUser / limit) };
         }
     }
-  },
-  put: async (req, res, options) => {
+  };
+  static put = async (req, res, options) => {
     /** @type {import('./instance.model.js').InstanceModel} */
-    const Instance = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.Instance;
+    const Instance = DataBaseProviderService.getModel("Instance", options);
     return await Instance.findByIdAndUpdate(req.params.id, req.body);
-  },
-  delete: async (req, res, options) => {
+  };
+  static delete = async (req, res, options) => {
     /** @type {import('./instance.model.js').InstanceModel} */
-    const Instance = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.Instance;
+    const Instance = DataBaseProviderService.getModel("Instance", options);
     if (req.params.id) return await Instance.findByIdAndDelete(req.params.id);
-    else return await await Instance.deleteMany();
-  },
-};
+    else return await Instance.deleteMany();
+  };
+}
 
 export { InstanceService };

@@ -6,7 +6,7 @@
 
 import dotenv from 'dotenv';
 import { commitData } from '../client/components/core/CommonJs.js';
-import { pbcopy, shellCd, shellExec } from '../server/process.js';
+import { pbcopy, redactCredentials, shellCd, shellExec } from '../server/process.js';
 import { actionInitLog, loggerFactory } from '../server/logger.js';
 import path from 'path';
 import fs from 'fs-extra';
@@ -21,6 +21,7 @@ import {
   buildReplicaId,
   readConfInstances,
 } from '../server/conf.js';
+import { readDeployRoutes, registerDeployRoute } from '../server/router.js';
 import { getNpmRootPath, writeEnv } from '../server/environment.js';
 import { buildClient, unzipClientBuild, mergeClientBuildZip } from '../client-builder/client-build.js';
 import { DefaultConf } from '../../conf.js';
@@ -103,7 +104,7 @@ class UnderpostRepository {
      * @param {string} [options.hashes=''] - If provided with diff option, shows the diff between two hashes.
      * @param {string} [options.extension=''] - If provided with diff option, filters the diff by this file extension.
      * @param {boolean|string} [options.changelog=undefined] - If true, prints the changelog since the last CI integration commit (starting with 'ci(package-pwa-microservices-'). If a number string, prints the changelog of the last N commits split by version sections. Only considers commits starting with '[<tag>]'.
-     * @param {boolean} [options.changelogBuild=false] - If true, scrapes all git history and builds a full CHANGELOG.md. Commits containing 'New release v:' are used as version section titles. Only commits starting with '[<tag>]' are included as entries.
+     * @param {boolean} [options.changelogBuild=false] - If true, scrapes git history and builds a CHANGELOG.md from the five latest versions. Commits containing 'New release v:' are used as version section titles. Only commits starting with '[<tag>]' are included as entries.
      * @param {string} [options.changelogMinVersion=''] - If set, overrides the default minimum version limit (2.85.0) for --changelog-build.
      * @param {boolean} [options.changelogNoHash=false] - If true, omits commit hashes from the changelog entries.
      * @param {boolean} [options.remoteUrl=false] - If true, prints the current git remote URL (origin) in plain text and returns.
@@ -331,17 +332,19 @@ class UnderpostRepository {
         const changelogMinVersion = options.changelogMinVersion || '2.97.1';
 
         if (options.changelogBuild) {
-          // --changelog-build: scrape ALL history, split by 'New release v:' commits as version sections
+          // --changelog-build: retain the current changes and the five latest version sections.
           const allCommits = fetchHistory();
           const sections = buildVersionSections(allCommits);
 
-          // Filter sections: stop at changelogMinVersion boundary
+          // Stop at either the fifth release section or the configured minimum-version boundary.
           const limitedSections = [];
+          let versionCount = 0;
           for (const section of sections) {
             limitedSections.push(section);
             if (section.title) {
+              versionCount++;
               const versionStr = section.title.replace(releaseMatch, '').trim();
-              if (versionStr === changelogMinVersion) break;
+              if (versionCount === 5 || versionStr === changelogMinVersion) break;
             }
           }
 
@@ -494,12 +497,91 @@ class UnderpostRepository {
     },
 
     /**
+     * Initializes the base cluster deploy folder `engine-private/deploy` from `./conf.js` (DefaultConf).
+     *
+     * Writes the minimum set required by the cluster runtime:
+     * `conf.event.json`, `conf.users.json`, `conf.wireguard.json`, `dd.cron`, `dd.routes`, `id_rsa`, `id_rsa.pub`.
+     *
+     * When a deploy ID is explicitly provided, it also generates the deploy CI/CD workflows and its default conf.
+     *
+     * Idempotent: existing files are never overwritten, so it is safe to rerun over a provisioned cluster.
+     * @param {string} [deployId=''] - Deploy ID registered in the route table and used as default cron deploy ID (defaults to `dd-default`, `dd-` prefix is normalized).
+     * @returns {{ deployPath: string, created: string[] }} The deploy folder and the files created by this run.
+     * @memberof UnderpostRepository
+     */
+    clusterDeployFactory(deployId = '') {
+      const deployPath = './engine-private/deploy';
+      const created = [];
+
+      const hasDeployId = `${deployId || ''}`.trim().length > 0;
+      deployId = `${deployId || ''}`.trim() || 'dd-default';
+      if (!deployId.startsWith('dd-')) deployId = `dd-${deployId}`;
+
+      fs.mkdirSync(deployPath, { recursive: true });
+
+      const confFiles = {
+        'conf.event.json': DefaultConf.event,
+        'conf.users.json': DefaultConf.users,
+        'conf.wireguard.json': DefaultConf.wireguard,
+      };
+
+      for (const [fileName, conf] of Object.entries(confFiles)) {
+        const confPath = `${deployPath}/${fileName}`;
+        if (fs.existsSync(confPath)) continue;
+        fs.writeFileSync(confPath, JSON.stringify(conf, null, 4), 'utf8');
+        created.push(confPath);
+      }
+
+      const cronPath = `${deployPath}/dd.cron`;
+      if (!fs.existsSync(cronPath)) {
+        fs.writeFileSync(cronPath, deployId, 'utf8');
+        created.push(cronPath);
+      }
+
+      const routesPath = `${deployPath}/dd.routes`;
+      const routesExists = fs.existsSync(routesPath);
+      registerDeployRoute(deployId);
+      if (!routesExists) created.push(routesPath);
+
+      const keyPath = `${deployPath}/id_rsa`;
+      const pubKeyPath = `${deployPath}/id_rsa.pub`;
+      if (!fs.existsSync(keyPath)) {
+        shellExec(`ssh-keygen -t ed25519 -f ${keyPath} -N "" -q -C "root@${deployId}"`, { disableLog: true });
+        fs.chmodSync(keyPath, 0o600);
+        created.push(keyPath);
+        created.push(pubKeyPath);
+      } else if (!fs.existsSync(pubKeyPath)) {
+        shellExec(`ssh-keygen -y -f ${keyPath} -P "" > ${pubKeyPath}`, { disableLog: true });
+        created.push(pubKeyPath);
+      }
+
+      if (hasDeployId) {
+        const repoName = `engine-${deployId.split('dd-')[1]}`;
+        fs.writeFileSync(
+          `./.github/workflows/${repoName}.cd.yml`,
+          fs.readFileSync(`./.github/workflows/engine-test.cd.yml`, 'utf8').replaceAll('test', deployId.split('dd-')[1]),
+          'utf8',
+        );
+        fs.writeFileSync(
+          `./.github/workflows/${repoName}.ci.yml`,
+          fs.readFileSync(`./.github/workflows/engine-test.ci.yml`, 'utf8').replaceAll('test', deployId.split('dd-')[1]),
+          'utf8',
+        );
+        shellExec(`node bin new --default-conf --deploy-id ${deployId}`);
+      }
+
+      logger.info('Cluster deploy base', { deployPath, created });
+
+      return { deployPath, created };
+    },
+
+    /**
      * Initializes a new Underpost repository, optionally setting up a deploy ID or sub-configuration.
      * @param {string} [projectName=''] - The name of the project to create.
      * @param {object} [options] - Initialization options.
      * @param {string} [options.deployId=''] - The deployment ID to set up.
      * @param {string} [options.subConf=''] - The sub-configuration to create.
-     * @param {boolean} [options.cluster=false] - If true, sets up a clustered configuration.
+     * @param {boolean} [options.cluster=false] - If true, initializes only the base cluster deploy folder (`engine-private/deploy`) from `./conf.js` and returns; no project or deploy ID scaffolding runs.
      * @param {boolean} [options.dev=false] - If true, uses development settings.
      * @param {boolean} [options.buildRepos=false] - If true, creates the deployment repositories (engine-*, engine-*-private, engine-*-cron-backups).
      * @param {boolean} [options.purge=false] - If true, removes the deploy ID conf and all related repositories (requires deployId).
@@ -533,6 +615,12 @@ class UnderpostRepository {
         try {
           await logger.setUpInfo();
           actionInitLog();
+
+          // Handle cluster deploy base operation (standalone: never scaffolds a project)
+          if (options.cluster === true) {
+            UnderpostRepository.API.clusterDeployFactory(options.deployId || projectName);
+            return resolve(true);
+          }
 
           // Handle cleanTemplate operation
           if (options.cleanTemplate) {
@@ -1280,7 +1368,7 @@ Prevent build private config repo.`,
      * @memberof UnderpostRepository
      */
     getDefaultBranch(repo) {
-      if (!repo) return 'main';
+      if (!repo) throw new Error('[repo] getDefaultBranch requires a repository reference');
       const authUrl = Underpost.repo.resolveAuthUrl(repo);
       const raw = shellExec(
         `GIT_TERMINAL_PROMPT=0 git -c credential.helper= ls-remote --symref "${authUrl}" HEAD 2>&1`,
@@ -1288,9 +1376,16 @@ Prevent build private config repo.`,
       );
       // --symref emits a line like: ref: refs/heads/main	HEAD
       const match = typeof raw === 'string' ? raw.match(/^ref:\s*refs\/heads\/(\S+)\tHEAD$/m) : null;
-      const branch = match ? match[1] : 'main';
-      logger.info('getDefaultBranch', { repo, branch });
-      return branch;
+      // Guessing here is worse than failing: `main` against a `master` remote
+      // fetches a ref that does not exist, and the caller has already pointed
+      // origin at the new URL by the time git says so.
+      if (!match)
+        throw new Error(
+          `[repo] cannot read the default branch of '${repo}'; it may be empty, unreachable, ` +
+            `or need credentials: ${redactCredentials(`${raw || ''}`.trim().split('\n').pop() || 'no ref reported')}`,
+        );
+      logger.info('getDefaultBranch', { repo, branch: match[1] });
+      return match[1];
     },
 
     /**
@@ -1348,6 +1443,40 @@ Prevent build private config repo.`,
     },
 
     /**
+     * Normalizes a repository reference to a clone URL, expanding the short
+     * `owner/repo` form against GitHub.
+     * @param {string} url - Repository URL or `owner/repo` short form.
+     * @returns {string} Clone URL, unchanged when one was already given.
+     * @memberof UnderpostRepository
+     */
+    repoUrlFactory(url = '') {
+      const value = `${url || ''}`.trim();
+      if (!value) return value;
+      const remote = value.startsWith('http://') || value.startsWith('https://') || value.startsWith('git@');
+      return remote ? value : `https://github.com/${value}`;
+    },
+
+    /**
+     * Reduces a repository reference to its `owner/repo` slug, the form the
+     * clone and pull commands take.
+     * @param {string} url - Repository URL or `owner/repo` short form.
+     * @returns {string} Slug.
+     * @throws {Error} When no owner and repository can be read from the reference.
+     * @memberof UnderpostRepository
+     */
+    repoSlugFactory(url = '') {
+      const path = Underpost.repo
+        .repoUrlFactory(url)
+        .replace(/^git@[^:]+:/, '')
+        .replace(/^https?:\/\/[^/]+\//, '')
+        .replace(/\.git$/, '')
+        .replace(/\/+$/, '');
+      const [owner, repo] = path.split('/');
+      if (!owner || !repo) throw new Error(`[repo] '${url}' is not an owner/repo reference or a clone URL`);
+      return `${owner}/${repo}`;
+    },
+
+    /**
      * Resolves a Git remote URL, normalizing short-form owner/repo references to full
      * GitHub HTTPS URLs and injecting GITHUB_TOKEN when available.
      * @param {string} url - The repository URL or short-form (e.g. "owner/repo" or full HTTPS URL).
@@ -1356,11 +1485,7 @@ Prevent build private config repo.`,
      */
     resolveAuthUrl(url) {
       if (!url) return url;
-      // Normalize short form "owner/repo" → full GitHub HTTPS URL
-      let normalized = url;
-      if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('git@')) {
-        normalized = `https://github.com/${url}`;
-      }
+      const normalized = Underpost.repo.repoUrlFactory(url);
       if (process.env.GITHUB_TOKEN && normalized.startsWith('https://github.com/')) {
         return normalized.replace(
           'https://github.com/',
@@ -1439,10 +1564,7 @@ Prevent build private config repo.`,
       if (!fs.existsSync(`${repoPath}/.git`)) throw new Error(`switchRemote: not a git repository: ${repoPath}`);
       const targetBranch = branch || Underpost.repo.getDefaultBranch(url);
       // Token-free URL for the stored remote; auth-injected URL only for the fetch.
-      let normalized = url;
-      if (!url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('git@')) {
-        normalized = `https://github.com/${url}`;
-      }
+      const normalized = Underpost.repo.repoUrlFactory(url);
       const authUrl = Underpost.repo.resolveAuthUrl(url);
       const current = Underpost.repo.getRemoteUrl({ path: repoPath, remote });
       if (!current) shellExec(`cd "${repoPath}" && git remote add ${remote} "${normalized}"`);
@@ -1844,11 +1966,11 @@ Prevent build private config repo.`,
 
     /**
      * Resolves the GitHub repository for a given instance runtime by scanning
-     * every `conf.instances.json` listed in `./engine-private/deploy/dd.router`.
+     * every `conf.instances.json` listed in `./engine-private/deploy/dd.routes`.
      *
      * Resolution order:
      *  1. If `runtime` is falsy, returns `${GITHUB_USERNAME}/engine`.
-     *  2. Iterates each deploy ID found in `dd.router` and looks for an instance
+     *  2. Iterates each deploy ID found in `dd.routes` and looks for an instance
      *     whose `runtime` field matches the supplied value.
      *  3. When a match is found, returns `instance.metadata.repository`.
      *  4. Falls back to `${GITHUB_USERNAME}/engine` when no match is found.
@@ -1865,14 +1987,7 @@ Prevent build private config repo.`,
       // (docker-image.<runtime>.dev.ci.yml) but resolves to the same instance
       // repo as its production counterpart, so strip it before matching.
       runtime = runtime.replace(/\.dev$/, '');
-      const ddRouter = './engine-private/deploy/dd.router';
-      const deployIds = fs.existsSync(ddRouter)
-        ? fs
-            .readFileSync(ddRouter, 'utf8')
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean)
-        : [];
+      const deployIds = readDeployRoutes();
       for (const deployId of deployIds) {
         const confPath = `./engine-private/conf/${deployId}/conf.instances.json`;
         if (!fs.existsSync(confPath)) continue;

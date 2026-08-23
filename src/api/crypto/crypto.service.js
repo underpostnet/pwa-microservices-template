@@ -1,14 +1,14 @@
 import { loggerFactory } from '../../server/logger.js';
 import crypto from 'crypto';
-import { DataBaseProvider } from '../../db/DataBaseProvider.js';
+import { DataBaseProviderService } from '../../db/DataBaseProvider.js';
 const logger = loggerFactory(import.meta);
 
-const CryptoService = {
-  post: async (req, res, options) => {
+class CryptoService {
+  static post = async (req, res, options) => {
     /** @type {import('./crypto.model.js').CryptoModel} */
-    const Crypto = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.Crypto;
+    const Crypto = DataBaseProviderService.getModel("Crypto", options);
     /** @type {import('../user/user.model.js').UserModel} */
-    const User = DataBaseProvider.instance[`${options.host}${options.path}`].mongoose.User;
+    const User = DataBaseProviderService.getModel("User", options);
 
     switch (req.params.id) {
       case 'verify': {
@@ -48,17 +48,17 @@ const CryptoService = {
         return publicKey;
       }
     }
-  },
-  get: async (req, res, options) => {
+  };
+  static get = async (req, res, options) => {
     switch (req.params.id) {
       default:
     }
-  },
-  delete: async (req, res, options) => {
+  };
+  static delete = async (req, res, options) => {
     switch (req.params.id) {
       default:
     }
-  },
-};
+  };
+}
 
 export { CryptoService };
