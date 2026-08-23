@@ -76,7 +76,9 @@ const defaultHostConf = DefaultConf.server?.['default.net']?.['/'];
 const describeBaseTemplate = describe.skipIf(!defaultHostConf?.apis?.length || !DefaultConf.client?.default?.services);
 
 describeBaseTemplate('template path selection', () => {
-  const apis = defaultHostConf.apis;
+  // A skipped suite still runs its body at collection time, so nothing here may dereference
+  // a conf the product build does not ship.
+  const apis = defaultHostConf?.apis ?? [];
 
   it('carries the api entrypoint that sits next to the api directory', () => {
     // `src/api.js` is a documented development entrypoint, not one of the API
