@@ -70,8 +70,13 @@ describe('template work tree prune', () => {
   });
 });
 
-describe('template path selection', () => {
-  const apis = DefaultConf.server['default.net']['/'].apis;
+// The filter resolves the base template against the default host and client that only
+// the engine's conf declares; a product build ships its own deploy conf instead.
+const defaultHostConf = DefaultConf.server?.['default.net']?.['/'];
+const describeBaseTemplate = describe.skipIf(!defaultHostConf?.apis?.length || !DefaultConf.client?.default?.services);
+
+describeBaseTemplate('template path selection', () => {
+  const apis = defaultHostConf.apis;
 
   it('carries the api entrypoint that sits next to the api directory', () => {
     // `src/api.js` is a documented development entrypoint, not one of the API
