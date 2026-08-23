@@ -12,9 +12,9 @@
 import fs from 'fs-extra';
 import path from 'path';
 import dotenv from 'dotenv';
-import { pbcopy, shellCd, shellExec } from '../server/process.js';
-import { Dns } from '../server/dns.js';
-import { loggerFactory } from '../server/logger.js';
+import { pbcopy, shellCd, shellExec } from '../server/runtime/process.js';
+import { Dns } from '../server/network/dns.js';
+import { loggerFactory } from '../server/ops/logger.js';
 import { timer } from '../client/components/core/CommonJs.js';
 import Underpost from '../index.js';
 
@@ -88,6 +88,7 @@ const buildVersionBumpTargets = () => [
     dir: 'src/client/public/nexodev/docs/references',
     match: /\.md$/,
     patterns: [
+      /(\*\*(?:Current )?[Vv]ersion:\*\* )\d+\.\d+\.\d+/g,
       /(underpost\/[a-z0-9-]+:v)\d+\.\d+\.\d+/g,
       /(UNDERPOST_VERSION=)\d+\.\d+\.\d+/g,
       /(ci\/cd cli v)\d+\.\d+\.\d+/gi,
@@ -626,5 +627,5 @@ class UnderpostRelease {
   };
 }
 
-export { UnderpostRelease };
+export { UnderpostRelease, bumpAuxiliaryFiles };
 export default UnderpostRelease;

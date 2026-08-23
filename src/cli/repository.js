@@ -6,8 +6,8 @@
 
 import dotenv from 'dotenv';
 import { commitData } from '../client/components/core/CommonJs.js';
-import { pbcopy, redactCredentials, shellCd, shellExec } from '../server/process.js';
-import { actionInitLog, loggerFactory } from '../server/logger.js';
+import { pbcopy, redactCredentials, shellCd, shellExec } from '../server/runtime/process.js';
+import { actionInitLog, loggerFactory } from '../server/ops/logger.js';
 import path from 'path';
 import fs from 'fs-extra';
 import {
@@ -19,10 +19,10 @@ import {
   getDataDeploy,
   buildReplicaId,
   readConfInstances,
-} from '../server/conf.js';
-import { readDeployRoutes, registerDeployRoute } from '../server/router.js';
-import { getUnderpostRootPath, writeEnv } from '../server/environment.js';
-import { githubCommitUrlFactory, repositoryIdentityFactory } from '../server/repository.js';
+} from '../server/runtime/conf.js';
+import { readDeployRoutes, registerDeployRoute } from '../server/network/router.js';
+import { getUnderpostRootPath, writeEnv } from '../server/runtime/environment.js';
+import { githubCommitUrlFactory, repositoryIdentityFactory } from '../server/storage/repository.js';
 import { buildClient, unzipClientBuild, mergeClientBuildZip } from '../client-builder/client-build.js';
 import { DefaultConf } from '../../conf.js';
 import Underpost from '../index.js';
@@ -51,7 +51,10 @@ class UnderpostRepository {
     clone(gitUri = `${process.env.GITHUB_USERNAME}/pwa-microservices-template`, options = { bare: false, g8: false }) {
       const gExtension = options.g8 === true ? '.g8' : '.git';
       const repoName = gitUri.split('/').pop();
-      if (fs.existsSync(`./${repoName}`)) fs.removeSync(`./${repoName}`);
+      // A bare clone lands in `<repo>.git`: clearing `<repo>` instead would both leave the
+      // real target in place and delete an unrelated work tree that happens to share the name.
+      const clonePath = `./${repoName}${options?.bare === true ? gExtension : ''}`;
+      if (fs.existsSync(clonePath)) fs.removeSync(clonePath);
       shellExec(
         `git clone ${options?.bare === true ? ` --bare ` : ''}https://${
           process.env.GITHUB_TOKEN ? `${process.env.GITHUB_TOKEN}@` : ''
