@@ -26,7 +26,6 @@ import {
   pathPortAssignmentFactory,
   readDeployRoutes,
 } from '../server/network/router.js';
-import { cronDeployIdResolve } from '../server/ops/cron.js';
 import { loggerFactory } from '../server/ops/logger.js';
 import { HOST_VOLUME_ROOT } from '../server/runtime/environment.js';
 import { shellExec } from '../server/runtime/process.js';
@@ -51,6 +50,7 @@ import nodePath from 'node:path';
 import dotenv from 'dotenv';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { domainContextFactory } from './domains.js';
 import Underpost from '../index.js';
 
 /**
@@ -82,7 +82,7 @@ const GATEWAY_CONTROLLER_NAME = `${GATEWAY_EXTENSION_GROUP}/gatewayclass-control
 // Gateway references: one name, resolved through gatewayApiConfigFactory, so an
 // override reaches the installer and the manifests together.
 const GATEWAY_CLASS_DEFAULT = 'eg';
-// Where `bin client <deployId> <env>` writes each host's bundle, including the
+// Where `bin client <deployId> --env <env>` writes each host's bundle, including the
 // SSR status views declared in conf.ssr.json (`<host><path>/<status>/index.html`).
 // Engine root inside the workload container; the built PWA artifacts live under
 // its `public/` tree, which is where the static edge documents are sourced from.
@@ -452,20 +452,15 @@ EOF
     }) {
       if (!readinessProbe) throw new Error(`Refusing to build ${deployId}-${env}-${suffix} without a readiness probe`);
       if (!cmd)
-        cmd =
-          pullBundle || skipFullBuild
-            ? [
-                // When pullBundle (or skipFullBuild) is set the container pulls the pre-built client
-                // bundle from Cloudinary (push-bundle must have been run on the dev machine beforehand).
-                `underpost secret underpost --create-from-env`,
-                `underpost start --build --run --pull-bundle --skip-full-build ${deployId} ${env}`,
-              ]
-            : [
-                // `npm install -g npm@11.2.0`,
-                // `npm install -g underpost`,
-                `underpost secret underpost --create-from-env`,
-                `underpost start --build --run ${deployId} ${env}`,
-              ];
+        // One command, and deliberately only `start`. This string is executed by whatever
+        // underpost the image happens to ship, which is as new as the last npm publish and no
+        // newer — so it may name only CLI surface that has always existed. Everything the
+        // deployment needs beyond that, host configuration included, is done inside the start
+        // lifecycle, where the code is the freshly pulled source rather than the image snapshot.
+        // `--pull-bundle` fetches the pre-built client bundle instead of building it in-pod.
+        cmd = [
+          `underpost start --build --run${pullBundle || skipFullBuild ? ' --pull-bundle --skip-full-build' : ''} ${deployId} ${env}`,
+        ];
       const packageJson = JSON.parse(fs.readFileSync('./package.json', 'utf8'));
       if (!volumes) volumes = [];
       const confVolume = fs.existsSync(`./engine-private/conf/${deployId}/conf.volume.json`)
@@ -2208,7 +2203,7 @@ EOF`);
         logger.info('router', await Underpost.deploy.routerFactory(deployList, env));
         return;
       }
-      if (!options.disableUpdateUnderpostConfig) Underpost.deploy.configMap(env);
+      if (!options.disableUpdateUnderpostConfig) Underpost.host.apply(domainContextFactory({ env, namespace }));
 
       for (const _deployId of deployList.split(',')) {
         const deployId = _deployId.trim();
@@ -2393,27 +2388,6 @@ EOF`);
           }
         }
       }
-    },
-    /**
-     * Creates a Kubernetes Secret for a deployment (replaces configMap for secret data).
-     * Secrets are mounted as tmpfs (never written to node disk) and support RBAC restrictions.
-     * @param {string} env - Environment for which the secret is being created.
-     * @param {string} [namespace='default'] - Kubernetes namespace for the secret.
-     * @memberof UnderpostDeploy
-     */
-    configMap(env, namespace = 'default') {
-      const cronDeployId = cronDeployIdResolve() || 'dd-cron';
-      const envFilePath = `/home/dd/engine/engine-private/conf/${cronDeployId}/.env.${env}`;
-      // `--from-env-file` turns every KEY=VALUE into a secret key that the Deployment injects via
-      // `envFrom`. Strip shell/runtime-critical keys (notably PATH) first — an injected PATH
-      // overrides the image's own and breaks coreutils/sudo resolution inside the pod.
-      const sanitizedEnvPath = `${envFilePath}.secret`;
-      fs.writeFileSync(sanitizedEnvPath, Underpost.secret.sanitizeSecretEnvFile(fs.readFileSync(envFilePath, 'utf8')));
-      shellExec(`kubectl delete secret underpost-config -n ${namespace} --ignore-not-found`);
-      shellExec(
-        `kubectl create secret generic underpost-config --from-env-file=${sanitizedEnvPath} --dry-run=client -o yaml | kubectl apply -f - -n ${namespace}`,
-      );
-      fs.removeSync(sanitizedEnvPath);
     },
     /**
      * Switches the traffic for a deployment.

@@ -27,6 +27,7 @@ import { DefaultConf } from '../../../conf.js';
 import splitFile from 'split-file';
 import { readDeployRoutes } from '../network/router.js';
 import Underpost from '../../index.js';
+import { getRuntimeStatus, RUNTIME_STATUS } from './runtime-status.js';
 
 colors.enable();
 
@@ -387,17 +388,49 @@ const Config = {
  * @param {string} [subConf=''] - The sub configuration.
  * @memberof ServerConfBuilder
  */
+/**
+ * @method deployEnvFilePath
+ * @description Resolves a deployment's env file for an environment.
+ *
+ * A named sub-configuration selects `.env.<env>.<subConf>` when that file exists and degrades to
+ * the plain `.env.<env>` when it does not. Single source of this precedence: {@link loadConf}
+ * materializes the working tree from it and {@link UnderpostApp} addresses it from the CLI, so
+ * both always agree on which file is in effect.
+ * @param {string} deployId - Deployment id.
+ * @param {string} [env='production'] - Environment selector.
+ * @param {string} [subConf] - Sub-configuration name.
+ * @returns {string} Path to the deployment env file.
+ * @memberof ServerConfBuilder
+ */
+const deployEnvFilePath = (deployId, env = 'production', subConf = '') => {
+  const base = `${getConfFolder(deployId)}/.env.${env || 'production'}`;
+  const name = `${subConf ?? ''}`.trim();
+  if (!name) return base;
+  const scoped = `${base}.${name}`;
+  return fs.existsSync(scoped) ? scoped : base;
+};
+
+/**
+ * @method cleanDeployEnvFiles
+ * @description Removes the working-tree env files {@link loadConf} materializes.
+ * Single source of the file list, shared with the app domain's `clean` action.
+ * @returns {Array<string>} The paths that were present and removed.
+ * @memberof ServerConfBuilder
+ */
+const cleanDeployEnvFiles = () => {
+  const targets = ['./.env', './.env.production', './.env.development', './.env.test'];
+  const present = targets.filter((target) => fs.existsSync(target));
+  for (const target of present) fs.removeSync(target);
+  return present;
+};
+
 const loadConf = (deployId = DEFAULT_DEPLOY_ID, subConf) => {
   if (deployId === 'current') {
     console.log(process.env.DEPLOY_ID);
     return;
   }
   if (deployId === 'clean') {
-    const path = '.';
-    fs.removeSync(`${path}/.env`);
-    fs.removeSync(`${path}/.env.production`);
-    fs.removeSync(`${path}/.env.development`);
-    fs.removeSync(`${path}/.env.test`);
+    cleanDeployEnvFiles();
     return;
   }
   const folder = getConfFolder(deployId);
@@ -427,9 +460,7 @@ const loadConf = (deployId = DEFAULT_DEPLOY_ID, subConf) => {
   fs.writeFileSync(`./.env.test`, fs.readFileSync(`${folder}/.env.test`, 'utf8'), 'utf8');
   const NODE_ENV = process.env.NODE_ENV || 'development';
   if (NODE_ENV) {
-    const subPathEnv = fs.existsSync(`${folder}/.env.${NODE_ENV}.${subConf}`)
-      ? `${folder}/.env.${NODE_ENV}.${subConf}`
-      : `${folder}/.env.${NODE_ENV}`;
+    const subPathEnv = deployEnvFilePath(deployId, NODE_ENV, subConf);
     fs.writeFileSync(`./.env`, fs.readFileSync(subPathEnv, 'utf8'), 'utf8');
     const env = dotenv.parse(fs.readFileSync(subPathEnv, 'utf8'));
     process.env = {
@@ -441,6 +472,10 @@ const loadConf = (deployId = DEFAULT_DEPLOY_ID, subConf) => {
   const packageJson = JSON.parse(fs.readFileSync(`${folder}/package.json`, 'utf8'));
   originPackageJson.scripts.start = packageJson.scripts.start;
   packageJson.scripts = originPackageJson.scripts;
+  // `bin` is engine identity, not deploy identity: it is what `npm link` publishes as the
+  // global `underpost` command. Deploy manifests do not carry one, so without this the
+  // checkout would stop being linkable the moment its environment was loaded.
+  if (originPackageJson.bin) packageJson.bin = originPackageJson.bin;
   fs.writeFileSync(`./package.json`, JSON.stringify(packageJson, null, 4), 'utf8');
   return { folder, deployId };
 };
@@ -855,7 +890,7 @@ const getDataDeploy = async (
       for (const path of Object.keys(serverConf[host])) {
         if (!isReplicaDeploy && serverConf[host][path].replicas && serverConf[host][path].singleReplica) {
           if (options && options.buildSingleReplica)
-            await Underpost.repo.client(deployObj.deployId, '', host, path, {
+            await Underpost.client.callback(deployObj.deployId, '', host, path, {
               singleReplica: true,
             });
           replicaDataDeploy = replicaDataDeploy.concat(
@@ -873,7 +908,7 @@ const getDataDeploy = async (
   }
 
   if (!options.disableSyncEnvPort && options.buildSingleReplica)
-    await Underpost.repo.client(undefined, '', '', '', { syncEnvPort: true });
+    await Underpost.client.callback(undefined, '', '', '', { syncEnvPort: true });
 
   logger.info('Deployments configured', buildDataDeploy);
 
@@ -976,7 +1011,7 @@ const awaitDeployMonitor = async (isFinal = false, deltaMs = 1000, callback = fa
   if (!callback) Underpost.env.set('await-deploy', new Date().toISOString());
   if (isFinal) logger.info('Final deployment running (no replica)');
   await timer(deltaMs);
-  if (Underpost.env.get('container-status') === 'error') return false;
+  if (getRuntimeStatus() === RUNTIME_STATUS.ERROR) return false;
   if (Underpost.env.get('await-deploy')) return await awaitDeployMonitor(false, deltaMs, true);
   return true;
 };
@@ -1294,35 +1329,49 @@ const getInstanceContext = async (options = { deployId, singleReplica, replicas,
  * @param {string} options.host - The host.
  * @param {string} options.path - The path.
  * @param {string} options.origin - The origin.
- * @returns {object} - The API configuration.
+ * @returns {Promise<string|undefined>} The derived sub-conf id (`<subConf>-dev-api`), or
+ *   undefined when no client origin was given and nothing was derived.
  * @memberof ServerConfBuilder
  */
 const buildApiConf = async (options = { deployId: '', subConf: '', host: '', path: '', origin: '' }) => {
   let { deployId, subConf, host, path, origin } = options;
-  if (!deployId) deployId = process.argv[2].trim();
-  if (!subConf) subConf = process.argv[3].trim();
-  if (process.argv[4]) host = process.argv[4].trim();
-  if (process.argv[5]) path = process.argv[5].trim();
+  // The client origin is what selects this mode, so it is resolved before
+  // anything else: `src/api.js` also runs without any of these positionals.
   if (process.argv[6])
     origin = `${process.env.NODE_ENV === 'production' ? 'https' : 'http'}://${process.argv[6].trim()}`;
-
-  if (!origin) return;
+  if (!origin) return undefined;
+  if (!deployId) deployId = process.argv[2]?.trim();
+  if (!subConf) subConf = process.argv[3]?.trim();
+  if (process.argv[4]) host = process.argv[4].trim();
+  if (process.argv[5]) path = process.argv[5].trim();
+  if (!deployId || !subConf || !host || !path) {
+    logger.warn('Skipping api conf; a client origin needs deploy-id, sub-conf, host and path', {
+      deployId,
+      subConf,
+      host,
+      path,
+      origin,
+    });
+    return undefined;
+  }
   const confServer = JSON.parse(
     fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.dev.${subConf}.json`, 'utf8'),
   );
   const envObj = dotenv.parse(
     fs.readFileSync(`./engine-private/conf/${deployId}/.env.${process.env.NODE_ENV}`, 'utf8'),
   );
-  if (host && path) {
-    confServer[host][path].origins = [origin];
-    logger.info('Build api conf', { host, path, origin });
-  } else return;
-  writeEnv(`./engine-private/conf/${deployId}/.env.${process.env.NODE_ENV}.${subConf}-dev-api`, envObj);
+  if (!confServer[host]?.[path])
+    throw new Error(`No ${host}${path} instance in conf.server.dev.${subConf}.json for ${deployId}`);
+  confServer[host][path].origins = [origin];
+  logger.info('Build api conf', { host, path, origin });
+  const devApiSubConf = `${subConf}-dev-api`;
+  writeEnv(`./engine-private/conf/${deployId}/.env.${process.env.NODE_ENV}.${devApiSubConf}`, envObj);
   fs.writeFileSync(
-    `./engine-private/conf/${deployId}/conf.server.dev.${subConf}-dev-api.json`,
+    `./engine-private/conf/${deployId}/conf.server.dev.${devApiSubConf}.json`,
     JSON.stringify(confServer, null, 4),
     'utf8',
   );
+  return devApiSubConf;
 };
 
 /**
@@ -1346,12 +1395,19 @@ const buildClientStaticConf = async (
   if (!subConf) subConf = process.argv[3].trim();
   if (!host) host = process.argv[4].trim();
   if (!path) path = process.argv[5].trim();
-  const confServer = JSON.parse(
-    fs.readFileSync(`./engine-private/conf/${deployId}/conf.server.dev.${subConf}-dev-api.json`, 'utf8'),
-  );
-  const envObj = dotenv.parse(
-    fs.readFileSync(`./engine-private/conf/${deployId}/.env.${process.env.NODE_ENV}.${subConf}-dev-api`, 'utf8'),
-  );
+  // The API server derives these two files, and it derives them only when it is
+  // given the client origin. Their absence means that step has not run, which is
+  // a setup order to state rather than an ENOENT to decode.
+  const confPath = `./engine-private/conf/${deployId}/conf.server.dev.${subConf}-dev-api.json`;
+  const envPath = `./engine-private/conf/${deployId}/.env.${process.env.NODE_ENV}.${subConf}-dev-api`;
+  for (const source of [confPath, envPath])
+    if (!fs.existsSync(source))
+      throw new Error(
+        `Missing ${source}. Start the API server first, with the client origin as its last argument: ` +
+          `npm run dev:api ${deployId} ${subConf} ${host} ${path} <client-host:port>`,
+      );
+  const confServer = JSON.parse(fs.readFileSync(confPath, 'utf8'));
+  const envObj = dotenv.parse(fs.readFileSync(envPath, 'utf8'));
   envObj.PORT = parseInt(envObj.PORT);
   const apiBaseHost = devProxy
     ? devProxyHostFactory({ host, tls: isTlsDevProxy() })
@@ -1369,16 +1425,6 @@ const buildClientStaticConf = async (
     'utf8',
   );
 };
-
-/**
- * @method isDeployRunnerContext
- * @description Checks if the deploy runner context is valid.
- * @param {string} path - The path.
- * @param {object} options - The options.
- * @returns {boolean} - The deploy runner context.
- * @memberof ServerConfBuilder
- */
-const isDeployRunnerContext = (path, options) => !options.build && path && path !== 'template-deploy';
 
 /**
  * @method isDevProxyContext
@@ -3117,6 +3163,8 @@ const clusterInstancesFactory = (deployList = [], instanceList = '') => {
 };
 
 export {
+  cleanDeployEnvFiles,
+  deployEnvFilePath,
   Config,
   loadConf,
   loadConfInstances,
@@ -3149,7 +3197,6 @@ export {
   getInstanceContext,
   buildApiConf,
   buildClientStaticConf,
-  isDeployRunnerContext,
   isDevProxyContext,
   devProxyHostFactory,
   isTlsDevProxy,

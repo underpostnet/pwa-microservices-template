@@ -24,7 +24,6 @@ import {
   instancePortFactory,
   instanceProxyRoutesFactory,
   instanceStatusPageEntriesFactory,
-  isDeployRunnerContext,
   loadConfInstances,
   loadProjectInstanceEnvBuilder,
   loadConfServerJson,
@@ -46,13 +45,14 @@ import {
 } from '../server/runtime/conf.js';
 import { buildKindPorts, resolveDeployList } from '../server/network/router.js';
 import { cronDeployIdResolve } from '../server/ops/cron.js';
-import { getNpmRootPath, writeEnv } from '../server/runtime/environment.js';
+import { deployEnvFactory, getNpmRootPath, writeEnv } from '../server/runtime/environment.js';
 import { actionInitLog, loggerFactory } from '../server/ops/logger.js';
 
 import fs from 'fs-extra';
 import { range, s4, setPad, timer } from '../client/components/core/CommonJs.js';
 
 import os from 'os';
+import { domainContextFactory } from './domains.js';
 import Underpost from '../index.js';
 import dotenv from 'dotenv';
 import { MongoBootstrap } from '../db/mongo/MongoBootstrap.js';
@@ -799,19 +799,18 @@ class UnderpostRun {
 
     /**
      * @method cluster-build
-     * @description Build configuration for cluster deployment.
-     * @param {string} path - The input value, identifier, or path for the operation.
+     * @description Resets the workspace and regenerates every routed deploy's default
+     * configuration, optionally committing the result to both repositories.
+     *
+     * Single-replica materialization is not done here: `deploy --sync` builds those folders
+     * as part of the deploy itself (`getDataDeploy({ buildSingleReplica: true })`).
+     * @param {string} path - `cmt` to commit the regenerated configuration; otherwise unused.
      * @param {UnderpostRunDefaultOptions} options - The default underpost runner options for customizing workflow
      * @memberof UnderpostRun
      */
     'cluster-build': (path, options = DEFAULT_OPTION) => {
-      const nodeOptions =
-        (options.nodeName ? ` --node-name ${options.nodeName}` : '') +
-        (options.sshKeyPath ? ` --ssh-key-path ${options.sshKeyPath}` : '');
       shellExec(`node bin run clean`);
-      shellExec(`node bin run --dev sync-replica template-deploy${nodeOptions}`);
-      shellExec(`node bin run sync-replica template-deploy${nodeOptions}`);
-      shellExec(`node bin env clean`);
+      shellExec(`node bin app clean`);
       for (const deployId of readDeployRoutes()) shellExec(`node bin new --default-conf --deploy-id ${deployId}`);
       if (path === 'cmt') {
         shellExec(`git add . && underpost cmt . build cluster-build`);
@@ -1057,13 +1056,17 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
      * which then plumbs through `buildManifest` and `deploymentYamlPartsFactory` to override the container `imagePullPolicy` in the generated
      * `deployment.yaml`. Useful when you want to force `Always` so the kubelet re-pulls a mutable tag on every rollout. Example:
      *   `node bin run sync dd-core --kubeadm --image-pull-policy Always`
-     * @param {string} path - The input value, identifier, or path for the operation (used as a comma-separated string containing deploy parameters).
+     *
+     * Runs in one of two modes. Named a deploy, it deploys. Passed `--build`, or no `path` at
+     * all, it renders the manifests and the router table and stops before touching the cluster:
+     *   `node bin run --dev --build sync dd-default`
+     * @param {string} [path] - `<deployId>,<replicas>,<versions>,<image>,<node>`. Omitted selects
+     *   `dd-default` and the manifest-only mode.
      * @param {UnderpostRunDefaultOptions} options - The default underpost runner options for customizing workflow
      * @memberof UnderpostRun
      */
     sync: async (path, options = DEFAULT_OPTION) => {
-      // Dev usage: node bin run --dev --build sync dd-default
-      const env = options.dev ? 'development' : 'production';
+      const env = deployEnvFactory(options);
       options = { ...options, gatewayApi: gatewayApiEnabledFactory(options) };
       const baseCommand = 'node bin'; // options.dev ? 'node bin' : 'underpost';
       const baseClusterCommand = options.dev ? ' --dev' : '';
@@ -1076,6 +1079,7 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
         !options.kubeadm && !options.k3s ? 'kind-control-plane' : os.hostname(),
       ];
       let [deployId, replicas, versions, image, node] = path ? path.split(',') : defaultPath;
+      const deploying = !options.build && !!path;
       deployId = deployId ? deployId : defaultPath[0];
       replicas = replicas ? replicas : defaultPath[1];
       versions = versions ? versions.replaceAll('+', ',') : defaultPath[2];
@@ -1091,7 +1095,7 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
           k3s: options.k3s,
         });
 
-      if (isDeployRunnerContext(path, options)) {
+      if (deploying) {
         if (!options.disablePrivateConfUpdate) {
           const { validVersion } = Underpost.repo.privateConfUpdate(deployId);
           if (!validVersion) throw new Error('Version mismatch');
@@ -1109,7 +1113,7 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
         }
       }
 
-      const currentTraffic = isDeployRunnerContext(path, options)
+      const currentTraffic = deploying
         ? Underpost.deploy.getCurrentTraffic(deployId, {
             namespace: options.namespace,
             env,
@@ -1133,7 +1137,7 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
       });
 
       const ignorePods =
-        isDeployRunnerContext(path, options) && targetTraffic
+        deploying && targetTraffic
           ? Underpost.kubectl.get(`${deployId}-${env}-${targetTraffic}`, 'pods', options.namespace).map((p) => p.NAME)
           : [];
 
@@ -1149,11 +1153,17 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
       const sshKeyPathFlag = options.sshKeyPath ? ` --ssh-key-path ${options.sshKeyPath}` : '';
       const gatewayApiFlags = Underpost.deploy.gatewayApiFlagsFactory(options);
 
+      // Retarget `underpost-config` at this sync's environment before anything is
+      // deployed. `underpost host load` reads it back inside the
+      // pod, so a stale Secret makes the container resolve the wrong NODE_ENV.
+      if (deploying) Underpost.host.apply(domainContextFactory({ env, namespace: options.namespace }));
+
       // A direct sync owns the same gateway-first contract as the full cluster
       // runner. Build the host-side SSR documents before generating routes unless
-      // the caller explicitly selected a pre-built bundle workflow.
-      if (isDeployRunnerContext(path, options) && !options.skipFullBuild)
-        shellExec(`${baseCommand} client ${deployId} ${env} --ssr`);
+      // the caller explicitly selected a pre-built bundle workflow. `--env` is
+      // explicit: the SSR pass must render for the target environment, never for
+      // whatever NODE_ENV the calling shell happens to carry.
+      if (deploying && !options.skipFullBuild) shellExec(`${baseCommand} client ${deployId} --env ${env} --ssr`);
 
       shellExec(
         `${baseCommand} deploy${clusterFlag} --build-manifest --sync --info-router --replicas ${replicas} --node ${node}${
@@ -1163,7 +1173,7 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
         }${timeoutFlags}${cmdString}${gitCleanFlag}${skipFullBuildFlag}${pullBundleFlag}${imagePullPolicyFlag}${sshKeyPathFlag}${gatewayApiFlags} ${deployId} ${env}`,
       );
 
-      if (isDeployRunnerContext(path, options)) {
+      if (deploying) {
         if (options.gatewayApi) {
           const namespace = options.namespace || 'default';
           const gatewayRoot = Underpost.deploy.underpostGatewayRootFactory(options);
@@ -1900,7 +1910,7 @@ EOF
      * @memberof UnderpostRun
      */
     instance: async (path = '', options = DEFAULT_OPTION) => {
-      const env = options.dev ? 'development' : 'production';
+      const env = deployEnvFactory(options);
       options = {
         ...options,
         gatewayApi: gatewayApiEnabledFactory(options),
@@ -1911,6 +1921,10 @@ EOF
       let [deployId, id, replicas] = path.split(',');
       if (!replicas) replicas = options.replicas;
       const confInstances = selectConfInstances(loadConfInstances(deployId), id);
+      // Retarget `underpost-config` at this run's environment before any instance
+      // Deployment is submitted: it is what `underpost host load` reads inside the pod,
+      // and a stale one makes the container resolve the wrong NODE_ENV.
+      if (!options.expose) Underpost.host.apply(domainContextFactory({ env, namespace: options.namespace }));
       const { liveTrafficById, targetTrafficById, serving } = instanceTrafficPlanFactory({
         instances: confInstances,
         requestedTraffic: options.traffic,
@@ -2006,7 +2020,6 @@ EOF
         const targetTraffic = targetTrafficById[instance.id];
         const podId = `${_deployId}-${env}-${targetTraffic}`;
         const ignorePods = Underpost.kubectl.get(podId, 'pods', options.namespace).map((p) => p.NAME);
-        Underpost.deploy.configMap(env, options.namespace);
         shellExec(`kubectl delete service ${podId}-service --namespace ${options.namespace} --ignore-not-found`);
         shellExec(`kubectl delete deployment ${podId} --namespace ${options.namespace} --ignore-not-found`);
         for (const _volume of _volumes)
@@ -2878,7 +2891,7 @@ EOF`);
      */
     cluster: async (path = '', options = DEFAULT_OPTION) => {
       const { underpostRoot } = options;
-      const env = options.dev ? 'development' : 'production';
+      const env = deployEnvFactory(options);
       const baseCommand = options.dev ? 'node bin' : 'underpost';
       const baseClusterCommand = options.dev ? ' --dev' : '';
       const clusterType = clusterTypeFactory(options, 'kubeadm');
@@ -3024,17 +3037,17 @@ EOF`);
                 sudo rm -rf ./engine-private/, \
                 node bin clone underpostnet/engine-cyberia-private, \
                 sudo mv ./engine-cyberia-private ./engine-private, \
-                node bin env dd-cyberia ${env}, \
+                node bin app load --env ${env} --args deploy-id=dd-cyberia, \
                 node ./engine-private/itc-scripts/dd-cyberia-0.js, \
                 sudo chown -R dd:dd /home/dd/engine/src/client/public/cyberia, \
-                node bin env dd-cyberia ${env}, \
-                node bin client dd-cyberia ${env}, \
+                node bin app load --env ${env} --args deploy-id=dd-cyberia, \
+                node bin client dd-cyberia --env ${env}, \
                 node bin start dd-cyberia ${env} --run'`
             : '');
         deployFlagsById[deployId] = deployFlags;
         // SSR status and context documents belong to the ingress bootstrap, so
         // build them on the host before any workload Deployment is submitted.
-        shellExec(`${baseCommand} client ${deployId} ${env}`);
+        shellExec(`${baseCommand} client ${deployId} --env ${env}`);
         shellExec(`${baseCommand} deploy ${deployId} ${env} --build-manifest ${deployFlags}`);
         // Seed the static tree before the routes exist, so every status page and
         // intercepted context the manifests just pointed at resolves from the
@@ -3918,7 +3931,7 @@ EOF`);
         : [
             `npm install -g npm@11.2.0`,
             `npm install -g underpost`,
-            `${baseCommand} secret underpost --create-from-env`,
+            `${baseCommand} host load`,
             `${baseCommand} start --build --run ${deployId} ${env}`,
           ];
       shellExec(`node bin run sync${baseClusterCommand} --deploy-id-cron-jobs none dd-test --cmd "${cmd}"`);
@@ -4301,7 +4314,7 @@ EOF`;
       const storageFilePath = `engine-private/conf/${deployId}/storage.bundle.json`;
 
       shellExec(`${baseCommand} env ${deployId} ${env}`);
-      shellExec(`${baseCommand} client ${deployId} --build-zip${splitFlag ? ` ${splitFlag}` : ''}`);
+      shellExec(`${baseCommand} client ${deployId} --env ${env} --build-zip${splitFlag ? ` ${splitFlag}` : ''}`);
 
       const pushBundleFiles = (host, routePath) => {
         const buildId = `${host}-${routePath.replaceAll('/', '')}`;
