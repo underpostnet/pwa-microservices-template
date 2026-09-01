@@ -2,7 +2,9 @@
 
 import { expect } from 'chai';
 import fs from 'fs-extra';
+import os from 'node:os';
 import UnderpostCron, {
+  cronCheckoutContextFactory,
   cronDeployIdResolve,
   cronJobYamlFactory,
   loadCronDeployEnv,
@@ -12,7 +14,9 @@ import UnderpostCron, {
 } from '../../../../src/server/ops/cron.js';
 import Underpost from '../../../../src/index.js';
 import UnderpostImage from '../../../../src/cli/image.js';
+import UnderpostSecret from '../../../../src/cli/secrets.js';
 import { Dns } from '../../../../src/server/network/dns.js';
+import { SCOPE_ENTITLEMENTS } from '../../../../src/server/runtime/config-scope.js';
 import { shellHarness } from '../../../support/shell-harness.js';
 
 const CRON_ID_PATH = './engine-private/deploy/dd.cron';
@@ -136,6 +140,44 @@ describe('cron deploy environment', () => {
   });
 });
 
+// Regression: the job body is the checkout's own CLI, so a mount `container_t` may not read
+// surfaced as `Cannot find module '/home/dd/engine/bin'` — naming neither the mount nor the policy
+// that denied it, and pinning the pod to the node holding the checkout did not help.
+describe('checkout readability', () => {
+  let harness;
+
+  beforeEach(() => (harness = shellHarness()));
+  afterEach(() => harness.restore());
+
+  const context = ({ mode, label }) => {
+    harness.route({ match: 'getenforce', code: 0, stdout: `${mode}\n` });
+    harness.route({ match: 'ls -Zd', code: 0, stdout: `${label} /home/dd/engine\n` });
+    return cronCheckoutContextFactory();
+  };
+
+  it('names the type denying a checkout the pods cannot read', () => {
+    expect(context({ mode: 'Enforcing', label: 'unconfined_u:object_r:user_home_t:s0' })).to.deep.equal({
+      readable: false,
+      type: 'user_home_t',
+    });
+  });
+
+  it('reads the shared container label as usable', () => {
+    expect(context({ mode: 'Enforcing', label: 'system_u:object_r:container_file_t:s0' })).to.deep.equal({
+      readable: true,
+      type: 'container_file_t',
+    });
+  });
+
+  it('claims nothing off an enforcing host, where no label denies', () => {
+    expect(context({ mode: 'Permissive', label: 'unconfined_u:object_r:user_home_t:s0' })).to.deep.equal({
+      readable: true,
+      type: '',
+    });
+    expect(harness.ran('ls -Zd')).to.equal(false);
+  });
+});
+
 describe('CronJob manifest', () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -181,12 +223,18 @@ describe('CronJob manifest', () => {
     expect(render({ nodeName: 'worker-1' })).to.include('kubernetes.io/hostname: worker-1');
   });
 
-  it('loads the cron deploy env before running the job', () => {
-    expect(render()).to.include('node bin app load --env production --args deploy-id=dd-cron');
+  // The pod takes its environment injected, so it materializes none: `app load` reads a
+  // deployment's env file and writes the working tree, and the mirror carries neither.
+  it('states the environment on the pod rather than materializing it from a file', () => {
+    expect(render()).to.not.include('app load');
+    expect(render()).to.include('- name: NODE_ENV\n                  value: production');
+    expect(render({ dev: true })).to.include('- name: NODE_ENV\n                  value: development');
   });
 
-  it('loads the development env under --dev', () => {
-    expect(render({ dev: true })).to.include('node bin app load --env development --args deploy-id=dd-cron');
+  it('injects the cron credential Secret and takes the job straight from the CLI', () => {
+    const yaml = render();
+    expect(yaml).to.include('name: underpost-cron-env');
+    expect(yaml).to.match(/cd \/home\/dd\/engine &&\n\s+node bin cron dd-core dns/);
   });
 
   it('forwards every cluster and execution flag to the containerised command', () => {
@@ -202,19 +250,73 @@ describe('CronJob manifest', () => {
     expect(render({ suspend: true })).to.include('suspend: true');
     expect(render()).to.include('suspend: false');
   });
+
+  describe('host mounts', () => {
+    // Every mount is a host path an unprivileged `container_t` pod has to be able to use, so the
+    // set is asserted exactly rather than loosely: a mount added without a labeling story is a
+    // denial the next Enforcing transition discovers, not a review comment.
+    const hostPaths = (yaml) => [...yaml.matchAll(/^\s+path: (\S+)$/gm)].map((match) => match[1]);
+
+    it('mounts the engine mirror and the metrics textfile directory, and nothing else', () => {
+      expect(hostPaths(render())).to.deep.equal(['/opt/engine', '/var/lib/node_exporter/textfile']);
+    });
+
+    // `container_t` is denied every read under a home tree, so nothing the pods mount may live in
+    // one — the checkout included, which is why they mount a mirror of it instead.
+    it('mounts no host path out of a home directory', () => {
+      const yaml = render();
+      expect(yaml).to.not.include('node_modules/underpost');
+      expect(hostPaths(yaml).every((hostPath) => !/^\/(home|root)(\/|$)/.test(hostPath))).to.equal(true);
+    });
+
+    it('lands the mirror on the path the image and the job body already resolve against', () => {
+      // The container's own layout does not change with the host source: the body still runs
+      // `cd /home/dd/engine`, and every relative path the CLI resolves hangs off it.
+      const yaml = render();
+      expect(yaml).to.include('mountPath: /home/dd/engine');
+      expect(yaml).to.include('cd /home/dd/engine');
+    });
+
+    it('carries no hardcoded Node version, which a runtime upgrade would strand', () => {
+      expect(render()).to.not.match(/v\d+\.\d+\.\d+\/lib/);
+    });
+
+    it('takes the job credentials from a Secret, optional so a pod without one still schedules', () => {
+      const yaml = render();
+      expect(yaml).to.include('envFrom:');
+      expect(yaml).to.include('secretRef:');
+      expect(yaml).to.include('name: underpost-cron-env');
+      expect(yaml).to.include('optional: true');
+    });
+
+    it('mounts the mirror as a Directory that must already exist, never DirectoryOrCreate', () => {
+      // `DirectoryOrCreate` would let kubelet materialize an empty tree and run the job against
+      // no CLI at all; the mirror is a precondition, not something a pod may invent.
+      expect(render()).to.match(/path: \/opt\/engine\n\s+type: Directory\n/);
+    });
+  });
 });
 
 describe('cron CLI', () => {
   let harness;
+  let previousEnv;
 
   beforeEach(() => {
     harness = shellHarness();
     vi.spyOn(UnderpostImage.API, 'pullDockerHubImage').mockImplementation(() => undefined);
+    // `--apply` projects `underpost-cron-env` from whatever this host's own environment carries
+    // within the `cron` scope (see seedEnvValues / SCOPE_ENTITLEMENTS.cron), so any of those keys
+    // set for real in the runner's shell would otherwise get staged and show up in `written`
+    // alongside the manifests, breaking the assertions below in a way that depends on who is
+    // running the suite.
+    previousEnv = { ...process.env };
+    for (const key of SCOPE_ENTITLEMENTS.cron) delete process.env[key];
   });
 
   afterEach(() => {
     harness.restore();
     vi.restoreAllMocks();
+    process.env = previousEnv;
   });
 
   describe('direct execution', () => {
@@ -381,9 +483,86 @@ describe('cron CLI', () => {
       expect(pull.mock.calls.length).to.equal(0);
     });
 
-    it('copies the engine into the kind worker before applying on a kind cluster', async () => {
+    it('copies the engine mirror into the kind worker before applying on a kind cluster', async () => {
       await generate({ apply: true, kind: true });
-      expect(harness.ran('docker cp /home/dd/engine kind-worker:/home/dd/engine')).to.equal(true);
+      expect(harness.ran('docker cp /opt/engine kind-worker:/opt/engine')).to.equal(true);
+    });
+
+    // The pods execute the mirror, so a stale one is the same outage as an unlabeled one. `--delete`
+    // because it is an output: a file the checkout dropped must not survive in the tree they run.
+    it('refreshes the mirror from the checkout before labeling it', async () => {
+      await generate({ apply: true, kubeadm: true });
+      const rsync = harness.calls.find((command) => command.includes('rsync'));
+      expect(rsync).to.include('--delete');
+      expect(rsync).to.include(`'${process.cwd()}/'`);
+      expect(rsync).to.include("'/opt/engine/'");
+      expect(harness.calls.indexOf(rsync)).to.be.lessThan(
+        harness.calls.findIndex((command) => command.includes('restorecon')),
+      );
+    });
+
+    // The mirror carries the shared container label, so every `container_t` process on the node
+    // can read it. An allowlist is what keeps a repository that gains a key from leaking it.
+    it('mirrors an allowlist, closed by a trailing exclude of everything else', async () => {
+      await generate({ apply: true, kubeadm: true });
+      const rules = [...harness.calls.find((command) => command.includes('rsync')).matchAll(/'(--\S+?)'/g)].map(
+        ([, rule]) => rule,
+      );
+      expect(rules.at(-1)).to.equal('--exclude=*');
+      // rsync takes the first matching rule, so a subtraction placed after the include that
+      // covers its parent never fires.
+      for (const asset of ['/src/client/public/**', '/src/runtime/engine-cyberia/**'])
+        expect(rules.indexOf(`--exclude=${asset}`), asset).to.be.lessThan(rules.indexOf('--include=/src/**'));
+    });
+
+    it('narrows engine-private to the documents a job body resolves, and no environment', async () => {
+      await generate({ apply: true, kubeadm: true });
+      const rsync = harness.calls.find((command) => command.includes('rsync'));
+      // `cron` reads deploy/dd.cron, deploy/dd.routes and the conf documents; every value those
+      // documents reference arrives injected, so no env file is mirrored at any environment.
+      expect(rsync).to.include("'--include=/engine-private/conf/*/conf.*.json'");
+      expect(rsync).to.include("'--include=/engine-private/deploy/dd.cron'");
+      expect(rsync).to.include("'--include=/engine-private/deploy/dd.routes'");
+      expect(rsync).to.not.include('.env');
+      // `conf/<id>` also holds per-deploy key pairs, so neither half may be globbed.
+      for (const glob of ['/engine-private/**', '/engine-private/conf/**', '/engine-private/deploy/**'])
+        expect(rsync, glob).to.not.include(glob);
+    });
+
+    // The mirror is readable by every `container_t` process on the node, so no key may reach it.
+    // Every deploy's env file is that deploy's whole credential set, and the mirror is readable by
+    // every container on the node, so none of them is mirrored at any environment.
+    it('mirrors no deployment environment, whichever environment the pods run', async () => {
+      for (const dev of [false, true]) {
+        harness.calls.length = 0;
+        const { written } = await generate({ apply: true, kubeadm: true, dev });
+        expect(
+          harness.calls.find((command) => command.includes('rsync')),
+          `dev=${dev}`,
+        ).to.not.include('.env');
+        for (const manifest of written.values())
+          expect(manifest, `dev=${dev}`).to.include(`value: ${dev ? 'development' : 'production'}`);
+      }
+    });
+
+    it('mirrors no key material, and mounts the connection key as a Secret instead', async () => {
+      const { written } = await generate({ apply: true, kubeadm: true });
+      const rsync = harness.calls.find((command) => command.includes('rsync'));
+      for (const material of ['id_rsa', 'conf.users.json', 'ipfs-cluster-secret', 'mariadb-password'])
+        expect(rsync, material).to.not.include(material);
+
+      for (const manifest of written.values()) {
+        expect(manifest).to.include('secretName: underpost-ssh-key');
+        expect(manifest).to.include('defaultMode: 0400');
+        expect(manifest).to.include('mountPath: /etc/underpost/secrets/ssh');
+      }
+    });
+
+    it('projects the key Secret alongside the credential Secret', async () => {
+      const applied = [];
+      vi.spyOn(UnderpostSecret.API, 'applyIfPresent').mockImplementation((name) => (applied.push(name), true));
+      await generate({ apply: true, kubeadm: true });
+      expect(applied).to.deep.equal(['underpost-cron-env', 'underpost-ssh-key']);
     });
 
     // A nodeSelector naming an unregistered node leaves every Job Pending at its
@@ -398,6 +577,62 @@ describe('cron CLI', () => {
     it('accepts a registered target node', async () => {
       harness.route({ match: 'kubectl get node', code: 0, stdout: 'node/worker-1\n' });
       await generate({ apply: true, nodeName: 'worker-1' });
+      expect(harness.ran('kubectl apply -f')).to.equal(true);
+    });
+
+    // Regression: an unpinned pod landed on a node whose /home/dd/engine was not the checkout,
+    // and the job body died on `Cannot find module '/home/dd/engine/bin'` before it could report
+    // anything of its own. A hostPath mount is node-local, so the placement has to be too.
+    it('pins the pods it publishes to the node whose checkout they mount', async () => {
+      const local = os.hostname();
+      harness.route({ match: `kubectl get node ${local}`, code: 0, stdout: `node/${local}\n` });
+      const { written } = await generate({ apply: true, kubeadm: true });
+      for (const manifest of written.values()) expect(manifest).to.include(`kubernetes.io/hostname: ${local}`);
+    });
+
+    it('leaves a manifest it only writes unpinned, and reads no cluster to write it', async () => {
+      const { written } = await generate();
+      for (const manifest of written.values()) expect(manifest).to.not.include('nodeSelector');
+      expect(harness.calls.length).to.equal(0);
+    });
+
+    it('leaves the pods unpinned when the cluster does not know this machine as a node', async () => {
+      harness.route({ match: 'kubectl get node', code: 0, stdout: '' });
+      const { written } = await generate({ apply: true, kubeadm: true });
+      for (const manifest of written.values()) expect(manifest).to.not.include('nodeSelector');
+    });
+
+    // The context is rendered into the pod's own command, so a run that names none used to
+    // publish a CronJob whose body addressed no cluster at all.
+    it('reads the cluster context off the cluster when the run names none', async () => {
+      harness.route({
+        match: 'kubectl get nodes',
+        code: 0,
+        stdout: 'NAME STATUS ROLES AGE VERSION\nnode-a Ready control-plane 1d v1.30.5+k3s1\n',
+      });
+      const { written } = await generate({ apply: true });
+      for (const manifest of written.values()) expect(manifest).to.include('--k3s');
+    });
+
+    it('never overrides a context the run named', async () => {
+      harness.route({
+        match: 'kubectl get nodes',
+        code: 0,
+        stdout: 'NAME STATUS ROLES AGE VERSION\nnode-a Ready control-plane 1d v1.30.5+k3s1\n',
+      });
+      const { written } = await generate({ apply: true, kubeadm: true });
+      for (const manifest of written.values()) {
+        expect(manifest).to.include('--kubeadm');
+        expect(manifest).to.not.include('--k3s');
+      }
+    });
+
+    // Reported, not repaired: relabeling the operator's live working tree is not this command's
+    // call, so a denied checkout still publishes its manifests.
+    it('publishes even when its pods cannot read the checkout they mount', async () => {
+      harness.route({ match: 'getenforce', code: 0, stdout: 'Enforcing\n' });
+      harness.route({ match: 'ls -Zd', code: 0, stdout: 'unconfined_u:object_r:user_home_t:s0 /home/dd/engine\n' });
+      await generate({ apply: true, kubeadm: true });
       expect(harness.ran('kubectl apply -f')).to.equal(true);
     });
 

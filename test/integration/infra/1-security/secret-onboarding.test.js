@@ -6,9 +6,9 @@ import os from 'node:os';
 import Underpost from '../../../../src/index.js';
 import UnderpostBaremetal from '../../../../src/cli/baremetal.js';
 import UnderpostRepository from '../../../../src/cli/repository.js';
-import UnderpostRootEnv from '../../../../src/cli/env.js';
 import UnderpostState from '../../../../src/cli/state.js';
 import { shellHarness } from '../../../support/shell-harness.js';
+import { scopeValuesFactory } from '../../../../src/server/runtime/config-scope.js';
 
 const sops = () => Underpost.secret;
 const CRON_ID_PATH = './engine-private/deploy/dd.cron';
@@ -123,13 +123,13 @@ describe('grafana administrator credentials', () => {
   });
 });
 
-describe('underpost root env store', () => {
+describe('host configuration store', () => {
   let cleaned;
   let set;
 
   beforeEach(() => {
-    cleaned = vi.spyOn(UnderpostRootEnv.API, 'clean').mockImplementation(() => undefined);
-    set = vi.spyOn(UnderpostRootEnv.API, 'set').mockImplementation(() => undefined);
+    cleaned = vi.spyOn(Underpost.host.store, 'clean').mockImplementation(() => undefined);
+    set = vi.spyOn(Underpost.host.store, 'set').mockImplementation(() => undefined);
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -192,8 +192,8 @@ describe('application deployment environment', () => {
   let set;
 
   beforeEach(() => {
-    cleaned = vi.spyOn(UnderpostRootEnv.API, 'clean').mockImplementation(() => undefined);
-    set = vi.spyOn(UnderpostRootEnv.API, 'set').mockImplementation(() => undefined);
+    cleaned = vi.spyOn(Underpost.host.store, 'clean').mockImplementation(() => undefined);
+    set = vi.spyOn(Underpost.host.store, 'set').mockImplementation(() => undefined);
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -229,8 +229,8 @@ describe('application deployment environment', () => {
     expect(first.source).to.equal('./engine-private/conf/dd-core/.env.production');
   });
 
-  it('materializes the working tree and leaves the host root env store alone', () => {
-    // Regression: `app load` used to rebuild the underpost root env store, which is host-scoped.
+  it('materializes the working tree and leaves the host configuration store alone', () => {
+    // Regression: `app load` used to rebuild the host configuration store, which is host-scoped.
     // Running it after `host load` erased the node's own configuration, container-status included.
     const appSource = fs.readFileSync(new URL('../../../../src/cli/app.js', import.meta.url), 'utf8');
     const loadBody = appSource.slice(
@@ -238,8 +238,8 @@ describe('application deployment environment', () => {
       appSource.indexOf('    publish(context = {}) {'),
     );
     expect(loadBody).to.include('loadConf(deployId');
-    expect(loadBody).to.not.include('Underpost.env.clean()');
-    expect(loadBody).to.not.include('Underpost.env.set(');
+    expect(loadBody).to.not.include('Underpost.host.store.clean()');
+    expect(loadBody).to.not.include('Underpost.host.store.set(');
   });
 
   it('names the missing file instead of silently loading nothing', () => {
@@ -288,8 +288,11 @@ describe('underpost-config secret', () => {
     expect(Underpost.host.envPath('production')).to.equal('./engine-private/conf/dd-fixture-cron/.env.production');
   });
 
-  it('republishes the secret from the sanitized env file and removes the staged copy', () => {
+  it('republishes the secret from a sanitized copy staged on tmpfs, then removes it', () => {
+    // Staged off tmpfs rather than beside the source: the source composes from one file per
+    // scope once the migration has run, and there is no longer one file to stage next to.
     const harness = shellHarness();
+    const stagedPath = '/dev/shm/underpost-host-apply/ops.env';
     const { written, removed } = secretFixture({
       [CRON_ID_PATH]: 'dd-cron',
       './engine-private/conf/dd-cron/.env.production': 'PATH=/usr/bin\nAPP_SECRET=value\n',
@@ -297,9 +300,9 @@ describe('underpost-config secret', () => {
     try {
       Underpost.host.apply({ env: 'production', namespace: 'ops' });
       expect(harness.ran('kubectl delete secret underpost-config -n ops --ignore-not-found')).to.equal(true);
-      expect(harness.ran('--from-env-file=./engine-private/conf/dd-cron/.env.production.secret')).to.equal(true);
-      expect(removed).to.include('./engine-private/conf/dd-cron/.env.production.secret');
-      expect(written.has('./engine-private/conf/dd-cron/.env.production.secret')).to.equal(false);
+      expect(harness.ran(`--from-env-file=${stagedPath}`)).to.equal(true);
+      expect(removed).to.include(stagedPath);
+      expect(written.has(stagedPath)).to.equal(false);
     } finally {
       harness.restore();
     }
@@ -310,9 +313,9 @@ describe('underpost-config secret', () => {
     expect(() => Underpost.host.apply()).to.throw('configuration source not found');
   });
 
-  it('clears the root env store and leaves container state untouched', () => {
+  it('clears the host configuration store and leaves container state untouched', () => {
     // Container runtime state has its own store, so the clean needs no carve-out for it.
-    const clean = vi.spyOn(UnderpostRootEnv.API, 'clean').mockImplementation(() => undefined);
+    const clean = vi.spyOn(Underpost.host.store, 'clean').mockImplementation(() => undefined);
     const stateClean = vi.spyOn(UnderpostState.API, 'clean').mockImplementation(() => undefined);
     vi.spyOn(UnderpostRepository.API, 'cleanupPrivateEngineRepo').mockImplementation(() => undefined);
     Underpost.host.clean({ args: {} });
@@ -731,5 +734,197 @@ describe('secret status report', () => {
     secretFixture({});
     harness.route({ match: 'command -v', code: 0, stdout: 'missing\n' });
     expect(() => sops().statusReport('', {})).not.to.throw();
+  });
+
+  // The cron workloads used to read these values by bind-mounting the directory that holds the
+  // operator's global `.env` — a home-directory tree no unprivileged container can read under
+  // SELinux. Projecting them as a Secret is what replaced that mount, so the environment path has
+  // to work even on a host that keeps no seed file for them.
+  describe('environment-seeded workload secrets', () => {
+    // The connection, not the key: the key path names a host location and would shadow the Secret
+    // volume a pod actually reads, so it is entitled to no scope.
+    const CRON_ENV_VARS = [
+      'GITHUB_TOKEN',
+      'GITHUB_USERNAME',
+      'DEFAULT_SSH_USER',
+      'DEFAULT_SSH_HOST',
+      'DEFAULT_SSH_PORT',
+    ];
+    const CRON_UNENTITLED = ['DEFAULT_SSH_KEY_PATH', 'VULTR_SSH_KEY_PATH'];
+
+    // Every cron-entitled variable is pinned, not just the ones a case sets: the key set is derived
+    // from the live environment, and the host running the suite exports its own connection.
+    const withEnv = (values, run) => {
+      const entitled = Object.keys(scopeValuesFactory(process.env, 'cron'));
+      const cleared = Object.fromEntries([...CRON_ENV_VARS, ...entitled].map((key) => [key, undefined]));
+      const pinned = { ...cleared, ...values };
+      const previous = {};
+      for (const [key, value] of Object.entries(pinned)) {
+        previous[key] = process.env[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      try {
+        return run();
+      } finally {
+        for (const [key, value] of Object.entries(previous))
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+      }
+    };
+
+    it('maps what the cron scope entitles the pods to, derived rather than listed', () => {
+      // The key set is the `cron` scope of whatever the host source carries, so it cannot drift
+      // from the ownership table the way a hand-written list does.
+      const set = Object.fromEntries([...CRON_ENV_VARS, ...CRON_UNENTITLED].map((key) => [key, 'set']));
+      withEnv(set, () => {
+        const mapped = Object.keys(sops().seedEnvKeys('underpost-cron-env'));
+        expect(mapped.sort()).to.include.members(CRON_ENV_VARS.slice().sort());
+        for (const key of CRON_UNENTITLED) expect(mapped, key).to.not.include(key);
+      });
+      for (const key of CRON_UNENTITLED) delete process.env[key];
+    });
+
+    it('never maps a key another scope owns, whatever the host environment carries', () => {
+      const foreign = {
+        DB_PASSWORD: 'app-secret',
+        JWT_SECRET: 'app-secret',
+        MAAS_API_KEY: 'baremetal-secret',
+        NPM_TOKEN: 'publishing-secret',
+        GF_SECURITY_ADMIN_PASSWORD: 'host-only-secret',
+      };
+      withEnv({ GITHUB_TOKEN: 'token-value', ...foreign }, () => {
+        const mapped = sops().seedEnvKeys('underpost-cron-env');
+        const values = sops().seedEnvValues('underpost-cron-env');
+        for (const key of Object.keys(foreign)) {
+          expect(mapped, key).to.not.have.property(key);
+          expect(values, key).to.not.have.property(key);
+        }
+        expect(values).to.have.property('GITHUB_TOKEN', 'token-value');
+      });
+      for (const key of Object.keys(foreign)) delete process.env[key];
+    });
+
+    it('reads the values out of the environment when no seed file exists', () => {
+      withEnv({ GITHUB_TOKEN: 'token-value', DEFAULT_SSH_HOST: '10.0.0.4' }, () => {
+        const values = sops().seedEnvValues('underpost-cron-env');
+        expect(values).to.include({ GITHUB_TOKEN: 'token-value', DEFAULT_SSH_HOST: '10.0.0.4' });
+      });
+    });
+
+    it('treats an unset or empty variable as absent rather than projecting a blank credential', () => {
+      // The cron deploy env declares DEFAULT_SSH_* with empty values; projecting those would give
+      // the pod a configured-looking connection with nothing behind it.
+      withEnv({ GITHUB_TOKEN: 'token-value', GITHUB_USERNAME: '', DEFAULT_SSH_KEY_PATH: '' }, () => {
+        const values = sops().seedEnvValues('underpost-cron-env');
+        expect(values).to.have.property('GITHUB_TOKEN', 'token-value');
+        expect(values).to.not.have.property('GITHUB_USERNAME');
+        expect(values).to.not.have.property('DEFAULT_SSH_KEY_PATH');
+      });
+    });
+
+    it('projects the Secret from the environment, staged on tmpfs and never as a literal', () => {
+      secretFixture({});
+      withEnv({ GITHUB_TOKEN: 'token-value', GITHUB_USERNAME: 'octocat', DEFAULT_SSH_HOST: '10.0.0.4' }, () => {
+        expect(sops().applyFromOriginSeed('underpost-cron-env', 'default')).to.equal(true);
+      });
+      const create = harness.calls.find((command) => command.includes('kubectl create secret generic'));
+      expect(create).to.include('--from-file=GITHUB_TOKEN=/dev/shm/');
+      expect(create).to.include('--from-file=GITHUB_USERNAME=/dev/shm/');
+      expect(create).to.include('--from-file=DEFAULT_SSH_HOST=/dev/shm/');
+      expect(create).to.not.include('token-value');
+      expect(create).to.not.include('--from-literal');
+    });
+
+    it('projects the keys the host does set and omits the rest, rather than refusing outright', () => {
+      // Environment-mapped keys are ambient, not a contract: a partial set still deploys. Only a
+      // half-present set of file-mapped keys (a database credential) is an error.
+      secretFixture({});
+      withEnv({ GITHUB_TOKEN: 'token-value' }, () => {
+        expect(sops().applyFromOriginSeed('underpost-cron-env', 'default')).to.equal(true);
+      });
+      const create = harness.calls.find((command) => command.includes('kubectl create secret generic'));
+      expect(create).to.include('--from-file=GITHUB_TOKEN=');
+      expect(create).to.not.include('DEFAULT_SSH_HOST');
+      expect(create).to.not.include('GITHUB_USERNAME');
+    });
+
+    it('projects nothing, rather than a partial Secret, when neither seed nor environment has it', () => {
+      secretFixture({});
+      withEnv({ GITHUB_TOKEN: undefined, GITHUB_USERNAME: undefined }, () => {
+        expect(sops().applyFromOriginSeed('underpost-cron-env', 'default')).to.equal(false);
+      });
+      expect(harness.calls.some((command) => command.includes('kubectl create secret generic'))).to.equal(false);
+    });
+
+    it('leaves the grafana credentials on their own resolver', () => {
+      expect(sops().seedEnvKeys('grafana-admin')).to.have.keys(['admin-user', 'admin-password']);
+    });
+
+    // The other half of removing the mount: the Secret puts the values in the pod's environment,
+    // and this is what lets `underpost host get` — which reads a file store next to the global
+    // installation — resolve them there.
+    it('resolves a host store key from the environment when the store file is absent', () => {
+      secretFixture({});
+      withEnv({ DEFAULT_SSH_KEY_PATH: '/home/dd/engine/engine-private/deploy/id_rsa' }, () => {
+        expect(Underpost.host.get('DEFAULT_SSH_KEY_PATH', undefined, { disableLog: true })).to.equal(
+          '/home/dd/engine/engine-private/deploy/id_rsa',
+        );
+      });
+    });
+
+    it('keeps the store file authoritative over the environment', () => {
+      secretFixture({ [Underpost.host.store.path()]: 'DEFAULT_SSH_HOST=from-file\n' });
+      // `read()` gates on statSync().isFile(); the shared fixture models only the path table.
+      vi.spyOn(fs, 'statSync').mockReturnValue({ isFile: () => true });
+      withEnv({ DEFAULT_SSH_HOST: 'from-env' }, () => {
+        expect(Underpost.host.get('DEFAULT_SSH_HOST', undefined, { disableLog: true })).to.equal('from-file');
+      });
+    });
+  });
+});
+
+// The connection key is the one credential a workload cannot take as an environment variable:
+// ssh authenticates with a file. One resolver answers where that file is, so a pod and the host
+// CLI reach different keys through the same call rather than through a flag either side sets.
+describe('ssh key resolution', () => {
+  const SECRET_KEY_PATH = '/etc/underpost/secrets/ssh/id_rsa';
+  let mounted;
+
+  beforeEach(() => {
+    mounted = false;
+    delete process.env.DEFAULT_SSH_KEY_PATH;
+    vi.spyOn(fs, 'existsSync').mockImplementation((path) => (`${path}` === SECRET_KEY_PATH ? mounted : false));
+  });
+  afterEach(() => {
+    delete process.env.DEFAULT_SSH_KEY_PATH;
+    vi.restoreAllMocks();
+  });
+
+  it('takes the checkout key on a host with no mount and no configured path', () => {
+    expect(Underpost.ssh.keyPathFactory()).to.equal('./engine-private/deploy/id_rsa');
+  });
+
+  it('takes the projected Secret inside a pod, where the checkout key does not exist', () => {
+    mounted = true;
+    expect(Underpost.ssh.keyPathFactory()).to.equal(SECRET_KEY_PATH);
+  });
+
+  it('lets an explicit path win over the mount, so a caller can still name a key', () => {
+    mounted = true;
+    expect(Underpost.ssh.keyPathFactory('/tmp/other-key')).to.equal('/tmp/other-key');
+  });
+
+  // Regression: resolving the key from the ambient DEFAULT_SSH_KEY_PATH sent every node of a
+  // fleet sync the same key. On a host the key is per target — the hub answers to root's, the LAN
+  // nodes to another account's — and only the caller knows which, so an explicit path always wins.
+  it('never overrides a caller path, which is how a fleet reaches each node with its own key', () => {
+    process.env.DEFAULT_SSH_KEY_PATH = '/ambient/key';
+    mounted = true;
+    expect(Underpost.ssh.keyPathFactory('/hub/root-key')).to.equal('/hub/root-key');
+    mounted = false;
+    expect(Underpost.ssh.keyPathFactory('/hub/root-key')).to.equal('/hub/root-key');
+    // The ambient value is not a source: it names one key for a fleet that has several.
+    expect(Underpost.ssh.keyPathFactory()).to.equal('./engine-private/deploy/id_rsa');
   });
 });

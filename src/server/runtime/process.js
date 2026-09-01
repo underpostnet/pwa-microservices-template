@@ -24,10 +24,11 @@
 import shell from 'shelljs';
 import fs from 'fs-extra';
 import nodePath from 'node:path';
-import { loggerFactory } from '../ops/logger.js';
+import { loggerFactory, redactSensitiveText } from '../ops/logger.js';
 import clipboard from 'clipboardy';
 import Underpost from '../../index.js';
 import { latchRuntimeError } from './runtime-status.js';
+import { executionDecisionFactory } from '../build/execution.js';
 const logger = loggerFactory(import.meta);
 /**
  * Gets the current working directory, replacing backslashes with forward slashes for consistency.
@@ -143,28 +144,26 @@ class ProcessController {
   }
 }
 /**
- * `ShellExecError` — thrown by `shellExec` when the underlying command
- * exits with a non-zero code (the default fail-fast behaviour). Carries
- * the exit code, stdout, and stderr for inspection by callers / CI
- * pipelines that need structured failure data.
- */
-/**
- * Masks credentials embedded in a URL's userinfo.
+ * Quotes one value as a single shell argument.
  *
- * Commands carrying a token reach a terminal, a CI log and an operator's paste
- * buffer, and a token that appears in any of those has to be rotated. The
- * command stays readable; only the secret is removed.
+ * Single source of that quoting: a composed command reaches `sh -c`, so any
+ * value carrying spaces, commas or quotes has to survive one more parse than
+ * the caller wrote it for. Single quotes are literal in POSIX shells, and an
+ * embedded single quote is closed, escaped and reopened.
  * @memberof Process
- * @param {string} [value] - Command or message that may embed credentials.
- * @returns {string} The same text with any `scheme://user:secret@` reduced to `scheme://***@`.
+ * @param {*} value - Value to pass as one argument.
+ * @returns {string} The value, quoted.
  */
-const redactCredentials = (value = '') => `${value ?? ''}`.replace(/\/\/[^/\s@]+@/g, '//***@');
+const shellArgumentFactory = (value) => `'${`${value ?? ''}`.replaceAll("'", `'\\''`)}'`;
 
+/**
+ * Error thrown by `shellExec` on a non-zero exit, with structured process output.
+ */
 class ShellExecError extends Error {
   constructor(cmd, code, stdout, stderr) {
-    super(`shellExec failed (exit=${code}): ${redactCredentials(cmd)}`);
+    super(`shellExec failed (exit=${code}): ${redactSensitiveText(cmd)}`);
     this.name = 'ShellExecError';
-    this.cmd = redactCredentials(cmd);
+    this.cmd = redactSensitiveText(cmd);
     this.code = code;
     this.stdout = stdout;
     this.stderr = stderr;
@@ -195,8 +194,46 @@ class ShellExecError extends Error {
  * @returns {string|shelljs.ShellString} `ShellString` by default; the stdout string when `stdout: true`.
  * @throws {ShellExecError} On non-zero exit when `silentOnError` is not set.
  */
+/**
+ * The result a denied read hands back.
+ *
+ * Shaped as a `ShellString` so an elided command is indistinguishable from one that ran
+ * and found nothing — which is the answer the `silentOnError` call sites already handle.
+ * @returns {shelljs.ShellString} Empty successful result.
+ * @memberof Process
+ */
+const neutralShellResult = () => {
+  const result = shell.ShellString('');
+  result.code = 0;
+  result.stdout = '';
+  result.stderr = '';
+  return result;
+};
+
+/**
+ * Applies the active execution profile to one command.
+ *
+ * This is the single gate the profile system rests on: because every external
+ * invocation reaches it, an offline stage needs no per-call-site opt-out.
+ * @param {string} cmd - The command about to run.
+ * @param {Object} options - The `shellExec` options.
+ * @returns {null|{elided: true, result: *}} `null` when the command may run.
+ * @memberof Process
+ */
+const executionGate = (cmd, options) => {
+  const decision = executionDecisionFactory(cmd);
+  if (decision.permitted) return null;
+  logger.info(`[${decision.profile}] elided ${decision.capability}`, redactSensitiveText(cmd));
+  return { elided: true, result: options.stdout ? '' : neutralShellResult() };
+};
+
 const shellExec = (cmd, options = {}) => {
-  if (!options.disableLog) logger.info(`cmd`, redactCredentials(cmd));
+  const gated = executionGate(cmd, options);
+  if (gated) {
+    if (options.callback) return options.callback(0, '', '');
+    return gated.result;
+  }
+  if (!options.disableLog) logger.info(`cmd`, redactSensitiveText(cmd));
 
   // Whitelist exactly the keys `shelljs.exec` understands. Passing our own
   // bookkeeping keys through (or a literal `cwd: undefined`) makes shelljs
@@ -204,6 +241,7 @@ const shellExec = (cmd, options = {}) => {
   const shellOpts = {};
   if (options.silent !== undefined) shellOpts.silent = options.silent;
   if (options.async !== undefined) shellOpts.async = options.async;
+  if (options.env !== undefined) shellOpts.env = options.env;
 
   // Hermetic cwd. shelljs.cd mutates a process-wide global; instead we
   // snapshot the current cwd here, switch for the duration of this call,
@@ -244,6 +282,43 @@ const shellExec = (cmd, options = {}) => {
     }
   }
 };
+/**
+ * Runs a command as a child process and resolves when it exits, without blocking the event loop.
+ *
+ * Same contract as {@link shellExec}: a non-zero exit throws {@link ShellExecError} unless
+ * `silentOnError`, and `stdout` returns the captured output. The difference is that timers and
+ * sockets keep running while the child does — which is what lets the in-pod status endpoint
+ * answer during a build instead of going silent for its whole duration.
+ *
+ * @memberof Process
+ * @param {string} cmd - The command to run.
+ * @param {Object} [options] - Options.
+ * @param {boolean} [options.silent] - Suppress child output on the parent stdio.
+ * @param {boolean} [options.silentOnError] - Resolve instead of throwing on a non-zero exit.
+ * @param {boolean} [options.stdout] - Resolve with the captured stdout rather than the result.
+ * @param {boolean} [options.disableLog] - Suppress the command log line.
+ * @param {string} [options.cwd] - Directory to run in.
+ * @param {NodeJS.ProcessEnv} [options.env] - Environment passed only to the child process.
+ * @returns {Promise<*>} Resolves with the result, or the stdout when `stdout` is set.
+ */
+const shellExecAsync = (cmd, options = {}) =>
+  new Promise((resolve, reject) => {
+    const gated = executionGate(cmd, options);
+    if (gated) return resolve(options.stdout ? '' : { code: 0, stdout: '', stderr: '' });
+    if (!options.disableLog) logger.info(`cmd`, redactSensitiveText(cmd));
+    const shellOpts = { async: true };
+    if (options.silent !== undefined) shellOpts.silent = options.silent;
+    if (options.cwd) shellOpts.cwd = options.cwd;
+    if (options.env !== undefined) shellOpts.env = options.env;
+    shell.exec(cmd, shellOpts, (code, stdout, stderr) => {
+      if (code !== 0 && !options.silentOnError) {
+        latchRuntimeError();
+        return reject(new ShellExecError(cmd, code, stdout || '', stderr || ''));
+      }
+      resolve(options.stdout ? stdout : { code, stdout, stderr });
+    });
+  });
+
 /**
  * Blocks the calling thread for `ms` milliseconds.
  *
@@ -353,8 +428,9 @@ export {
   ProcessController,
   ShellExecError,
   getRootDirectory,
-  redactCredentials,
+  shellArgumentFactory,
   shellExec,
+  shellExecAsync,
   shellCd,
   sleepSync,
   pbcopy,

@@ -493,7 +493,7 @@ class UnderpostRelease {
 
       // ── Downstream regenerations and manifest sync (unchanged from previous flow). ──
       shellExec(`node bin/deploy cli-docs ${version} ${newVersion}`);
-      shellExec(`node bin/deploy update-dependencies`);
+      shellExec(`node bin package --sync`);
       shellExec(`node bin/build dd`);
       shellExec(`node bin run build-cluster-deployment-manifests`);
       shellExec(`node bin new --default-conf --conf-workflow-id template`);
@@ -525,8 +525,8 @@ class UnderpostRelease {
      */
     async ci(deployId, message, options) {
       dotenv.config({ path: `./engine-private/conf/dd-cron/.env.production`, override: true });
-      const suffix = deployId.replace(/^(dd-|engine-)/, '');
-      const repoName = `engine-${suffix}`;
+      const suffix = Underpost.repo.confIdFactory(deployId);
+      const repoName = Underpost.repo.engineRepoFactory(deployId);
       const buildTarget = `dd-${suffix}`;
       const githubOrg = process.env.GITHUB_USERNAME || 'underpostnet';
       shellCd('/home/dd');

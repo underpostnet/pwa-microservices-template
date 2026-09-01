@@ -29,7 +29,7 @@ import {
 import { loggerFactory } from '../server/ops/logger.js';
 import { HOST_VOLUME_ROOT } from '../server/runtime/environment.js';
 import { shellExec } from '../server/runtime/process.js';
-import { runSELinuxCommands, selinuxRestoreconCommandFactory } from '../server/security/selinux.js';
+import { ensureContainerStorage, ensureContainerStorageSubtree } from '../server/security/container-storage.js';
 import { INTERNAL_READY_PATH, INTERNAL_HEALTH_PATH } from '../server/runtime/runtime-status.js';
 import { staticContextRoutesFactory, statusPageRoutesFactory } from '../client-builder/client-build.js';
 import {
@@ -50,6 +50,7 @@ import nodePath from 'node:path';
 import dotenv from 'dotenv';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { appSecretName } from './app.js';
 import { domainContextFactory } from './domains.js';
 import Underpost from '../index.js';
 
@@ -91,6 +92,17 @@ const GATEWAY_CLASS_DEFAULT = 'eg';
 const UPSTREAM_FAILURE_STATUSES = [502, 503, 504];
 
 const CONTAINER_ENGINE_ROOT = '/home/dd/engine';
+
+// The manifest set `deploy --build-manifest` produces for one environment.
+const DEFAULT_MANIFEST_FILES = [
+  'deployment.yaml',
+  'proxy.yaml',
+  'gateway.yaml',
+  'httproute.yaml',
+  'pv-pvc.yaml',
+  'traffic-service.yaml',
+  'grpc-service.yaml',
+];
 
 /**
  * Maps a host/path's edge-served views onto the statuses the gateway intercepts
@@ -157,12 +169,12 @@ const gatewayDurationFactory = (value) => {
 
 const logger = loggerFactory(import.meta);
 
-// hostPath volume trees are written under the operator's home directory, which
-// carries a label no unprivileged container can read. Cluster bring-up registers
-// the persistent mapping for HOST_VOLUME_ROOT; this applies it to what a deploy
-// just wrote. A no-op where SELinux or its userspace is absent.
-const restoreContainerContext = (path) =>
-  runSELinuxCommands([selinuxRestoreconCommandFactory(path)], { execute: shellExec });
+// hostPath volume trees are written under the operator's home directory, which carries a label no
+// unprivileged container can read. This registers the persistent mapping and restores the tree,
+// rather than only restoring it: a deploy must not depend on cluster bring-up having run on this
+// host, and a plain `restorecon` against an unmapped path re-applies the very default that makes
+// the volume unreadable. A no-op where SELinux or its userspace is absent.
+const prepareContainerStorage = (path) => ensureContainerStorageSubtree(path, { execute: shellExec });
 
 /**
  * @class UnderpostDeploy
@@ -501,6 +513,12 @@ ${
           envFrom:
             - secretRef:
                 name: underpost-config
+            # The deployment's own environment, with its .env.<env>.oci overlay already
+            # applied by 'app apply'. Optional so a deployment predating that Secret still
+            # starts; the in-pod 'app load' resolves the same overlay as a second path.
+            - secretRef:
+                name: ${appSecretName(deployId, env)}
+                optional: true
 ${
   internalStatusPort
     ? `          env:
@@ -1094,6 +1112,41 @@ spec:
     kind: ClusterIssuer
   secretName: ${host}`;
     },
+    /**
+     * Mirrors each deploy's built development manifests into the project tree, and refreshes the
+     * public default configuration they belong to.
+     *
+     * The project repository carries the development manifests of every routed deploy; the
+     * private build directory is where they are produced. A manifest the build stopped producing
+     * is removed here rather than left behind, so the two cannot disagree about what a deploy
+     * ships.
+     * @param {string[]} [deployIds] - Deploy ids to mirror; the route table plus `dd-cron` otherwise.
+     * @returns {Array<{deployId: string, copied: string[], removed: string[]}>} What was mirrored.
+     * @memberof UnderpostDeploy
+     */
+    mirrorDefaultManifests(deployIds = readDeployRoutes().concat(['dd-cron'])) {
+      const mirrored = [];
+      for (const deployId of deployIds) {
+        const copied = [];
+        const removed = [];
+        for (const file of DEFAULT_MANIFEST_FILES) {
+          const source = `./engine-private/conf/${deployId}/build/development/${file}`;
+          const target = `./manifests/deployment/${deployId}-development/${file}`;
+          if (fs.existsSync(source)) {
+            fs.copySync(source, target);
+            copied.push(file);
+          } else if (fs.existsSync(target)) {
+            fs.removeSync(target);
+            removed.push(file);
+          }
+        }
+        shellExec(`node bin new --dev --default-conf --deploy-id ${deployId}`);
+        mirrored.push({ deployId, copied, removed });
+      }
+      logger.info('Default deployment manifests mirrored', { deployIds: mirrored.map(({ deployId }) => deployId) });
+      return mirrored;
+    },
+
     /**
      * Retrieves the current traffic status for a deployment.
      * @param {string} deployId - Deployment ID for which the traffic status is being retrieved.
@@ -1734,6 +1787,45 @@ ${rules}`;
     },
 
     /**
+     * Reports whether a Deployment object exists at all.
+     *
+     * The inactive colour of a blue/green pair is routinely absent, so callers
+     * that act on it must distinguish "not deployed yet" from a failed lookup.
+     * @param {string} deployment - Deployment name.
+     * @param {string} [namespace] - Kubernetes namespace.
+     * @returns {boolean} True when the object is present.
+     */
+    deploymentExists({ deployment, namespace = 'default' }) {
+      return !!`${
+        shellExec(`kubectl get deployment ${deployment} -n ${namespace} --ignore-not-found -o name`, {
+          stdout: true,
+          silent: true,
+          silentOnError: true,
+        }) || ''
+      }`.trim();
+    },
+
+    /**
+     * Node a live Deployment is pinned to, read from its `nodeSelector`.
+     *
+     * A colour created next to a live one must inherit that placement: its
+     * hostPath volumes exist on that node only.
+     * @param {string} deployment - Deployment name.
+     * @param {string} [namespace] - Kubernetes namespace.
+     * @returns {string} Node hostname, or empty when the workload is unpinned or absent.
+     */
+    deploymentNode({ deployment, namespace = 'default' }) {
+      if (!deployment) return '';
+      return `${
+        shellExec(
+          `kubectl get deployment ${deployment} -n ${namespace} ` +
+            `-o jsonpath='{.spec.template.spec.nodeSelector.kubernetes\.io/hostname}'`,
+          { stdout: true, silent: true, silentOnError: true },
+        ) || ''
+      }`.trim();
+    },
+
+    /**
      * Reports whether the Deployment controller has observed the current
      * generation and every desired replica is updated, Ready, and Available.
      * @param {string} deployment - Deployment name.
@@ -1888,12 +1980,11 @@ ${rules}`;
               ? 'project'
               : null,
           });
-      // The documents were just written under the operator's home tree, whose
-      // policy label (user_home_t) the unprivileged gateway container cannot
-      // read — it would answer 403 for every one of them. The persistent
-      // mapping is registered at cluster bring-up; restore it here so files
-      // this pass created carry it too.
-      restoreContainerContext(hostRoot);
+      // The documents were just written under the operator's home tree, whose policy label
+      // (user_home_t) the unprivileged gateway container cannot read — it would answer 403 for
+      // every one of them. Register the mapping for the volume root and restore this subtree, so
+      // the files this pass created carry the shared container label.
+      prepareContainerStorage(hostRoot);
       logger.info('Static edge documents placed', {
         deployId,
         podName: podName || '(no running workload; placed from this checkout)',
@@ -2199,11 +2290,19 @@ EOF`);
           Underpost.deploy.syncStaticAssets(deployId, env, options);
         return;
       }
+      // Before the `--build-manifest` return: a manifest build is when the Secrets it mounts
+      // must exist, and `run sync` reaches this command with `--build-manifest --info-router`.
+      if (!options.disableUpdateUnderpostConfig) {
+        Underpost.host.apply(domainContextFactory({ env, namespace }));
+        // Each deployment's own env, OCI overlay applied. Without it the overlay reaches a pod
+        // only through in-pod `app load`, so a stale image keeps the base file's 127.0.0.1.
+        for (const _deployId of deployIds)
+          Underpost.app.apply(domainContextFactory({ env, namespace, args: { 'deploy-id': _deployId } }));
+      }
       if (options.infoRouter === true || options.buildManifest === true) {
         logger.info('router', await Underpost.deploy.routerFactory(deployList, env));
         return;
       }
-      if (!options.disableUpdateUnderpostConfig) Underpost.host.apply(domainContextFactory({ env, namespace }));
 
       for (const _deployId of deployList.split(',')) {
         const deployId = _deployId.trim();
@@ -2528,7 +2627,7 @@ EOF`);
       const grpcServicePath = `./engine-private/conf/${deployId}/build/${env}/grpc-service.yaml`;
       if (fs.existsSync(grpcServicePath)) shellExec(`kubectl apply -f ${grpcServicePath} -n ${namespace}`);
 
-      Underpost.env.set(`${deployId}-${env}-traffic`, targetTraffic);
+      Underpost.host.store.set(`${deployId}-${env}-traffic`, targetTraffic);
     },
 
     /**
@@ -2538,9 +2637,8 @@ EOF`);
      * behaves identically everywhere:
      *
      *   1. **Explicit node** — `node` (the resolved `--node` value). Upstream
-     *      runners derive it from the comma-path field or `--node-name`
-     *      (`run sync`: `path.split(',')[4]` > `--node-name` > default) and from
-     *      `--node-name` directly (`run instance`).
+     *      runners derive it from `--node-name` (`run sync`: `--node-name` >
+     *      cluster-type default; `run instance`: `--node-name` directly).
      *   2. **`UNDERPOST_DEPLOY_NODE` env** — for kubeadm / k3s, the configured
      *      target node name. This makes hostPath PV `nodeAffinity` deterministic
      *      regardless of where the manifest is *built*: building inside a
@@ -2644,10 +2742,15 @@ EOF`);
         const localHost = os.hostname();
         dataNode = options.nodeName || localHost;
         if (dataNode === localHost) {
-          // Target node is the control plane / current host: write directly.
-          if (!fs.existsSync(rootVolumeHostPath)) fs.mkdirSync(rootVolumeHostPath, { recursive: true });
+          // Target node is the control plane / current host: write directly. The directory is
+          // created owned by the invoking user — the root above it may be root-owned, and the copy
+          // that follows is unprivileged — and labeled before as well as after the copy, so the
+          // files land already carrying the shared container label instead of inheriting the
+          // operator home tree's.
+          const { uid, gid } = os.userInfo();
+          ensureContainerStorage(rootVolumeHostPath, { execute: shellExec, owner: `${uid}:${gid}` });
           fs.copySync(volume.volumeMountPath, rootVolumeHostPath);
-          restoreContainerContext(rootVolumeHostPath);
+          prepareContainerStorage(rootVolumeHostPath);
         } else {
           // Target node is remote: fs.copySync would only write the control-plane
           // filesystem, leaving the real node's hostPath empty. Ship the folder to
@@ -2667,6 +2770,9 @@ EOF`);
             host: nodeHost,
             localDir: volume.volumeMountPath,
             remoteDir: rootVolumeHostPath,
+            // The volume is mounted on that node, so the label has to exist there. Labeling the
+            // control plane's copy of the path would leave the pod reading an unlabeled tree.
+            containerStorage: true,
             ...(options.sshKeyPath ? { keyPath: options.sshKeyPath } : {}),
           });
         }

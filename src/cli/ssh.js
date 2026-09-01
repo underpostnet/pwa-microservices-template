@@ -5,8 +5,8 @@
  */
 
 import { generateRandomPasswordSelection } from '../client/components/core/CommonJs.js';
-import { pbcopy, shellExec } from '../server/runtime/process.js';
-import { loggerFactory } from '../server/ops/logger.js';
+import { shellExec } from '../server/runtime/process.js';
+import { loggerFactory, redactSensitiveText } from '../server/ops/logger.js';
 import { waitForPort } from '../server/runtime/conf.js';
 import {
   runSELinuxCommands,
@@ -16,10 +16,32 @@ import {
   selinuxSshPortCommandsFactory,
   shellArgumentFactory,
 } from '../server/security/selinux.js';
+import ContainerStorageService from '../server/security/container-storage.js';
 import fs from 'fs-extra';
 import Underpost from '../index.js';
 
 const logger = loggerFactory(import.meta);
+
+const shellExecRedacted = (command, options = {}) => {
+  const silent = options.silent === true;
+  try {
+    const result = shellExec(command, { ...options, silent: true });
+    if (!silent) {
+      if (result.stdout) process.stdout.write(redactSensitiveText(result.stdout));
+      if (result.stderr) process.stderr.write(redactSensitiveText(result.stderr));
+    }
+    return result.stdout;
+  } catch (error) {
+    error.stdout = redactSensitiveText(error.stdout || '');
+    error.stderr = redactSensitiveText(error.stderr || '');
+    error.message = redactSensitiveText(error.message || error);
+    if (!silent) {
+      if (error.stdout) process.stdout.write(error.stdout);
+      if (error.stderr) process.stderr.write(error.stderr);
+    }
+    throw error;
+  }
+};
 
 /**
  * SSH users are cluster scoped: one registry and one key store serve every
@@ -43,6 +65,24 @@ const logger = loggerFactory(import.meta);
 const USERS_CONF_PATH = './engine-private/deploy/conf.users.json';
 const USERS_KEYS_PATH = './engine-private/deploy/users';
 const DEFAULT_SSH_PORT = 22;
+/** The checkout's own key, and where a workload receives it instead: a projected Secret volume. */
+const HOST_KEY_PATH = './engine-private/deploy/id_rsa';
+const SECRET_KEY_PATH = '/etc/underpost/secrets/ssh/id_rsa';
+
+/**
+ * The private key this process authenticates with.
+ *
+ * One resolver for every SSH caller, because the answer differs by where the process runs and
+ * nothing else should have to know that. A pod has the key as a projected Secret and no checkout
+ * to read it from; the host CLI has the checkout and no mount. The mount is preferred over the
+ * checkout default but never over a caller's own path, because on a host the key is per target —
+ * the hub answers to a different one than the LAN nodes — and only the caller knows which.
+ * @param {string} [keyPath] - Explicit path, which always wins.
+ * @returns {string} Path to the private key.
+ * @memberof UnderpostSSH
+ */
+const sshKeyPathFactory = (keyPath = '') =>
+  `${keyPath || ''}`.trim() || (fs.existsSync(SECRET_KEY_PATH) ? SECRET_KEY_PATH : '') || HOST_KEY_PATH;
 
 /**
  * @method hostNameFactory
@@ -442,8 +482,6 @@ class UnderpostSSH {
      * @param {boolean} [options.keyTest=false] - Test SSH key generation
      * @param {boolean} [options.stop=false] - Stop SSH service
      * @param {boolean} [options.status=false] - Check SSH service status
-     * @param {boolean} [options.connectUri=false] - Output SSH connection URI
-     * @param {boolean} [options.copy=false] - Copy SSH connection URI to clipboard
      * @returns {Promise<void>}
      * @description
      * Handles SSH operations against the cluster users registry
@@ -475,8 +513,6 @@ class UnderpostSSH {
         keyTest: false,
         stop: false,
         status: false,
-        connectUri: false,
-        copy: false,
       },
     ) => {
       if (!options.user) options.user = 'root';
@@ -491,7 +527,7 @@ class UnderpostSSH {
       // unambiguous and several are not — an account on many spokes must be told
       // which one is meant rather than acting on whichever the registry lists
       // first. Listing and removal are account-scoped and need no host at all.
-      const hostScoped = options.connectUri || options.userAdd || options.start || options.keyTest || options.hostsList;
+      const hostScoped = options.userAdd || options.start || options.keyTest || options.hostsList;
       if (!options.host && hostScoped) {
         if (registeredHosts.length > 1)
           throw new Error(
@@ -515,13 +551,6 @@ class UnderpostSSH {
       const sshDirFactory = () => `${Underpost.ssh.getUserHome(options.user)}/.ssh`;
 
       logger.info('options', options);
-
-      if (options.connectUri) {
-        const uri = `ssh ${options.user}@${options.host} -i ${keyPath} -p ${options.port}`;
-        if (options.copy) pbcopy(uri);
-        else console.log(uri);
-        return;
-      }
 
       if (options.reset) {
         const sshDir = sshDirFactory();
@@ -705,9 +734,13 @@ class UnderpostSSH {
      * @param {string} params.remoteDir - Destination directory on the node.
      * @param {number} [params.port=22] - SSH port.
      * @param {string} [params.user='root'] - SSH user (key-only).
-     * @param {string} [params.keyPath='./engine-private/deploy/id_rsa'] - Private key path.
+     * @param {string} [params.keyPath] - Private key path; resolved by {@link sshKeyPathFactory} when empty.
      * @param {string} [params.owner='1000:1000'] - chown target on the node (empty to skip).
      * @param {string} [params.mode='755'] - chmod mode on the node (empty to skip).
+     * @param {boolean} [params.containerStorage=false] - Give the destination tree the persistent
+     *   `container_file_t` mapping on the node. Required for a hostPath volume: the label has to
+     *   exist on the node that actually mounts it, and a directory created here by `mkdir -p`
+     *   otherwise inherits whatever the parent carries — which no unprivileged pod can read.
      * @returns {void}
      */
     copyDirToNode: ({
@@ -716,16 +749,18 @@ class UnderpostSSH {
       remoteDir,
       port = 22,
       user = 'root',
-      keyPath = './engine-private/deploy/id_rsa',
+      keyPath = '',
       owner = '1000:1000',
       mode = '755',
+      containerStorage = false,
     }) => {
       if (!host) throw new Error('copyDirToNode requires a host');
       if (!localDir || !fs.existsSync(localDir)) throw new Error(`copyDirToNode: local dir not found: ${localDir}`);
       if (!remoteDir) throw new Error('copyDirToNode requires a remoteDir');
+      const key = sshKeyPathFactory(keyPath);
       try {
-        shellExec(`chmod 600 ${keyPath}`, { silent: true, silentOnError: true, disableLog: true });
-        const sshOpts = `-i ${keyPath} -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${port}`;
+        shellExec(`chmod 600 ${key}`, { silent: true, silentOnError: true, disableLog: true });
+        const sshOpts = `-i ${key} -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${port}`;
         shellExec(`ssh ${sshOpts} ${user}@${host} 'mkdir -p ${remoteDir}'`, {
           silent: true,
           disableLog: true,
@@ -741,11 +776,31 @@ class UnderpostSSH {
             silent: true,
             disableLog: true,
           });
+        // After the fixups, so the restorecon pass covers the files tar just extracted. A no-op
+        // on a node without SELinux, and it never runs unless the caller asked for it.
+        if (containerStorage)
+          shellExec(
+            `ssh ${sshOpts} ${user}@${host} ${shellArgumentFactory(
+              ContainerStorageService.containerStorageSubtreeCommandsFactory(remoteDir, {
+                sudo: user !== 'root',
+              }).join('; '),
+            )}`,
+            { silent: true, disableLog: true },
+          );
       } catch (err) {
         logger.error(`copyDirToNode failed`);
         process.exit(1);
       }
     },
+
+    /**
+     * The private key this process authenticates with; see {@link sshKeyPathFactory}.
+     * @function keyPathFactory
+     * @param {string} [keyPath] - Explicit path, which always wins.
+     * @returns {string} Path to the private key.
+     * @memberof UnderpostSSH
+     */
+    keyPathFactory: sshKeyPathFactory,
 
     /**
      * Generic SSH remote command runner that SSH execution logic.
@@ -778,24 +833,36 @@ class UnderpostSSH {
       // Local execution still honours `cd`: the underpost CLI resolves its deploy
       // configuration relative to the working directory, so running it from
       // wherever the caller happened to start would act on a different cluster's
-      // config, or none.
+      // config, or none. It honours it only when that directory exists — a checkout
+      // that lives elsewhere (a CI container, a developer tree) has no deploy path to
+      // enter, and chdir failing there turns a runnable local command into an error
+      // reported as a failed remediation.
       // The generated wrapper is transport, not information: echoing it buries
       // whatever the command actually said under a page of boilerplate.
-      if (!remote) return shellExec(remoteCommand, { ...(cd ? { cwd: cd } : {}), silent, disableLog: true });
+      if (!remote) {
+        const cwd = cd && fs.existsSync(cd) ? cd : '';
+        return shellExecRedacted(remoteCommand, { ...(cwd ? { cwd } : {}), silent, disableLog: true });
+      }
 
       // Set up SSH credentials from the cluster config
       if (user) await Underpost.ssh.setDefautlSshCredentials({ user, host });
 
-      // Build the complete SSH command
+      // The store holds the key `setDefautlSshCredentials` just resolved for this target, which is
+      // the only per-target answer; a pod has no such key on disk and takes its mount instead.
+      const sshKey = fs.existsSync(SECRET_KEY_PATH)
+        ? shellArgumentFactory(SECRET_KEY_PATH)
+        : '$(node bin host get --plain DEFAULT_SSH_KEY_PATH)';
+
       const sshScript = `#!/usr/bin/env bash
 set -euo pipefail
 
-REMOTE_USER=$(node bin config get --plain DEFAULT_SSH_USER)
-REMOTE_HOST=$(node bin config get --plain DEFAULT_SSH_HOST)
-REMOTE_PORT=$(node bin config get --plain DEFAULT_SSH_PORT)
-SSH_KEY=$(node bin config get --plain DEFAULT_SSH_KEY_PATH)
+REMOTE_USER=$(node bin host get --plain DEFAULT_SSH_USER)
+REMOTE_HOST=$(node bin host get --plain DEFAULT_SSH_HOST)
+REMOTE_PORT=$(node bin host get --plain DEFAULT_SSH_PORT)
+SSH_KEY=${sshKey}
 
-chmod 600 "$SSH_KEY"
+# A projected Secret is read-only, and its mode is already restrictive enough for ssh.
+chmod 600 "$SSH_KEY" 2>/dev/null || true
 
 ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "$REMOTE_USER@$REMOTE_HOST" -p $REMOTE_PORT sh <<EOF
 ${cd ? `cd ${cd}` : ''}
@@ -803,7 +870,7 @@ ${useSudo ? `sudo -n -- /bin/bash -lc "${remoteCommand}"` : remoteCommand}
 EOF
 `;
 
-      return shellExec(sshScript, { stdout: true, silent, disableLog: true });
+      return shellExecRedacted(sshScript, { silent, disableLog: true });
     },
 
     /**
@@ -851,7 +918,7 @@ EOF
      * @param {string} params.command - Remote command batch to execute.
      * @param {number} [params.port=22] - SSH port.
      * @param {string} [params.user='root'] - SSH user (key-only).
-     * @param {string} [params.keyPath] - Private key path (defaults to engine deploy key).
+     * @param {string} [params.keyPath] - Private key path; resolved by {@link sshKeyPathFactory} when empty.
      * @param {number} [params.connectTimeoutSec=15] - Per-attempt SSH connect timeout.
      * @param {number} [params.retries=3] - Auth/exec retry attempts.
      * @param {number} [params.retryDelayMs=5000] - Base backoff between retries.
@@ -863,7 +930,7 @@ EOF
       command,
       port = 22,
       user = 'root',
-      keyPath = './engine-private/deploy/id_rsa',
+      keyPath = '',
       connectTimeoutSec = 15,
       retries = 3,
       retryDelayMs = 5000,
@@ -877,10 +944,11 @@ EOF
         if (!reachable) return { ok: false, code: 255, stdout: '', stderr: 'ssh port unreachable', attempts: 0 };
       }
 
-      shellExec(`chmod 600 ${keyPath}`, { silent: true, silentOnError: true, disableLog: true });
+      const key = sshKeyPathFactory(keyPath);
+      shellExec(`chmod 600 ${key}`, { silent: true, silentOnError: true, disableLog: true });
 
       const sshOpts = [
-        `-i ${keyPath}`,
+        `-i ${key}`,
         `-o BatchMode=yes`,
         `-o PreferredAuthentications=publickey`,
         `-o PubkeyAuthentication=yes`,
@@ -956,7 +1024,7 @@ EOF
       remotePath = '/tmp/underpost-remote-script.sh',
       port = 22,
       user = 'root',
-      keyPath = './engine-private/deploy/id_rsa',
+      keyPath = '',
       retries = 3,
       waitForPortMs = 0,
     }) => {
@@ -979,8 +1047,8 @@ EOF
     },
 
     /**
-     * Loads a user's SSH credentials for one host and sets them in the
-     * UnderpostRootEnv API.
+     * Loads a user's SSH credentials for one host and sets them in the host
+     * configuration store.
      *
      * `host` is what selects the connection: an account registered for several
      * hosts has several, and picking one without being told would send a repair
@@ -1042,10 +1110,10 @@ EOF
       }
       if (!registered) logger.warn(`Using the deploy environment DEFAULT_SSH_* values`, { requested: options.user });
 
-      Underpost.env.set('DEFAULT_SSH_USER', connection.user);
-      Underpost.env.set('DEFAULT_SSH_HOST', connection.host);
-      Underpost.env.set('DEFAULT_SSH_KEY_PATH', connection.keyPath);
-      Underpost.env.set('DEFAULT_SSH_PORT', connection.port);
+      Underpost.host.store.set('DEFAULT_SSH_USER', connection.user);
+      Underpost.host.store.set('DEFAULT_SSH_HOST', connection.host);
+      Underpost.host.store.set('DEFAULT_SSH_KEY_PATH', connection.keyPath);
+      Underpost.host.store.set('DEFAULT_SSH_PORT', connection.port);
     },
 
     /**

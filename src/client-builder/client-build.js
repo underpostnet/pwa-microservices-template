@@ -534,6 +534,7 @@ const defaultSitemapXsl = `<?xml version="1.0" encoding="UTF-8"?>
 const buildClient = async (
   options = {
     deployId: '',
+    subConf: '',
     liveClientBuildPaths: [],
     instances: [],
     buildZip: false,
@@ -544,9 +545,13 @@ const buildClient = async (
 ) => {
   const logger = loggerFactory(import.meta);
   const deployId = options.deployId || process.env.DEPLOY_ID;
-  const confClient = readConfJson(deployId, 'client');
-  const confServer = readConfJson(deployId, 'server', { loadReplicas: true });
-  const confSSR = readConfJson(deployId, 'ssr');
+  // Carried as an argument rather than re-derived from DEPLOY_SUB_CONF: the caller already
+  // resolved which sub-configuration this build is for, and a build that reads a different
+  // conf.server than the one its caller loaded renders the wrong set of hosts.
+  const subConf = `${options.subConf ?? ''}`.trim();
+  const confClient = readConfJson(deployId, 'client', { subConf });
+  const confServer = readConfJson(deployId, 'server', { subConf, loadReplicas: true });
+  const confSSR = readConfJson(deployId, 'ssr', { subConf });
   const packageData = JSON.parse(fs.readFileSync(`./package.json`, 'utf8'));
   const acmeChallengePath = `/.well-known/acme-challenge`;
   const publicPath = `./public`;
@@ -867,7 +872,7 @@ const buildClient = async (
                 confSSR[view.ssr].head.unshift('Production');
 
               for (const ssrHeadComponent of confSSR[view.ssr].head) {
-                const SrrComponent = await ssrFactory(`./src/client/ssr/head/${ssrHeadComponent}.js`);
+                const SSRComponent = await ssrFactory(`./src/client/ssr/head/${ssrHeadComponent}.js`);
 
                 switch (ssrHeadComponent) {
                   case 'Pwa':
@@ -922,11 +927,11 @@ const buildClient = async (
                       // ],
                       // "prefer_related_applications": true
                     }
-                    if (validPwaBuild) ssrHeadComponents += SrrComponent({ title, ssrPath, canonicalURL, ...metadata });
+                    if (validPwaBuild) ssrHeadComponents += SSRComponent({ title, ssrPath, canonicalURL, ...metadata });
                     break;
                   case 'Seo':
                     if (metadata) {
-                      ssrHeadComponents += SrrComponent({ title, ssrPath, canonicalURL, ...metadata });
+                      ssrHeadComponents += SSRComponent({ title, ssrPath, canonicalURL, ...metadata });
                     }
                     break;
                   case 'Microdata':
@@ -938,18 +943,18 @@ const buildClient = async (
                       const microdata = JSON.parse(
                         fs.readFileSync(`./src/client/public/${publicClientId}/microdata.json`, 'utf8'),
                       );
-                      ssrHeadComponents += SrrComponent({ microdata });
+                      ssrHeadComponents += SSRComponent({ microdata });
                     }
                     break;
                   default:
-                    ssrHeadComponents += SrrComponent({ ssrPath, host, path });
+                    ssrHeadComponents += SSRComponent({ ssrPath, host, path });
                     break;
                 }
               }
 
               for (const ssrBodyComponent of confSSR[view.ssr].body) {
-                const SrrComponent = await ssrFactory(`./src/client/ssr/body/${ssrBodyComponent}.js`);
-                ssrBodyComponents += SrrComponent({
+                const SSRComponent = await ssrFactory(`./src/client/ssr/body/${ssrBodyComponent}.js`);
+                ssrBodyComponents += SSRComponent({
                   ...metadata,
                   ssrPath,
                   host,
@@ -1038,6 +1043,8 @@ Sitemap: ${sitemapBaseUrl}/sitemap.xml`,
           host,
           path,
           port,
+          apiBaseHost,
+          apiBaseProxyPath,
           metadata,
           apis,
           publicClientId,

@@ -148,16 +148,37 @@ fi
 # ---------------------------------------------------------------------------
 # 0. Base prerequisites.
 # ---------------------------------------------------------------------------
+# RHEL/Rocky only. An underpost node is an SELinux-Enforcing RHEL host: the storage labeling, the
+# systemd units and the CRI bring-up below are all written against that policy. Commissioning a
+# Debian/Ubuntu machine that is not an underpost node is `underpost baremetal`.
+if ! command -v dnf >/dev/null 2>&1; then
+    echo "ERROR: underpost nodes are RHEL/Rocky only; dnf was not found" >&2
+    exit 1
+fi
+
 log "Installing base prerequisites..."
-sudo dnf install -y tar xz gzip bzip2 git curl ca-certificates which findutils policycoreutils policycoreutils-python-utils selinux-policy-targeted audit 2>/dev/null \
-|| dnf install -y tar xz gzip bzip2 git curl ca-certificates which findutils policycoreutils policycoreutils-python-utils selinux-policy-targeted audit
+sudo dnf install -y tar xz gzip bzip2 git curl rsync ca-certificates which findutils policycoreutils policycoreutils-python-utils selinux-policy-targeted audit 2>/dev/null \
+|| dnf install -y tar xz gzip bzip2 git curl rsync ca-certificates which findutils policycoreutils policycoreutils-python-utils selinux-policy-targeted audit
 
 # ---------------------------------------------------------------------------
 # 1. System-wide Node.js. Home-directory runtimes cannot be used by hardened
 #    systemd services under SELinux.
 # ---------------------------------------------------------------------------
-if command -v node >/dev/null 2>&1 && node --version 2>/dev/null | grep -q '^v24'; then
-    log "Node.js $(node --version) already installed"
+# `command -v node` is not the question this step asks: an nvm runtime under $HOME answers it and
+# is exactly what a unit cannot execute. Only a Node 24 at a system path counts.
+system_node_path() {
+    local candidate
+    for candidate in /usr/bin/node /usr/local/bin/node /bin/node; do
+        if [ -x "$candidate" ] && "$candidate" --version 2>/dev/null | grep -q '^v24'; then
+            printf '%s' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+if node_path="$(system_node_path)"; then
+    log "System-wide Node.js $("$node_path" --version) already installed at $node_path"
 else
     log "Installing system-wide Node.js 24..."
     curl -fsSL https://rpm.nodesource.com/setup_24.x | sudo bash -
@@ -248,10 +269,8 @@ fi
 
 cd "$ENGINE_ROOT"
 
-# Clone + normalize the private secrets repo into $ENGINE_ROOT/engine-private
-# (where `node bin secret --from-cron-env` reads engine-private/conf/.../.env.production),
-# regardless of the private repo's name. The token is masked in logs and then
-# stripped from the saved remote URL.
+# Clone + normalize the private secrets repo into $ENGINE_ROOT/engine-private, regardless of the
+# private repo's name. The token is masked in logs and then stripped from the saved remote URL.
 if [ -n "$GITHUB_TOKEN" ]; then
     PRIV_URL="https://${GITHUB_USERNAME:-x-access-token}:${GITHUB_TOKEN}@${ENGINE_PRIVATE_REPO#https://}"
     if clone_or_pull "$PRIV_URL" "$ENGINE_PRIVATE_BRANCH" "$ENGINE_ROOT/engine-private" "origin" "$GITHUB_TOKEN"; then
@@ -264,10 +283,11 @@ else
     log "WARNING: GITHUB_TOKEN not provided; engine-private not cloned — secrets will be unavailable"
 fi
 
-# Install JS deps and generate secrets using the local engine entrypoint.
+# Install JS deps using the local engine entrypoint. Cluster Secret administration is not part of
+# node bring-up: it is a control-plane capability, projected by `cron --setup-start --apply` on the
+# control node. A worker joining the cluster has no business writing cluster-wide Secrets.
 npm install
 npm install -g underpost
-node bin secret --from-cron-env
 
 # ---------------------------------------------------------------------------
 # 3. Host prerequisites (Docker, CRI-O, kubelet/kubeadm/kubectl, ...) via cluster.js

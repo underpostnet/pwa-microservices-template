@@ -630,7 +630,7 @@ describe('edge host provisioning', () => {
         },
         hostname: 'control-node',
       });
-      expect(() => UnderpostWireguard.API.haproxySync({})).to.throw('only on the hub');
+      expect(() => UnderpostWireguard.API.haproxySync({})).to.throw("requires 'haproxy'");
     });
 
     it('installs, publishes and enables the daemon in one pass', () => {
@@ -786,7 +786,7 @@ describe('edge host provisioning', () => {
 
     it('refuses to run on a spoke', () => {
       edgeFixture({ files: SPOKE_IDENTITY_FILES, hostname: 'control-node' });
-      expect(() => withApiKey(() => UnderpostWireguard.API.forwardProxyConfig({}))).to.throw('runs only on the hub');
+      expect(() => withApiKey(() => UnderpostWireguard.API.forwardProxyConfig({}))).to.throw("requires 'forward-proxy'");
     });
 
     it('names the ways to configure the key when it is unset', () => {
@@ -869,10 +869,59 @@ describe('edge host provisioning', () => {
       }
     });
 
+    it('installs the deploy manifest before the CLI is used, and again on what the switch landed', () => {
+      // Regression: a node whose install no longer matched its manifest could not load its own
+      // CLI, so the first step of the sync died before the step that repairs the tree.
+      const previousUser = process.env.GITHUB_USERNAME;
+      const previousToken = process.env.GITHUB_TOKEN;
+      process.env.GITHUB_USERNAME = 'fixture-org';
+      process.env.GITHUB_TOKEN = 'fixture-token';
+      try {
+        const steps = UnderpostWireguard.API.syncCommands({
+          repoEngine: 'fixture-org/engine-test-cyberia',
+          nodeRole: 'control',
+        });
+        const commands = steps.map(({ command }) => command);
+        const packageStep = 'bash ./deploy/dd-cyberia/package.sh';
+
+        expect(commands[0]).to.equal(packageStep);
+        expect(steps[0].halt, 'a tree predating the script must still reach the switch').to.not.equal(true);
+        expect(commands).to.not.include('npm link --force');
+        const last = commands.lastIndexOf(packageStep);
+        expect(last).to.be.greaterThan(commands.findIndex((command) => command.includes('./engine-private')));
+        expect(last).to.be.lessThan(commands.findIndex((command) => command.includes('underpost-event')));
+        expect(steps[last].halt).to.equal(true);
+
+        // The monorepo belongs to no deploy, so it carries no package step at all.
+        expect(
+          UnderpostWireguard.API.syncCommands({ repoEngine: 'fixture-org/engine', nodeRole: 'control' }),
+        ).to.satisfy((monorepo) =>
+          monorepo.every(({ command }) => !command.includes('package.sh') && !/<[a-z-]+>/.test(command)),
+        );
+      } finally {
+        if (previousUser === undefined) delete process.env.GITHUB_USERNAME;
+        else process.env.GITHUB_USERNAME = previousUser;
+        if (previousToken === undefined) delete process.env.GITHUB_TOKEN;
+        else process.env.GITHUB_TOKEN = previousToken;
+      }
+    });
+
+    it('never writes a blank token onto a node', () => {
+      const previous = process.env.GITHUB_TOKEN;
+      delete process.env.GITHUB_TOKEN;
+      try {
+        expect(UnderpostWireguard.API.syncCommands({})).to.satisfy((steps) =>
+          steps.every(({ command }) => !command.includes('GITHUB_TOKEN')),
+        );
+      } finally {
+        if (previous !== undefined) process.env.GITHUB_TOKEN = previous;
+      }
+    });
+
     // A node is reached once, not once per step: each SSH session re-reads the
     // credential store and re-enters the checkout.
     it('composes the whole sequence into one remote command, halting only where it must', () => {
-      const script = UnderpostWireguard.API.syncScript({});
+      const script = UnderpostWireguard.API.syncScript({ nodeRole: 'control' });
       expect(script.split(' && echo ').length).to.be.above(1);
       expect(script).to.include('[sync]');
       expect(script).to.include('|| true; }');
@@ -899,13 +948,73 @@ describe('edge host provisioning', () => {
       expect(() => UnderpostWireguard.API.syncTargets({ nodes: 'ghost' })).to.throw('no registered node matches');
     });
 
+    // The URI is the connection the cluster already holds: the node document
+    // names the machine, and the address it resolves to is what the SSH
+    // registry is keyed by.
+    it('builds one connection URI per selected node, from the node name', () => {
+      vi.spyOn(UnderpostEvent.API, 'hubs').mockReturnValue([{ nodeName: 'hub-node', hubHost: HUB_HOST }]);
+      vi.spyOn(UnderpostEvent.API, 'spokes').mockReturnValue([{ nodeName: 'control-node', id: 'control-a' }]);
+      vi.spyOn(UnderpostEvent.API, 'hubTarget').mockReturnValue({
+        role: 'hub',
+        via: `root@${HUB_HOST}:22`,
+        user: 'root',
+        host: HUB_HOST,
+        port: 22,
+        keyPath: './engine-private/deploy/id_rsa',
+      });
+      vi.spyOn(UnderpostEvent.API, 'spokeTarget').mockReturnValue({
+        role: 'spoke',
+        via: 'admin@198.51.100.2:2222',
+        user: 'admin',
+        host: '198.51.100.2',
+        port: 2222,
+        keyPath: './engine-private/deploy/users/admin/id_rsa',
+      });
+
+      expect(UnderpostWireguard.API.connectUri({ nodes: 'control-node' })).to.deep.equal([
+        {
+          nodeName: 'control-node',
+          via: 'admin@198.51.100.2:2222',
+          uri: 'ssh admin@198.51.100.2 -i ./engine-private/deploy/users/admin/id_rsa -p 2222',
+        },
+      ]);
+      expect(UnderpostWireguard.API.connectUri({}).map(({ uri }) => uri)).to.deep.equal([
+        'ssh root@203.0.113.10 -i ./engine-private/deploy/id_rsa -p 22',
+        'ssh admin@198.51.100.2 -i ./engine-private/deploy/users/admin/id_rsa -p 2222',
+      ]);
+    });
+
+    it('resolves no URI for a node that is this machine', () => {
+      vi.spyOn(UnderpostEvent.API, 'hubs').mockReturnValue([]);
+      vi.spyOn(UnderpostEvent.API, 'spokes').mockReturnValue([{ nodeName: 'control-node', id: 'control-a' }]);
+      vi.spyOn(UnderpostEvent.API, 'spokeTarget').mockReturnValue({ role: 'spoke', via: 'local', user: '', host: '' });
+
+      expect(UnderpostWireguard.API.connectUri({})).to.deep.equal([
+        { nodeName: 'control-node', via: 'local', uri: '' },
+      ]);
+    });
+
     it('reports every node it synced, and does not stop at the first failure', async () => {
       edgeFixture({ files: HUB_IDENTITY_FILES });
       vi.spyOn(UnderpostRepository.API, 'getDefaultBranch').mockReturnValue('master');
       vi.spyOn(UnderpostEvent.API, 'hubs').mockReturnValue([{ nodeName: 'hub-node', hubHost: HUB_HOST }]);
       vi.spyOn(UnderpostEvent.API, 'spokes').mockReturnValue([{ nodeName: 'control-node', id: 'control-a' }]);
-      vi.spyOn(UnderpostEvent.API, 'hubTarget').mockReturnValue({ role: 'hub', via: 'local', host: HUB_HOST });
-      vi.spyOn(UnderpostEvent.API, 'spokeTarget').mockReturnValue({ role: 'spoke', via: 'ssh', host: '10.0.0.2' });
+      // Both carry the user a real target resolves with: sync dispatches over SSH only, and
+      // skips any node registered at an address this machine holds.
+      vi.spyOn(UnderpostEvent.API, 'hubTarget').mockReturnValue({
+        role: 'hub',
+        via: 'ssh',
+        user: 'root',
+        host: HUB_HOST,
+      });
+      // A documentation address, not the fixture's 10.0.0.2: that tunnel address is a real
+      // address on a fleet node, and the guard would skip it there instead of dispatching.
+      vi.spyOn(UnderpostEvent.API, 'spokeTarget').mockReturnValue({
+        role: 'spoke',
+        via: 'ssh',
+        user: 'admin',
+        host: '198.51.100.2',
+      });
       const run = vi
         .spyOn(UnderpostEvent.API, 'runCommand')
         .mockImplementation(async (_command, options) => ({ ok: options.host === HUB_HOST, error: 'refused' }));
@@ -1017,6 +1126,25 @@ describe('edge host provisioning', () => {
       expect(sync.mock.calls.length).to.equal(1);
       expect(nodeExporter.mock.calls.length).to.equal(1);
       expect(install.mock.calls.length).to.equal(0);
+    });
+
+    it('routes --cmd alone as a fleet run, away from every host action', async () => {
+      const sync = vi.spyOn(UnderpostWireguard.API, 'sync').mockResolvedValue({ ok: true, nodes: [] });
+      const install = vi.spyOn(UnderpostWireguard.API, 'install').mockImplementation(() => undefined);
+
+      await UnderpostWireguard.API.callback({ cmd: 'uptime', wireguardInstall: true });
+
+      expect(sync.mock.calls.length).to.equal(1);
+      expect(install.mock.calls.length).to.equal(0);
+    });
+
+    it('runs a single fleet dispatch when --cmd replaces the sync sequence', async () => {
+      const sync = vi.spyOn(UnderpostWireguard.API, 'sync').mockResolvedValue({ ok: true, nodes: [] });
+
+      await UnderpostWireguard.API.callback({ sync: true, cmd: 'uptime, hostname' });
+
+      expect(sync.mock.calls.length).to.equal(1);
+      expect(sync.mock.calls[0][0]).to.include({ cmd: 'uptime, hostname' });
     });
 
     it('exposes the same API through the CLI namespace', () => {

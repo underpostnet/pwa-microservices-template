@@ -16,12 +16,12 @@ import UnderpostDeploy from './cli/deploy.js';
 import UnderpostDockerCompose from './cli/docker-compose.js';
 import UnderpostEvent from './cli/event.js';
 import UnderpostKubectl from './cli/kubectl.js';
-import UnderpostRootEnv from './cli/env.js';
 import UnderpostFileStorage from './cli/fs.js';
 import UnderpostIPFS from './cli/ipfs.js';
 import UnderpostImage from './cli/image.js';
 import UnderpostLxd from './cli/lxd.js';
 import UnderpostMonitor from './cli/monitor.js';
+import UnderpostPackage from './cli/package.js';
 import UnderpostRepository from './cli/repository.js';
 import UnderpostRun from './cli/run.js';
 import UnderpostSecret from './cli/secrets.js';
@@ -80,16 +80,6 @@ class Underpost {
   static get client() {
     return UnderpostClient.API;
   }
-  /**
-   * Root Env cli API
-   * @static
-   * @type {UnderpostRootEnv.API}
-   * @memberof Underpost
-   */
-  static get env() {
-    return UnderpostRootEnv.API;
-  }
-
   /**
    * Static cli API
    * @static
@@ -384,6 +374,16 @@ class Underpost {
   static get test() {
     return UnderpostTest.API;
   }
+
+  /**
+   * Deploy package manifest cli API
+   * @static
+   * @type {UnderpostPackage.API}
+   * @memberof Underpost
+   */
+  static get package() {
+    return UnderpostPackage.API;
+  }
 }
 
 if (!process.version || !process.version.startsWith(`${Underpost.majorNodejsVersion}.`))
@@ -407,7 +407,6 @@ export {
   UnderpostDockerCompose,
   UnderpostEvent,
   UnderpostKubectl,
-  UnderpostRootEnv,
   UnderpostFileStorage,
   UnderpostImage,
   UnderpostStatic,
@@ -416,6 +415,7 @@ export {
   UnderpostKickStart,
   UnderpostIPFS,
   UnderpostMonitor,
+  UnderpostPackage,
   UnderpostApp,
   UnderpostClient,
   UnderpostHost,

@@ -6,6 +6,7 @@ import { deployEnvFactory, getNpmRootPath, getUnderpostRootPath } from '../serve
 import { commitData } from '../client/components/core/CommonJs.js';
 import { registerDomainCommand } from './domains.js';
 import { TEST_TIERS, testSuiteNames } from '../server/build/testing.js';
+import { EXECUTION_PROFILES, profileFromOptionsFactory, setExecutionProfile } from '../server/build/execution.js';
 
 import Underpost from '../index.js';
 
@@ -17,6 +18,25 @@ else dotenv.config({ quiet: true });
 const program = new Command();
 
 program.name('underpost').description(`underpost ci/cd cli ${Underpost.version}`).version(Underpost.version);
+
+// One gate for every command. The profile decides which classes of side effect this run
+// may cause; `src/server/runtime/process.js` enforces it under all 1400+ call sites, so a
+// command never has to be taught that its environment is unreachable.
+program.option(
+  '--profile <profile>',
+  `Execution profile. One of: ${Object.keys(EXECUTION_PROFILES).join(', ')}.\n` +
+    Object.values(EXECUTION_PROFILES)
+      .map((profile) => `  ${profile.name.padEnd(16)} ${profile.description}`)
+      .join('\n'),
+);
+
+// Resolved before any action runs, from the root flag, the subcommand's own options, or a
+// legacy bypass flag standing in for a profile. Writing it to the environment is what
+// carries it into nested `underpost` invocations.
+program.hook('preAction', (command, actionCommand) => {
+  const profile = profileFromOptionsFactory({ ...command.opts(), ...actionCommand.opts() });
+  if (profile) setExecutionProfile(profile);
+});
 
 program
   .command('new')
@@ -72,7 +92,11 @@ program
   .option('--run', 'Starts application servers and monitors their health.')
   .option('--build', 'Triggers the client-side application build process.')
   .option('--underpost-quickly-install', 'Uses Underpost Quickly Install for dependency installation.')
-  .option('--skip-pull-base', 'Skips cloning repositories, uses current workspace code directly.')
+  .option('--skip-pull-repo-base', 'Skips cloning the engine source repository, uses current workspace code directly.')
+  .option(
+    '--skip-pull-private-repo',
+    'Skips cloning the private configuration repository, uses the engine-private already in the workspace.',
+  )
   .option('--skip-full-build', 'Skips the full client bundle build during deployment.')
   .option(
     '--pull-bundle',
@@ -164,20 +188,6 @@ program
   .description('Pushes committed changes from a local repository to a remote GitHub repository.')
   .action(Underpost.repo.push);
 
-// Bootstrap ABI. The `start` lifecycle baked into a deployed image drives the freshly pulled
-// source through `node bin env <deploy-id> <env>`, so the source must keep answering it for as
-// long as an image predating `underpost app` can be scheduled. It is a delegation, not a second
-// implementation. Delete it once every image in service ships a CLI carrying `app`.
-program
-  .command('env')
-  .argument('<deploy-id>', 'The deployment configuration ID.')
-  .argument('[env]', 'The environment to load. Defaults to production.')
-  .argument('[sub-conf]', 'Optional: the sub configuration to select.')
-  .description('Deprecated alias of `underpost app load`, kept for images that predate it.')
-  .action((deployId, env, subConf) =>
-    Underpost.app.load({ env: env || 'production', args: { 'deploy-id': deployId, 'sub-conf': subConf } }),
-  );
-
 program
   .command('static')
   .option('--page <ssr-component-path>', 'Build custom static pages.')
@@ -224,52 +234,6 @@ program
 
   .description(`Manages static build of page, bundles, and documentation with comprehensive customization options.`)
   .action(Underpost.static.callback);
-
-// Key-level access to the host root env store. The `host` domain owns that store's bulk
-// lifecycle through the canonical actions; these four operators are the per-key CRUD that verb
-// set has no place for. Deliberately not a `host` subcommand: the three domains carry an
-// identical surface, and adding one there would break that.
-const CONFIG_OPERATORS = ['get', 'set', 'delete', 'list'];
-
-program
-  .command('config')
-  .argument('<operator>', `The configuration operation to perform. One of: ${CONFIG_OPERATORS.join(', ')}.`)
-  .argument('[key]', 'Optional: The specific configuration key to manage.')
-  .argument('[value]', 'Optional: The value to set for the configuration key.')
-  .option('--plain', 'Prints the configuration value in plain text.')
-  .option('--filter <keyword>', 'Filters the list by matching key or value (only for list operation).')
-  .option('--copy', 'Copies the configuration value to the clipboard (only for get operation).')
-  .description('Reads and writes single keys of the underpost root env store (see `underpost host` for its lifecycle).')
-  .action((operator, key, value, options) => {
-    // Explicit allowlist: the previous dispatcher indexed the API with the raw argument, so any
-    // exported member was CLI-invocable and a typo surfaced as a raw TypeError.
-    if (!CONFIG_OPERATORS.includes(operator))
-      throw new Error(`Unknown config operator: ${operator} (expected ${CONFIG_OPERATORS.join(', ')})`);
-    if (['get', 'set', 'delete'].includes(operator) && !key) throw new Error(`config ${operator} requires a key`);
-    if (operator === 'set' && value === undefined) throw new Error('config set requires a value');
-    return Underpost.env[operator](key, value, options);
-  });
-
-// Container runtime state, written by the start lifecycle and by instance lifecycle hooks, read
-// back by the deployment monitor over `kubectl exec`. Its own store, never the host root env
-// store: the two have different owners and different lifetimes.
-const STATE_OPERATORS = ['get', 'set', 'delete', 'list'];
-
-program
-  .command('state')
-  .argument('<operator>', `The state operation to perform. One of: ${STATE_OPERATORS.join(', ')}.`)
-  .argument('[key]', 'Optional: The state key to manage (e.g. container-status).')
-  .argument('[value]', 'Optional: The value to set for the state key.')
-  .option('--plain', 'Prints the state value in plain text.')
-  .option('--filter <keyword>', 'Filters the list by matching key or value (only for list operation).')
-  .description('Reads and writes the container runtime state store used by the deployment lifecycle.')
-  .action((operator, key, value, options) => {
-    if (!STATE_OPERATORS.includes(operator))
-      throw new Error(`Unknown state operator: ${operator} (expected ${STATE_OPERATORS.join(', ')})`);
-    if (['get', 'set', 'delete'].includes(operator) && !key) throw new Error(`state ${operator} requires a key`);
-    if (operator === 'set' && value === undefined) throw new Error('state set requires a value');
-    return Underpost.state[operator](key, value, options);
-  });
 
 program
   .command('root')
@@ -473,9 +437,9 @@ program
   .description('Manages application deployments, defaulting to deploying development pods.')
   .action(Underpost.deploy.callback);
 
-// The three configuration domains are registered from one factory, so their action list and
-// their option list exist exactly once. Adding a verb or a flag here adds it to all three;
-// there is no place to add one to a single domain.
+// The four domains are registered from one factory, so their action list and their option list
+// exist exactly once. Adding a verb or a flag here adds it to all four; there is no place to add
+// one to a single domain.
 for (const domain of [
   {
     name: 'secret',
@@ -483,14 +447,28 @@ for (const domain of [
     api: () => Underpost.secret,
   },
   {
+    // The only store-owning domain: `host get|set|delete|list` reads and writes the host
+    // configuration store this domain already owns end to end, so there is no second command
+    // addressing the same file. Container status is not here — it is `underpost state`.
     name: 'host',
     description: 'Host configuration: the node-level operational environment shared by the cluster.',
     api: () => Underpost.host,
+    store: true,
   },
   {
     name: 'app',
     description: "Application environment: one deployment's runtime configuration.",
     api: () => Underpost.app,
+  },
+  {
+    // The runtime monitoring / telemetry layer. Unlike the other three it has no durable
+    // source — an observation is only true of a running container — so its `load` collects from
+    // the live workload and its `publish` exports off-cluster. Its store is the container state
+    // store, never the host domain's: different owner, different lifetime.
+    name: 'state',
+    description: 'Runtime state: live container execution state, health and metrics, exported off-cluster.',
+    api: () => Underpost.state,
+    store: true,
   },
 ])
   registerDomainCommand(program, domain);
@@ -552,7 +530,6 @@ program
   )
   .option('--all-pods', 'Target all matching pods instead of just the first one.')
   .option('--primary-pod', 'Automatically detect and use MongoDB primary pod (MongoDB only).')
-  .option('--primary-pod-ensure <pod-name>', 'Ensure setup of MongoDB replica set primary pod before operations.')
   .option('--stats', 'Display database statistics (collection/table names with document/row counts).')
   .option('--collections <collections>', 'Comma-separated list of database collections to operate on.')
   .option('--out-path <out-path>', 'Specifies a custom output path for backups.')
@@ -618,7 +595,11 @@ program
   )
   .option('--namespace <namespace>', 'Kubernetes namespace for the CronJob resources (default: "default").')
   .option('--image <image>', 'Custom container image for the CronJob pods.')
-  .option('--node-name <node-name>', 'Pins the CronJob pods to this node via a kubernetes.io/hostname nodeSelector.')
+  .option(
+    '--node-name <node-name>',
+    'Pins the CronJob pods to this node via a kubernetes.io/hostname nodeSelector. ' +
+      'With --apply, defaults to this machine when the cluster knows it as a node, because the pods mount its checkout.',
+  )
   .option('--git', 'Pass --git flag to cron job execution.')
   .option('--cmd <cmd>', 'Optional pre-script commands to run before cron execution.')
   .option('--dev', 'Use local ./ base path instead of global underpost installation.')
@@ -790,8 +771,6 @@ program
   .option('--key-test', 'Tests the SSH key using ssh-keygen.')
   .option('--stop', 'Stops the SSH service.')
   .option('--status', 'Checks the status of the SSH service.')
-  .option('--connect-uri', 'Displays the connection URI.')
-  .option('--copy', 'Copies the connection URI to clipboard.')
   .description(
     'Manages cluster scoped SSH credentials and sessions for remote access to cluster nodes or services. ' +
       'Users are registered in engine-private/deploy/conf.users.json and keys are stored in engine-private/deploy/users/<user>.',
@@ -875,8 +854,20 @@ const edgeCommandFactory = (name, description) =>
     )
     .option(
       '--nodes <node-names>',
-      'Comma-separated node documents --sync and --node-exporter act on. ' +
+      'Comma-separated node documents --sync, --cmd, --node-exporter and --connect-uri act on. ' +
         'Empty covers every hub and every peer of this node hub.',
+    )
+    .option(
+      '--connect-uri',
+      'Prints the SSH command that reaches each node named by --nodes, joining the node document under ' +
+        'engine-private/deploy/nodes to the management address it is registered under in ' +
+        'engine-private/deploy/conf.users.json. Empty --nodes lists the whole fleet.',
+    )
+    .option('--copy', 'Copies the --connect-uri output to the clipboard instead of printing it.')
+    .option(
+      '--cmd <command-list>',
+      'Comma-separated custom commands to run on the selected nodes over their SSH identity. ' +
+        'Given with --sync, only these run in place of the sync steps.',
     )
     .option(
       '--node-exporter',
@@ -886,6 +877,11 @@ const edgeCommandFactory = (name, description) =>
     .option(
       '--repo-engine <repo>',
       'Engine repository --sync pulls from, as owner/repo or a clone URL. Defaults to the configured account engine.',
+    )
+    .option(
+      '--repo-engine-private <repo>',
+      'Private engine repository --sync pulls from, as owner/repo or a clone URL. ' +
+        'Defaults to the configured private repo derived from --repo-engine.',
     )
     .option('--wireguard-start', 'Enables and starts wg-quick@<interface> and the QUIC forward.')
     .option('--wireguard-restart', 'Restarts wg-quick@<interface> and restores the hub QUIC forward.')
@@ -965,6 +961,12 @@ program
   .option('--volume-mount-path <volume-mount-path>', 'Optional: Specifies the volume mount path for test execution.')
   .option('--volume-type <volume-type>', 'Optional: Specifies the volume type for test execution.')
   .option('--image-name <image-name>', 'Optional: Specifies the image name for test execution.')
+  .option('--image <image>', 'Container image the deployment pulls and runs (sync).')
+  .option('--runtime-image <name>', 'src/runtime/<name> image family the cluster runner brings up (default "express").')
+  .option(
+    '--versions <deployment-versions>',
+    'Comma-separated blue/green deployment versions (sync); unset resolves the next colour.',
+  )
   .option('--container-name <container-name>', 'Optional: Specifies the container name for test execution.')
   .option('--namespace <namespace>', 'Optional: Specifies the namespace for test execution.')
   .option('--tty', 'Enables TTY for the container in deploy-job.')
@@ -1042,6 +1044,11 @@ program
     'Omits the QUIC/HTTP3 listener config and the Alt-Svc advertisement from Gateway API manifests.',
   )
   .option('--quic-port <port>', 'UDP port advertised for QUIC/HTTP3 in generated Gateway API manifests (default 443).')
+  .option(
+    '--repo-engine-private <repo>',
+    'Private configuration repository the pull runner checks out, as owner/repo or a clone URL. ' +
+      'Defaults to the private repo derived from the engine source.',
+  )
   .option('--disable-private-conf-update', 'Disables updates to private configuration during execution.')
   .option('--logs', 'Streams logs during the runner execution.')
   .option('--monitor-status <status>', 'Sets the status to monitor for pod/resource (default: "Running").')
@@ -1360,6 +1367,23 @@ program
     'Manages baremetal server operations, including installation, database setup, commissioning, and user management.',
   )
   .action(Underpost.baremetal.callback);
+
+program
+  .command('package')
+  .argument(
+    '[deploy-id]',
+    'Deploy id, or a comma-separated list, to act on. Defaults to every deploy id in the private configuration tree.',
+  )
+  .option('--sync', 'Regenerates each deploy manifest from the engine manifest and the deploy catalog (default).')
+  .option('--install', 'Installs the dependencies the deploy catalog pins into this checkout.')
+  .option('--rename <name>', "Renames this checkout's package, in its manifest and its lockfile.")
+  .option('--set-repo <owner/repo>', "Points this checkout's package at a repository.")
+  .option('--dry-run', 'For --sync: resolves the manifests without writing them.')
+  .description(
+    "Generates the package manifests a deploy id owns, from the engine manifest and the deploy's " +
+      'product catalog, and installs the dependencies that catalog pins.',
+  )
+  .action(Underpost.package.callback);
 
 program
   .command('release')

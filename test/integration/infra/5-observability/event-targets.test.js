@@ -14,6 +14,7 @@ import { shellHarness } from '../../../support/shell-harness.js';
 const NODES_PATH = './engine-private/deploy/nodes';
 const ROUTES_PATH = './engine-private/deploy/dd.routes';
 const HUB_HOST = '203.0.113.10';
+const KEY_PATH = './engine-private/deploy/users/fixture/id_rsa';
 
 const TOPOLOGY = {
   [HUB_HOST]: {
@@ -79,7 +80,7 @@ const eventFixture = ({ files = FILES, hostname = 'hub-node' } = {}) => {
       .filter((name) => !name.includes('/')),
   );
   vi.spyOn(UnderpostSSH.API, 'resolveConnection').mockImplementation(({ host }) =>
-    host ? { user: 'fixture', host, port: 22 } : null,
+    host ? { user: 'fixture', host, port: 22, keyPath: KEY_PATH } : null,
   );
   return { table, written };
 };
@@ -178,6 +179,8 @@ describe('event execution targets', () => {
       address: '10.0.0.1',
       user: 'fixture',
       host: HUB_HOST,
+      port: 22,
+      keyPath: KEY_PATH,
       via: `fixture@${HUB_HOST}:22`,
     });
   });
@@ -828,17 +831,48 @@ describe('dispatcher service', () => {
     expect(UnderpostEvent.API.serviceJournal(5)).to.equal('log line\n');
   });
 
-  // systemd refuses a binary under /root or /home on an SELinux host, and the
-  // failure surfaces only as 203/EXEC in the journal.
-  it('probes a Node binary with a transient unit before installing one', () => {
+  // systemd refuses a binary under /root or /home on an SELinux host, and the failure surfaces
+  // only as 203/EXEC in the journal — which is why every candidate is probed with a transient
+  // unit, and why each rejection has to say which of the three ways it failed.
+  const currentMajor = `${process.versions.node}`.split('.')[0];
+
+  it('selects a system Node new enough for the checkout, over one under a home directory', () => {
+    harness.route({ match: '--version', code: 0, stdout: `v${currentMajor}.0.0\n` });
     const probed = UnderpostEvent.API.serviceNodePath();
-    expect(probed).to.include({ probed: true });
-    expect(probed.path).to.equal(process.execPath);
+    expect(probed.probed).to.equal(true);
+    expect(probed.path).to.equal('/usr/bin/node');
+  });
+
+  it('passes over a Node older than the engine requires, naming the version it found', () => {
+    harness.route({ match: '--version', code: 0, stdout: 'v18.0.0\n' });
+    const result = UnderpostEvent.API.serviceNodePath();
+    expect(result.probed).to.equal(false);
+    expect(result.rejected[0].reason).to.include('runs Node v18, the engine needs');
+  });
+
+  it('separates a binary systemd cannot execute from one it can', () => {
+    harness.route({ match: '--version', code: 0, stdout: `v${currentMajor}.0.0\n` });
+    harness.route({ match: 'systemd-run', code: 1 });
+    const result = UnderpostEvent.API.serviceNodePath();
+    expect(result.probed).to.equal(false);
+    expect(result.rejected.map(({ reason }) => reason)).to.satisfy((reasons) =>
+      reasons.every((reason) => reason.startsWith('systemd cannot execute it')),
+    );
+  });
+
+  it('names the entry script when the unit can execute Node but not run the checkout', () => {
+    harness.route({ match: '--version', code: 0, stdout: `v${currentMajor}.0.0\n` });
+    harness.route({ match: 'WorkingDirectory', code: 1 });
+    const result = UnderpostEvent.API.serviceNodePath();
+    expect(result.probed).to.equal(false);
+    expect(result.rejected[0].reason).to.include('it cannot run');
   });
 
   it('falls back to the first candidate when no probe succeeds', () => {
     harness.route({ match: '', code: 1 });
-    expect(UnderpostEvent.API.serviceNodePath()).to.include({ path: process.execPath, probed: false });
+    const result = UnderpostEvent.API.serviceNodePath();
+    expect(result).to.include({ path: '/usr/bin/node', probed: false });
+    expect(result.rejected[0].reason).to.equal('not present');
   });
 });
 
@@ -1083,7 +1117,7 @@ describe('dispatcher service reconciliation', () => {
   it('refuses to install the dispatcher anywhere but a control node', () => {
     vi.spyOn(UnderpostEvent.API, 'serviceInstalledPort').mockReturnValue(0);
     eventFixture({ hostname: 'hub-node' });
-    expect(() => UnderpostEvent.API.service({})).to.throw('must run on a WireGuard control node');
+    expect(() => UnderpostEvent.API.service({})).to.throw("requires 'event-service'");
   });
 
   it('refuses to install a unit no Node binary can start', () => {

@@ -61,6 +61,7 @@ import {
   readTopology,
   tunnelAddressFactory,
 } from './wireguard.js';
+import { assertRoleCapability } from '../server/network/node-capability.js';
 import Underpost from '../index.js';
 
 const logger = loggerFactory(import.meta);
@@ -617,6 +618,8 @@ class UnderpostEvent {
         address: hub.address,
         user: connection.user,
         host: connection.host,
+        port: connection.port,
+        keyPath: connection.keyPath,
         via: `${connection.user}@${connection.host}:${connection.port}`,
       };
     },
@@ -628,7 +631,7 @@ class UnderpostEvent {
      * The management host joins exactly against `conf.users.json`; credentials
      * never enter the topology or rendered monitoring configuration.
      * @param {string} spokeId - Registered spoke id.
-     * @returns {{spokeId: string, address: string, user: string, host: string, via: string}} Resolved remediation target.
+     * @returns {{spokeId: string, address: string, user: string, host: string, port: number, keyPath: string, via: string}} Resolved remediation target.
      * @throws {Error} When the spoke is unregistered or has no management connection.
      * @memberof UnderpostEvent
      */
@@ -648,6 +651,8 @@ class UnderpostEvent {
           address: spoke.address,
           user: '',
           host: '',
+          port: 0,
+          keyPath: '',
           via: 'local',
         };
       }
@@ -669,6 +674,8 @@ class UnderpostEvent {
         address: spoke.address,
         user: connection.user,
         host: connection.host,
+        port: connection.port,
+        keyPath: connection.keyPath,
         via: `${connection.user}@${connection.host}:${connection.port}`,
       };
     },
@@ -1444,12 +1451,15 @@ class UnderpostEvent {
      * @description Runs one remediation command through the single execution
      * facility, locally or on a named account's host.
      *
-     * `sshRemoteRunner` selects local or remote execution. A remote target always
-     * supplies both the registered user and management host.
+     * `sshRemoteRunner` selects local or remote execution from whether a registered
+     * user resolved. That is right for remediation, which repairs this node without
+     * an SSH hop, and wrong for anything that rewrites the checkout it runs in:
+     * such a caller passes `requireRemote` so the fallback cannot happen silently.
      * @param {string} command - Command to run.
      * @param {object} [options]
      * @param {string} [options.user] - Registered SSH user; omitted runs locally.
      * @param {string} [options.host] - Host that account should reach.
+     * @param {boolean} [options.requireRemote] - Refuse to fall back to local execution.
      * @param {boolean} [options.dryRun] - Report the command instead of running it.
      * @param {boolean} [options.silent] - Suppress the command's output; it is still returned.
      * @returns {Promise<{ok: boolean, output: string, error?: string}>} Execution result.
@@ -1458,6 +1468,11 @@ class UnderpostEvent {
     async runCommand(command, options = {}) {
       const user = options.user || '';
       const host = options.host || '';
+      if (options.requireRemote === true && !user)
+        throw new Error(
+          `[event] refusing to run locally: this command requires a remote target, but no ` +
+            `registered SSH user resolved${host ? ` for ${host}` : ''}.`,
+        );
       const where = user ? `ssh ${user}@${host || '(registered host)'}` : 'local';
       if (options.dryRun) {
         logger.info(`[dry-run] ${where} :: ${command}`);
@@ -1886,26 +1901,61 @@ class UnderpostEvent {
      * systemd refuses to execute a binary under `/root` or `/home` on an SELinux
      * host, and the failure surfaces only as 203/EXEC in the journal. Probing
      * with a transient unit reproduces the constraint before one is installed.
-     * @returns {{path: string, probed: boolean}} Chosen path, and whether a probe confirmed it.
+     *
+     * Each rejection carries its reason, because the three ways a candidate fails need three
+     * different answers from whoever reads them: a binary that is not installed, one too old for
+     * the checkout, and one systemd cannot reach or cannot run the entry script with.
+     * @returns {{path: string, probed: boolean, rejected: Array<{candidate: string, reason: string}>}}
+     *   Chosen path, whether a probe confirmed it, and why each earlier candidate was passed over.
      * @memberof UnderpostEvent
      */
     serviceNodePath() {
+      const read = (command) =>
+        `${shellExec(command, { stdout: true, silent: true, silentOnError: true, disableLog: true }) || ''}`.trim();
       const ok = (command) =>
         shellExec(command, { silent: true, silentOnError: true, disableLog: true, stdout: false }).code === 0;
-      const candidates = [...new Set([process.execPath, ...nodeCandidatesFactory()])];
-      for (const path of candidates)
+      const requiredMajor = Number(`${process.versions.node}`.split('.')[0]) || 0;
+      const candidates = nodeCandidatesFactory();
+      const rejected = [];
+
+      for (const path of candidates) {
+        const major = Number(read(`${path} --version`).replace(/^v/, '').split('.')[0]) || 0;
+        if (major < requiredMajor) {
+          rejected.push({
+            candidate: path,
+            reason: major ? `runs Node v${major}, the engine needs v${requiredMajor}` : 'not present',
+          });
+          continue;
+        }
+        if (!ok(nodeProbeCommandFactory(path))) {
+          rejected.push({
+            candidate: path,
+            reason: homeDirectoryPathFactory(path)
+              ? 'systemd cannot execute it: it is under a home directory, whose SELinux label a unit cannot enter'
+              : 'systemd cannot execute it',
+          });
+          continue;
+        }
         if (
-          ok(nodeProbeCommandFactory(path)) &&
-          ok(
+          !ok(
             scriptProbeCommandFactory({
               nodePath: path,
               scriptPath: process.argv[1],
               workingDirectory: process.cwd(),
             }),
           )
-        )
-          return { path, probed: true };
-      return { path: candidates[0] || process.execPath, probed: false };
+        ) {
+          rejected.push({
+            candidate: path,
+            reason: homeDirectoryPathFactory(process.cwd())
+              ? `it cannot run ${process.argv[1]}: the checkout is under a home directory, which a unit cannot read on an SELinux host`
+              : `it cannot run ${process.argv[1]}`,
+          });
+          continue;
+        }
+        return { path, probed: true, rejected };
+      }
+      return { path: candidates[0] || process.execPath, probed: false, rejected };
     },
 
     /**
@@ -1951,19 +2001,26 @@ class UnderpostEvent {
         return { service: EVENT_SERVICE.name, active: 'inactive', enabled: 'disabled' };
       }
 
-      if (readEdgeContext().role !== 'control')
-        throw new Error(
-          '[event] the dispatcher must run on a WireGuard control node; remove it elsewhere with --service-stop',
-        );
+      assertRoleCapability({
+        role: readEdgeContext().role,
+        capability: 'event-service',
+        operation: 'event --service (remove it elsewhere with --service-stop)',
+      });
 
       Underpost.event.assertDispatchReady();
 
       const node = Underpost.event.serviceNodePath();
-      if (!node.probed)
+      if (!node.probed) {
+        logger.error('No Node binary the dispatcher service can execute', {
+          requires: `Node v${`${process.versions.node}`.split('.')[0]}`,
+          rejected: node.rejected,
+          fix: 'install Node system-wide, then re-run: curl -fsSL https://rpm.nodesource.com/setup_24.x | sudo bash - && sudo dnf install -y nodejs',
+        });
         throw new Error(
           `[event] no Node executable can run ${process.argv[1]} from ${process.cwd()} under systemd; ` +
             'install Node system-wide or move the checkout outside /root and /home',
         );
+      }
       const port = Number(options.port) || UNDERPOST_MONITORING.eventWebhook.port;
       const unit = Underpost.event.serviceUnitFactory({
         port,

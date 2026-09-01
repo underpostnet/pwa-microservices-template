@@ -1,7 +1,7 @@
 /**
  * Key-level CRUD over a dotenv-backed store file.
  *
- * Two stores exist and must not share a file: the host root env store, holding this node's
+ * Two stores exist and must not share a file: the host configuration store, holding this node's
  * configuration, and the container state store, holding one workload's runtime status. They are
  * the same shape, so the operations live here once.
  * @module src/cli/dotenv-store.js
@@ -67,7 +67,11 @@ const dotenvStoreFactory = ({ path, label }) => {
      * @memberof UnderpostDotenvStore
      */
     get(key, value, options = {}) {
-      const stored = read()[key];
+      // The environment is the fallback, not an override: the store file always wins where it has
+      // the key. A container gets this configuration injected as environment variables rather than
+      // as a mounted file — bind-mounting the directory that holds the file would hand the pod a
+      // home-directory tree no unprivileged container can read under SELinux.
+      const stored = read()[key] ?? process.env[key];
       // `--plain` is a machine read: an absent key prints nothing, never the string `undefined`,
       // so a caller testing for empty output is not handed a value that looks set.
       if (!options.disableLog)
