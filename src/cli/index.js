@@ -628,16 +628,21 @@ program
 
 program
   .command('fs')
-  .argument('[path]', 'The absolute or relative directory path for file operations.')
-  .option('--rm', 'Removes the specified file.')
-  .option('--git', 'Displays current Git changes related to file storage.')
-  .option('--recursive', 'Uploads files recursively from the specified path.')
-  .option('--deploy-id <deploy-id>', 'Specifies the deployment configuration ID for file operations.')
-  .option('--pull', 'Downloads the specified file.')
+  .argument('[path]', 'Selects one file or all files below a directory. Required unless --tracked is set.')
+  .option('--rm', 'Deletes selected remote assets and their manifest entries.')
+  .option('--git', 'Restricts filesystem selection to Git-tracked files. Does not change Git state.')
+  .option('--recursive', 'Compatibility option. Directories always select files recursively.')
+  .option('--tracked', 'Selects only manifest entries. An optional path limits their scope.')
+  .requiredOption('--deploy-id <deploy-id>', 'Selects the deployment configuration.')
+  .option('--pull', 'Downloads selected manifest assets. Use --tracked to restore missing local files.')
   .option('--omit-unzip', 'With --pull, keeps the downloaded .zip file and skips extraction.')
-  .option('--force', 'Forces the action, overriding any warnings or conflicts.')
-  .option('--storage-file-path <storage-file-path>', 'Specifies a custom file storage path.')
-  .description('Manages file storage, defaulting to file upload operations.')
+  .option('--force', 'Overwrites remote uploads or local downloads. Does not change selection.')
+  .option('--storage-id <sub-id>', 'Selects storage.<sub-id>.json. The default is storage.json.')
+  .option('--key <path>', 'Selects one exact manifest key within the path scope and filters.')
+  .option('--from-key <path>', 'Starts an inclusive range in manifest key order.')
+  .option('--to-key <path>', 'Ends an inclusive range. The default start is the first manifest key.')
+  .option('--key-regex <pattern>', 'Filters manifest keys by a JavaScript regular expression.')
+  .description('Uploads, pulls, or deletes Cloudinary assets and synchronizes the selected storage manifest.')
   .action(Underpost.fs.callback);
 
 program
@@ -740,7 +745,7 @@ program
   .option('--service-status', 'Reports whether the underpost-event unit is active and enabled.')
   .option('--list', 'Lists the registered events with their resolved probe targets.')
   .option('--port <port>', 'Listening port for --serve and the generated unit (default: 39099).')
-  .option('--cooldown-ms <ms>', 'Minimum interval between two dispatches of one event in --serve (default: 300000).')
+  .option('--cooldown-ms <ms>', 'Minimum interval between two dispatches of one event in --serve (default: 10000).')
   .option(
     '--spoke <spoke-id>',
     'Spoke to remediate when dispatching wireguard-spoke-down by hand; a webhook takes it from the alert labels.',
@@ -1032,6 +1037,7 @@ program
   .option('--deploy-id <deploy-id>', 'Sets deploy id context for the runner execution.')
   .option('--user <user>', 'Sets user context for the runner execution.')
   .option('--hosts <hosts>', 'Comma-separated list of hosts for the runner execution.')
+  .option('--split <mb>', 'Zip part size in MB for push-bundle, or "none" to upload a single zip. Defaults to 8.')
   .option('--instance-id <instance-id>', 'Sets instance id context for the runner execution.')
   .option('--pid <process-id>', 'Sets process id context for the runner execution.')
   .option(
