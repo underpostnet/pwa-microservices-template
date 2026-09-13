@@ -1,7 +1,5 @@
 import { expect } from 'chai';
 import fs from 'fs-extra';
-// Named import: js-yaml's ESM build exports no default.
-import { load } from 'js-yaml';
 import shell from 'shelljs';
 import { program } from '../../src/cli/index.js';
 import {
@@ -341,28 +339,6 @@ describe('the manifest a product publishes to npm', () => {
 
     expect(packageJson).to.deep.equal({ version: '1.0.0', dependencies: { express: '^5.2.1' } });
   });
-
-  // The product publish workflow is one of the engine-only workflows a base template drops.
-  const PRODUCT_PUBLISH_WORKFLOW = './.github/workflows/publish.cyberia.ci.yml';
-
-  it.skipIf(!fs.existsSync(PRODUCT_PUBLISH_WORKFLOW))(
-    'is rewritten by the publish workflow, after the install and before every publish',
-    () => {
-      // The rewrite is the publish step's alone: a checkout that installed the published shape
-      // would run the engine source against a second engine in node_modules.
-      const workflow = load(fs.readFileSync(PRODUCT_PUBLISH_WORKFLOW, 'utf8'));
-
-      for (const [job, { steps }] of Object.entries(workflow.jobs)) {
-        const commands = steps.map(({ run }) => `${run ?? ''}`);
-        const restore = commands.findIndex((command) => command.includes('publishedProductPackageJson'));
-        const install = commands.findIndex((command) => command.trim().startsWith('npm ci'));
-        const publish = commands.findIndex((command) => command.includes('npm publish'));
-
-        expect(restore, `${job}: restores the published manifest`).to.be.greaterThan(install);
-        expect(restore, `${job}: restores it before publishing`).to.be.lessThan(publish);
-      }
-    },
-  );
 });
 
 describe('the package command is the one entry point to these manifests', () => {

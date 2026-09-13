@@ -415,12 +415,15 @@ class Modal {
               },
               { key: `slide-menu-${idModal}` },
             );
-            // The fixed hamburger overlaps a view modal title only while the top bar is collapsed
-            // and the menu is closed: an open menu (50px or full) already pushes the views aside.
-            const syncFixedMenuTitlePadding = () => {
+            // The fixed hamburger only opens the menu: it shows while the top bar is collapsed
+            // and the menu is closed. An open menu (50px or full) carries its own controls and
+            // already pushes the views aside, so neither the button nor the title padding apply.
+            const syncFixedMenuButton = () => {
               const fixed = s(`.main-btn-menu-top-fixed-container`);
               if (!fixed) return;
-              const active = !fixed.classList.contains('hide') && Modal.Data[idModal][options.mode].width === 0;
+              const collapsed = s(`.main-body-btn-ui-close`) && s(`.main-body-btn-ui-close`).classList.contains('hide');
+              const active = collapsed && Modal.Data[idModal][options.mode].width === 0;
+              fixed.classList[active ? 'remove' : 'add']('hide');
               s('body').classList[active ? 'add' : 'remove']('main-btn-menu-top-fixed-active');
             };
             barConfig.buttons.menu.onClick = () => {
@@ -445,7 +448,7 @@ class Modal {
               } else {
                 s(`.${idModal}`).style.left = `0px`;
               }
-              syncFixedMenuTitlePadding();
+              syncFixedMenuButton();
               Responsive.triggerChanged(`slide-menu-${idModal}`);
             };
             barConfig.buttons.close.onClick = () => {
@@ -469,7 +472,7 @@ class Modal {
               } else {
                 s(`.${idModal}`).style.left = `-${originSlideMenuWidth}px`;
               }
-              syncFixedMenuTitlePadding();
+              syncFixedMenuButton();
               Responsive.triggerChanged(`slide-menu-${idModal}`);
             };
             transition += `, width 0.3s`;
@@ -535,9 +538,6 @@ class Modal {
                 options.mode !== 'slide-menu-right' &&
                 options.barMode !== 'top-bottom-bar'
               ) {
-                const menuOpen = s(`.btn-bar-center-icon-menu`)
-                  ? s(`.btn-bar-center-icon-menu`).classList.contains('hide')
-                  : false;
                 append(
                   'body',
                   html`
@@ -548,14 +548,7 @@ class Modal {
                       ${await BtnIcon.instance({
                         style: `height: 100%`,
                         class: `in fll main-btn-menu-top action-bar-box action-btn-center-top-fixed`,
-                        label: html`<div class="abs center">
-                          <span class="btn-bar-center-icon-close ${menuOpen ? '' : 'hide'}"
-                            >${barConfig.buttons.close.label}</span
-                          >
-                          <span class="btn-bar-center-icon-menu ${menuOpen ? 'hide' : ''}"
-                            >${barConfig.buttons.menu.label}</span
-                          >
-                        </div>`,
+                        label: html`<div class="abs center">${barConfig.buttons.menu.label}</div>`,
                       })}
                     </div>
                     <style>
@@ -608,10 +601,7 @@ class Modal {
                   options.heightBottomBar = 0;
                   s(`.slide-menu-top-bar`).classList.add('hide');
                   s(`.bottom-bar`).classList.add('hide');
-                  if (s(`.main-btn-menu-top-fixed-container`)) {
-                    s(`.main-btn-menu-top-fixed-container`).classList.remove('hide');
-                    syncFixedMenuTitlePadding();
-                  }
+                  syncFixedMenuButton();
                   s(`.modal-menu`).style.top = '0px';
                   s(`.main-body-btn-container`).style.top = '50px';
                   s(`.main-body`).style.top = '0px';
@@ -627,10 +617,7 @@ class Modal {
                   s(`.main-body-btn-container`).style.top = `${options.heightTopBar + 50}px`;
                   s(`.slide-menu-top-bar`).classList.remove('hide');
                   s(`.bottom-bar`).classList.remove('hide');
-                  if (s(`.main-btn-menu-top-fixed-container`)) {
-                    s(`.main-btn-menu-top-fixed-container`).classList.add('hide');
-                    syncFixedMenuTitlePadding();
-                  }
+                  syncFixedMenuButton();
                   s(`.main-body`).style.top = `${options.heightTopBar}px`;
                   s(`.main-body`).style.height = `${windowGetH() - options.heightTopBar}px`;
                   for (const event of Object.keys(Modal.Data[idModal].onBarUiOpen))
