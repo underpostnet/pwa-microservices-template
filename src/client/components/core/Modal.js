@@ -415,6 +415,14 @@ class Modal {
               },
               { key: `slide-menu-${idModal}` },
             );
+            // The fixed hamburger overlaps a view modal title only while the top bar is collapsed
+            // and the menu is closed: an open menu (50px or full) already pushes the views aside.
+            const syncFixedMenuTitlePadding = () => {
+              const fixed = s(`.main-btn-menu-top-fixed-container`);
+              if (!fixed) return;
+              const active = !fixed.classList.contains('hide') && Modal.Data[idModal][options.mode].width === 0;
+              s('body').classList[active ? 'add' : 'remove']('main-btn-menu-top-fixed-active');
+            };
             barConfig.buttons.menu.onClick = () => {
               Modal.Data[idModal][options.mode].width = slideMenuWidth;
               s(`.btn-menu-${idModal}`).classList.add('hide');
@@ -437,6 +445,7 @@ class Modal {
               } else {
                 s(`.${idModal}`).style.left = `0px`;
               }
+              syncFixedMenuTitlePadding();
               Responsive.triggerChanged(`slide-menu-${idModal}`);
             };
             barConfig.buttons.close.onClick = () => {
@@ -460,6 +469,7 @@ class Modal {
               } else {
                 s(`.${idModal}`).style.left = `-${originSlideMenuWidth}px`;
               }
+              syncFixedMenuTitlePadding();
               Responsive.triggerChanged(`slide-menu-${idModal}`);
             };
             transition += `, width 0.3s`;
@@ -548,6 +558,17 @@ class Modal {
                         </div>`,
                       })}
                     </div>
+                    <style>
+                      /* View modals sit at top: 0 while the top bar is collapsed; keep their
+                         title clear of the fixed hamburger. The padding eases at the same pace
+                         the views slide so the title moves once, not a jump and a slide back. */
+                      .title-main-modal {
+                        transition: padding-left 0.3s;
+                      }
+                      body.main-btn-menu-top-fixed-active .title-main-modal {
+                        padding-left: ${originHeightTopBar}px;
+                      }
+                    </style>
                   `,
                 );
                 EventsUI.onClick(`.action-btn-center-top-fixed`, (e) => {
@@ -587,8 +608,10 @@ class Modal {
                   options.heightBottomBar = 0;
                   s(`.slide-menu-top-bar`).classList.add('hide');
                   s(`.bottom-bar`).classList.add('hide');
-                  if (s(`.main-btn-menu-top-fixed-container`))
+                  if (s(`.main-btn-menu-top-fixed-container`)) {
                     s(`.main-btn-menu-top-fixed-container`).classList.remove('hide');
+                    syncFixedMenuTitlePadding();
+                  }
                   s(`.modal-menu`).style.top = '0px';
                   s(`.main-body-btn-container`).style.top = '50px';
                   s(`.main-body`).style.top = '0px';
@@ -604,8 +627,10 @@ class Modal {
                   s(`.main-body-btn-container`).style.top = `${options.heightTopBar + 50}px`;
                   s(`.slide-menu-top-bar`).classList.remove('hide');
                   s(`.bottom-bar`).classList.remove('hide');
-                  if (s(`.main-btn-menu-top-fixed-container`))
+                  if (s(`.main-btn-menu-top-fixed-container`)) {
                     s(`.main-btn-menu-top-fixed-container`).classList.add('hide');
+                    syncFixedMenuTitlePadding();
+                  }
                   s(`.main-body`).style.top = `${options.heightTopBar}px`;
                   s(`.main-body`).style.height = `${windowGetH() - options.heightTopBar}px`;
                   for (const event of Object.keys(Modal.Data[idModal].onBarUiOpen))

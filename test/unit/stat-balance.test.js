@@ -1,15 +1,23 @@
 import { describe, it, expect } from 'vitest';
-import { balanceStats, resolveStatBounds, statPolicyActive } from '../../src/projects/cyberia/stat-balance.js';
+import { existsSync } from 'node:fs';
 import {
   STAT_TYPE_BOUNDS,
   STAT_TYPES,
   statBoundsForType,
 } from '../../src/client/components/cyberia/SharedDefaultsCyberia.js';
 
+// A base template has the cyberia product stripped out, so an absent module is a product this
+// tree does not ship, not a failure; the import stays dynamic so the suite loads either way.
+const hasCyberia = existsSync(new URL('../../src/projects/cyberia/stat-balance.js', import.meta.url));
+const describeCyberia = describe.skipIf(!hasCyberia);
+const { balanceStats, resolveStatBounds, statPolicyActive } = hasCyberia
+  ? await import('../../src/projects/cyberia/stat-balance.js')
+  : {};
+
 const wild = { effect: 60, resistance: -40, agility: 3, range: 25, intelligence: 9, utility: -2 };
 const lcg = (seed) => () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
 
-describe('stat balancing policy', () => {
+describeCyberia('stat balancing policy', () => {
   it('is inert without normalize or random', () => {
     expect(statPolicyActive({})).toBe(false);
     expect(balanceStats({ stats: wild, itemType: 'weapon' })).toEqual(wild);

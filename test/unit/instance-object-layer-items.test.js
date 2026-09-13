@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { fetchInstanceObjectLayerItemIds } from '../../src/projects/cyberia/instance-data.js';
+import { existsSync } from 'node:fs';
+
+// A base template has the cyberia product stripped out, so an absent module is a product this
+// tree does not ship, not a failure; the import stays dynamic so the suite loads either way.
+const hasCyberia = existsSync(new URL('../../src/projects/cyberia/instance-data.js', import.meta.url));
+const describeCyberia = describe.skipIf(!hasCyberia);
+const { fetchInstanceObjectLayerItemIds } = hasCyberia
+  ? await import('../../src/projects/cyberia/instance-data.js')
+  : {};
 
 const lean = (value) => ({ lean: async () => value, populate: () => lean(value) });
 
@@ -19,7 +27,7 @@ const buildModels = ({ instance, maps = [], storedItemIds = [] }) => ({
   },
 });
 
-describe('instance object layer item ids', () => {
+describeCyberia('instance object layer item ids', () => {
   it('collects the item ids the instance maps place, limited to stored documents', async () => {
     const models = buildModels({
       instance: { _id: 'i1', code: 'FOREST', cyberiaMapCodes: ['forest-1'] },

@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+
+// A base template has the cyberia product stripped out, so an absent module is a product this
+// tree does not ship, not a failure; the imports stay dynamic so the suite loads either way.
+const hasCyberia = existsSync(new URL('../../src/projects/cyberia/instance-backup.js', import.meta.url));
+const describeCyberia = describe.skipIf(!hasCyberia);
 
 // The restore path only routes documents; the collections are in-memory stand-ins, IPFS is
 // unreachable, and the static frame writer is a no-op, so what is asserted is the routing.
@@ -14,10 +20,19 @@ vi.mock('../../src/projects/cyberia/ipfs-client.js', () => ({ IpfsClient: { addT
 vi.mock('../../src/projects/cyberia/object-layer.js', () => ({
   ObjectLayerEngine: { writeStaticFrameAssets: async () => [], computeAndSaveFinalSha256: async () => ({}) },
 }));
+// The generator pulls in jimp, a cyberia product dependency the engine runner does not install;
+// every store method that would reach it is spied out below, so only the constant is needed.
+vi.mock('../../src/projects/cyberia/atlas-sprite-sheet-generator.js', () => ({
+  AtlasSpriteSheetGenerator: {},
+  DEFAULT_ATLAS_UPSCALE_FACTOR: 20,
+}));
 
-const { AtlasSpriteSheetStore } = await import('../../src/projects/cyberia/atlas-sprite-sheet-store.js');
-const { atlasBackupFileKey, readObjectLayerBackup, restoreObjectLayerBackup } =
-  await import('../../src/projects/cyberia/instance-backup.js');
+const { AtlasSpriteSheetStore } = hasCyberia
+  ? await import('../../src/projects/cyberia/atlas-sprite-sheet-store.js')
+  : {};
+const { atlasBackupFileKey, readObjectLayerBackup, restoreObjectLayerBackup } = hasCyberia
+  ? await import('../../src/projects/cyberia/instance-backup.js')
+  : {};
 
 /** A collection that remembers what was created and hands the last upsert back as the live document. */
 const collection = () => {
@@ -43,6 +58,7 @@ let backupDir;
 const write = (rel, value) => writeFile(join(backupDir, rel), Buffer.isBuffer(value) ? value : JSON.stringify(value));
 
 beforeAll(async () => {
+  if (!hasCyberia) return;
   backupDir = await mkdtemp(join(tmpdir(), 'cyberia-backup-'));
   for (const dir of ['object-layers', 'render-frames', 'atlas-sprite-sheets', 'files', 'ipfs/content']) {
     await mkdir(join(backupDir, dir), { recursive: true });
@@ -80,9 +96,9 @@ beforeAll(async () => {
   // cid-meta has no payload on purpose.
 });
 
-afterAll(() => rm(backupDir, { recursive: true, force: true }));
+afterAll(() => backupDir && rm(backupDir, { recursive: true, force: true }));
 
-describe('reading one object layer out of an instance backup', () => {
+describeCyberia('reading one object layer out of an instance backup', () => {
   it('gathers the object layer and every document it references', () => {
     const backup = readObjectLayerBackup({ backupDir, itemId: 'hatchet' });
     expect(backup.objectLayer.data.item.id).toBe('hatchet');
@@ -128,7 +144,7 @@ describe('reading one object layer out of an instance backup', () => {
   });
 });
 
-describe('restoring one object layer from an instance backup', () => {
+describeCyberia('restoring one object layer from an instance backup', () => {
   let persist;
   let idle;
 
