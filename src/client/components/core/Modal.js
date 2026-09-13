@@ -464,7 +464,7 @@ class Modal {
             };
             transition += `, width 0.3s`;
 
-            setTimeout(() => {
+            setTimeout(async () => {
               setTimeout(btnCloseEvent);
               append(
                 'body',
@@ -517,6 +517,45 @@ class Modal {
                 Modal.actionBtnCenter();
               };
 
+              // Fixed top-left hamburger, shown only while the top bar is collapsed
+              // (main-body-btn-ui-close hidden). Not needed for 'top-bottom-bar' which
+              // keeps its own center action button in the bottom bar.
+              if (
+                idModal === 'modal-menu' &&
+                options.mode !== 'slide-menu-right' &&
+                options.barMode !== 'top-bottom-bar'
+              ) {
+                const menuOpen = s(`.btn-bar-center-icon-menu`)
+                  ? s(`.btn-bar-center-icon-menu`).classList.contains('hide')
+                  : false;
+                append(
+                  'body',
+                  html`
+                    <div
+                      class="fix main-btn-menu-top-fixed-container hide"
+                      style="top: 0px; left: 0px; z-index: 10; height: ${originHeightTopBar}px; width: ${originHeightTopBar}px"
+                    >
+                      ${await BtnIcon.instance({
+                        style: `height: 100%`,
+                        class: `in fll main-btn-menu-top action-bar-box action-btn-center-top-fixed`,
+                        label: html`<div class="abs center">
+                          <span class="btn-bar-center-icon-close ${menuOpen ? '' : 'hide'}"
+                            >${barConfig.buttons.close.label}</span
+                          >
+                          <span class="btn-bar-center-icon-menu ${menuOpen ? 'hide' : ''}"
+                            >${barConfig.buttons.menu.label}</span
+                          >
+                        </div>`,
+                      })}
+                    </div>
+                  `,
+                );
+                EventsUI.onClick(`.action-btn-center-top-fixed`, (e) => {
+                  e.preventDefault();
+                  Modal.actionBtnCenter();
+                });
+              }
+
               s(`.main-body-btn-bar-custom`).onclick = () => {
                 if (s(`.main-body-btn-ui-close`).classList.contains('hide')) {
                   s(`.main-body-btn-ui`).click();
@@ -548,6 +587,8 @@ class Modal {
                   options.heightBottomBar = 0;
                   s(`.slide-menu-top-bar`).classList.add('hide');
                   s(`.bottom-bar`).classList.add('hide');
+                  if (s(`.main-btn-menu-top-fixed-container`))
+                    s(`.main-btn-menu-top-fixed-container`).classList.remove('hide');
                   s(`.modal-menu`).style.top = '0px';
                   s(`.main-body-btn-container`).style.top = '50px';
                   s(`.main-body`).style.top = '0px';
@@ -563,6 +604,8 @@ class Modal {
                   s(`.main-body-btn-container`).style.top = `${options.heightTopBar + 50}px`;
                   s(`.slide-menu-top-bar`).classList.remove('hide');
                   s(`.bottom-bar`).classList.remove('hide');
+                  if (s(`.main-btn-menu-top-fixed-container`))
+                    s(`.main-btn-menu-top-fixed-container`).classList.add('hide');
                   s(`.main-body`).style.top = `${options.heightTopBar}px`;
                   s(`.main-body`).style.height = `${windowGetH() - options.heightTopBar}px`;
                   for (const event of Object.keys(Modal.Data[idModal].onBarUiOpen))
