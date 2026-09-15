@@ -2,7 +2,7 @@
     "type": "module",
     "main": "src/index.js",
     "name": "underpost",
-    "version": "3.3.77",
+    "version": "3.4.0",
     "description": "Underpost Platform — end-to-end CI/CD and application-delivery toolchain CLI. Covers bare metal, Kubernetes, K3s, kubeadm, LXD, container/image orchestration, secrets, databases, cron jobs, monitoring, SSH, runners, PWA + Workbox delivery, and release orchestration. Extensible via downstream CLIs.",
     "scripts": {
         "start": "node --max-old-space-size=8192 src/server",
@@ -136,7 +136,8 @@
         "workbox-expiration": "^7.4.1",
         "workbox-precaching": "^7.4.1",
         "workbox-routing": "^7.4.1",
-        "workbox-strategies": "^7.4.1"
+        "workbox-strategies": "^7.4.1",
+        "nodemon": "^3.0.1"
     },
     "publishConfig": {
         "provenance": true,
@@ -164,7 +165,6 @@
         "allure-vitest": "3.12.1",
         "bumpp": "^12.3.0",
         "chai": "^6.2.2",
-        "nodemon": "^3.0.1",
         "vitest": "5.0.0"
     }
 }
