@@ -33,6 +33,8 @@ jobs:
       #   run: git lfs checkout
 
       - name: Build the site
+        env:
+          GITHUB_USERNAME: ${{ github.repository_owner }}
         run: bash deploy/pwa-microservices-template/deploy.sh
       # git lfs install
       # git lfs track
