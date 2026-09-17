@@ -48,15 +48,15 @@ const DocumentSchema = new Schema(
     },
     location: { type: String },
     title: { type: String },
-    // External URL identity (`/entry/:stableSlug`, `/content/:stableSlug`); `_id` stays internal and
-    // `title` stays freely editable. Assigned once on create and immutable afterwards. Required only
-    // on create, so a document from before the field existed stays writable until it is migrated.
+    // External URL identity (`/entry/:stableSlug`, `/content/:stableSlug`); `_id` stays internal.
+    // The server owns it: derived from the title on create and again when the title changes (see
+    // the validate hook), never taken from a client. Required only on create, so a document from
+    // before the field existed stays writable until it is migrated.
     stableSlug: {
       type: String,
       required: function () {
         return this.isNew;
       },
-      immutable: true,
       maxlength: STABLE_SLUG_MAX_LENGTH,
       match: STABLE_SLUG_PATTERN,
     },
@@ -105,10 +105,29 @@ const MISSING_STABLE_SLUG = { stableSlug: { $in: [null, ''] } };
 
 const isStableSlugConflict = (error) => error?.code === 11000 && /stableSlug/.test(error.message);
 
-// Every Mongoose create path (`save`, `create`, `insertMany`) gets a slug; explicit ones (an import
-// preserving published URLs) are kept.
+/**
+ * Whether a slug already derives from a title: the title's base slug, or a numbered candidate of
+ * it. A rename that keeps the words (a case or punctuation change) then keeps its URL.
+ * @param {string|undefined} stableSlug
+ * @param {string} title
+ * @returns {boolean}
+ */
+const isSlugOfTitle = (stableSlug, title) => {
+  if (!stableSlug) return false;
+  const baseSlug = stableSlugFactory(title);
+  if (stableSlug === baseSlug) return true;
+  const suffix = /-(\d+)$/.exec(stableSlug);
+  return !!suffix && stableSlugCandidate(baseSlug, Number(suffix[1])) === stableSlug;
+};
+
+// Every Mongoose write path derives the slug here: a new document gets one (an explicit one — an
+// import preserving a published URL — is kept), and a title edit moves the slug to the new title's,
+// unless the current slug already derives from it.
 DocumentSchema.pre('validate', async function () {
-  if (this.isNew && !this.stableSlug) this.stableSlug = await this.constructor.nextStableSlug(this.title);
+  const derive = this.isNew
+    ? !this.stableSlug
+    : this.isModified('title') && !isSlugOfTitle(this.stableSlug, this.title);
+  if (derive) this.stableSlug = await this.constructor.nextStableSlug(this.title);
 });
 
 /**
@@ -142,6 +161,25 @@ DocumentSchema.statics.createWithStableSlug = async function ({ stableSlug, ...d
   for (let attempt = 1; ; attempt++) {
     try {
       return await this.create(data);
+    } catch (error) {
+      if (!isStableSlugConflict(error) || attempt >= STABLE_SLUG_WRITE_ATTEMPTS) throw error;
+    }
+  }
+};
+
+/**
+ * Applies an update to a loaded document under a server-assigned slug: a client-supplied
+ * `stableSlug` is ignored, a title change re-derives it (the validate hook), and a concurrent
+ * writer claiming that slug first makes the save re-resolve.
+ * @param {import('mongoose').Document} document - The document to update, as loaded.
+ * @param {object} data - The fields to set.
+ * @returns {Promise<import('mongoose').Document>} The saved document.
+ */
+DocumentSchema.statics.updateWithStableSlug = async function (document, { stableSlug, ...data }) {
+  document.set(data);
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await document.save();
     } catch (error) {
       if (!isStableSlugConflict(error) || attempt >= STABLE_SLUG_WRITE_ATTEMPTS) throw error;
     }
@@ -224,7 +262,8 @@ class DocumentDto {
       return {
         path: 'userId',
         model: 'User',
-        select: '_id role username profileImageId briefDescription',
+        // `publicProfile` says whether `/u/:username` answers, so a link to it is only made when it does.
+        select: '_id role username profileImageId briefDescription publicProfile',
         populate: {
           path: 'profileImageId',
           model: 'File',
@@ -294,4 +333,12 @@ class DocumentDto {
     return { isPublic: hasPublicTag, tags: cleanedTags };
   };
 }
-export { DocumentSchema, DocumentModel, ProviderSchema, DocumentDto, stableSlugFactory, stableSlugCandidate };
+export {
+  DocumentSchema,
+  DocumentModel,
+  ProviderSchema,
+  DocumentDto,
+  stableSlugFactory,
+  stableSlugCandidate,
+  isSlugOfTitle,
+};
