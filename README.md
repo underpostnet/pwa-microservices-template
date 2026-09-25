@@ -46,7 +46,7 @@ The project covers:
 - **ERP/CRM-style PWA base applications** as the default workload.
 - **Cyberia** — a dedicated MMO extension built on top of the platform, with its own content backend (`engine-cyberia`), authoritative simulation runtime (`cyberia-server`), and presentation runtime (`cyberia-client`).
 
-<a target="_top" href="Https://github.com/underpostnet/engine/blob/master/src/client/public/cyberia-docs/UNDERPOST-PLATFORM.md">See Detailed platform doc.</a>
+<a target="_top" href="Https://github.com/underpostnet/engine/blob/master/src/client/public/docs/underpost/overview/index.md">See Detailed platform doc.</a>
 
 ### Architectural roles (Cyberia stack)
 
@@ -60,7 +60,7 @@ When the platform is hosting the Cyberia MMO extension, three independent runtim
 
 The ecosystem is **playable only when all three are running and healthy**. Each service is supervised independently and owns its own monitor/reconnector. If any one is unhealthy, the game enters standby and resumes automatically once all three are healthy again.
 
-<a target="_top" href="https://github.com/underpostnet/engine-cyberia/blob/master/src/client/public/cyberia-docs/ARCHITECTURE.md">See detailed Cyberia architecture.</a>
+<a target="_top" href="https://github.com/underpostnet/engine-cyberia/blob/master/src/client/public/docs/cyberia/explanation/architecture.md">See detailed Cyberia architecture.</a>
 
 ## Create a new project
 
@@ -142,7 +142,7 @@ npm run dev
 | [`haproxy`](CLI-HELP.md#underpost-haproxy) | Manages the HAProxy edge gateway over the WireGuard transport (same subsystem as `underpost wireguard`). |
 | [`vultr`](CLI-HELP.md#underpost-vultr) | Meters the edge VPS bandwidth against its Vultr plan quota and blocks egress before overage accrues. |
 | [`run`](CLI-HELP.md#underpost-run) | Runs specified scripts using various runners. |
-| [`test`](CLI-HELP.md#underpost-test) | Runs the test tiers locally, inside deployment pods, or as a cluster Job with Allure reporting. |
+| [`test`](CLI-HELP.md#underpost-test) | Runs the test projects locally, inside deployment pods, or as a cluster Job with Allure reporting. |
 | [`docker-compose`](CLI-HELP.md#underpost-docker-compose) | General-purpose Docker Compose development pipeline (mirrors the Kubernetes dev stack). |
 | [`lxd`](CLI-HELP.md#underpost-lxd) | Manages LXD virtual machines as K3s nodes (control plane or workers). |
 | [`baremetal`](CLI-HELP.md#underpost-baremetal) | Manages baremetal server operations, including installation, database setup, commissioning, and user management. |

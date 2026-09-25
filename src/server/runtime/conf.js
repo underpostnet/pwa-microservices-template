@@ -25,7 +25,7 @@ import { configRejectionFactory } from './config-scope.js';
 import { shellArgumentFactory, shellExec } from './process.js';
 import { UNDERPOST_GATEWAY, statusPageAssetPathFactory } from '../network/underpost-gateway.js';
 import { COVERAGE_BUNDLE_DIRECTORY } from '../build/coverage.js';
-import { DefaultConf } from '../../../conf.js';
+import { DefaultConf } from '../../../underpost.config.js';
 import splitFile from 'split-file';
 import { readDeployRoutes } from '../network/router.js';
 import Underpost from '../../index.js';
@@ -61,6 +61,23 @@ const ENV_REF_PREFIX = 'env:';
  * @memberof ServerConfBuilder
  */
 const DEFAULT_DEPLOY_ID = 'dd-default';
+
+/**
+ * Basename of the serialized {@link DefaultConf} manifest a source tree carries.
+ * @constant {string}
+ * @memberof ServerConfBuilder
+ */
+const CONF_MANIFEST_BASENAME = 'underpost.config';
+
+/**
+ * @method confManifestPath
+ * @description Path of the conf manifest a tree carries: the engine default, or the one
+ * `underpost new --default-conf --deploy-id <id>` writes for a deploy id beside it.
+ * @param {string} [deployId=''] - A concrete deploy id, or empty for the engine default.
+ * @returns {string} Manifest path, relative to a source tree root.
+ * @memberof ServerConfBuilder
+ */
+const confManifestPath = (deployId = '') => `./${CONF_MANIFEST_BASENAME}${deployId ? `.${deployId}` : ''}.js`;
 
 /**
  * Resolves a standardized context key from host/path descriptors.
@@ -1104,8 +1121,7 @@ const validateTemplatePath = (absolutePath = '') => {
   ) {
     return false;
   }
-  if (absolutePath.match('conf.dd-') && absolutePath.match('.js')) return false;
-  if (absolutePath.match('typedoc.dd-') && absolutePath.match('.json')) return false;
+  if (absolutePath.match(`${CONF_MANIFEST_BASENAME}.dd-`) && absolutePath.match('.js')) return false;
   if (
     absolutePath.match('src/client/services/') &&
     !clients.find((p) => absolutePath.match(`src/client/services/${p}/`))
@@ -1379,7 +1395,7 @@ const buildCliDoc = (program, oldVersion, newVersion) => {
 
   const detailSection = (sections, name, head) => {
     const t = table(head, parseEntries(sections[name]));
-    return t ? `\n#### ${name}\n\n${t}` : '';
+    return t ? `\n### ${name}\n\n${t}` : '';
   };
 
   // ── Top-level index ──
@@ -1387,11 +1403,11 @@ const buildCliDoc = (program, oldVersion, newVersion) => {
   const commandEntries = parseEntries(root.sections['Commands']).filter((e) => e.term.split(' ')[0] !== 'help');
 
   const index =
-    `## Underpost CLI\n\n` +
+    `# Underpost CLI\n\n` +
     (root.description ? `> ${root.description.replace(/\s+/g, ' ')}\n\n` : '') +
     `**Usage:** \`${root.usage}\`\n\n` +
-    `### Global options\n\n${table(['Option', 'Description'], parseEntries(root.sections['Options']))}\n` +
-    `### Commands\n\n| Command | Description |\n| --- | --- |\n` +
+    `## Global options\n\n${table(['Option', 'Description'], parseEntries(root.sections['Options']))}\n` +
+    `## Commands\n\n| Command | Description |\n| --- | --- |\n` +
     commandEntries
       .map((e) => {
         const name = e.term.split(' ')[0];
@@ -1407,7 +1423,7 @@ const buildCliDoc = (program, oldVersion, newVersion) => {
     if (name === 'help') continue;
     const cmdHelp = parseHelp(help(name));
     details +=
-      `\n### underpost ${name}\n\n` +
+      `\n## underpost ${name}\n\n` +
       (cmdHelp.description ? `${cmdHelp.description.replace(/\s+/g, ' ')}\n\n` : '') +
       `**Usage:** \`${cmdHelp.usage}\`\n` +
       detailSection(cmdHelp.sections, 'Arguments', ['Argument', 'Description']) +
@@ -1416,7 +1432,7 @@ const buildCliDoc = (program, oldVersion, newVersion) => {
   }
 
   const md = `${index}${details}`.replaceAll(oldVersion, newVersion);
-  fs.writeFileSync(`./src/client/public/nexodev/docs/references/Command Line Interface.md`, md, 'utf8');
+  fs.writeFileSync(`./src/client/public/docs/nexodev/reference/underpost-cli.md`, md, 'utf8');
   fs.writeFileSync(`./CLI-HELP.md`, md, 'utf8');
 
   // Update README.md: bump version and refresh the CLI index between the comment tags.
@@ -1426,7 +1442,8 @@ const buildCliDoc = (program, oldVersion, newVersion) => {
   const startIdx = readme.indexOf(cliStartTag);
   const endIdx = readme.indexOf(cliEndTag);
   if (startIdx !== -1 && endIdx !== -1) {
-    const readmeIndex = index.replace(/\(#(underpost-[a-z0-9-]+)\)/g, '(CLI-HELP.md#$1)');
+    // The README owns its own title, so the embedded index sits one level below it.
+    const readmeIndex = index.replace(/\(#(underpost-[a-z0-9-]+)\)/g, '(CLI-HELP.md#$1)').replace(/^(#+) /gm, '$1# ');
     readme =
       readme.substring(0, startIdx) +
       cliStartTag +
@@ -3457,6 +3474,8 @@ export {
   ociEnvContentFactory,
   OCI_ENV_SUFFIX,
   readConfJson,
+  CONF_MANIFEST_BASENAME,
+  confManifestPath,
   DEFAULT_DEPLOY_ID,
   clusterContextFactory,
   clusterTypeFactory,

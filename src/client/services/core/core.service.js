@@ -32,15 +32,23 @@ const getApiBaseProxyPath = () =>
  */
 const getBaseHost = () => (window.renderPayload?.apiBaseHost ? window.renderPayload.apiBaseHost : location.host);
 /**
- * Gets the base path for API requests.
- * Constructs the path using proxyPath and apiBasePath from renderPayload or defaults.
+ * The host that serves one endpoint: the owning domain when `renderPayload.apiHosts` names one
+ * for it, else this client's API host.
+ * @memberof CoreServiceClient
+ * @param {string} [endpoint] - API endpoint name.
+ * @return {string} The host string.
+ */
+const getEndpointHost = (endpoint) => window.renderPayload?.apiHosts?.[endpoint] || getBaseHost();
+/**
+ * Gets the base path for API requests: the proxy path, then the versioned API contract the
+ * server names in `renderPayload.apiBasePath` (`api/v1`). The client holds no version of its own.
  * @memberof CoreServiceClient
  * @param {Object} [options] - Options for constructing the base path.
  * @param {string} [options.proxyPath] - Custom proxy path to use.
  * @return {string} The constructed API base path.
  */
 const getApiBasePath = (options) =>
-  `${options?.proxyPath ? `/${options.proxyPath}/` : getApiBaseProxyPath() || getProxyPath()}${window.renderPayload?.apiBasePath ? window.renderPayload.apiBasePath : 'api'}/`;
+  `${options?.proxyPath ? `/${options.proxyPath}/` : getApiBaseProxyPath() || getProxyPath()}${window.renderPayload.apiBasePath}/`;
 /**
  * Constructs the full API base URL for making requests.
  * Combines protocol, host, base path, endpoint, and optional ID.
@@ -52,7 +60,7 @@ const getApiBasePath = (options) =>
  * @return {string} The full API base URL.
  */
 const getApiBaseUrl = (options = { id: '', endpoint: '', proxyPath: '' }) =>
-  `${location.protocol}//${getBaseHost()}${getApiBasePath(options)}${options?.endpoint ? options.endpoint : ''}${options?.id ? `/${options.id}` : ''}`;
+  `${location.protocol}//${getEndpointHost(options?.endpoint)}${getApiBasePath(options)}${options?.endpoint ? options.endpoint : ''}${options?.id ? `/${options.id}` : ''}`;
 /**
  * Gets the base path for WebSocket connections.
  * Constructs the socket.io path using the proxy path.
@@ -148,6 +156,25 @@ const buildQueryUrl = (baseUrl, options = {}) => {
   return url;
 };
 /**
+ * The JSON body of a service answer. An answer that is not JSON never passes as content: an
+ * edge or an outage answered in place of the API, and the error names the URL and the status
+ * so the failure reads as a dependency failure, not as an empty result.
+ * @memberof CoreServiceClient
+ * @param {Response} res - The fetch response.
+ * @return {Promise<Object>} The parsed body.
+ * @throws {Error} When the body is not JSON; `error.status` carries the HTTP status.
+ */
+const readResponse = async (res) => {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    const error = new Error(`${res.url} answered ${res.status} without a JSON body`);
+    error.status = res.status;
+    throw error;
+  }
+};
+/**
  * Core Service object providing CRUD operations for the core API endpoint.
  * @memberof CoreServiceClient
  */
@@ -192,9 +219,7 @@ class CoreService {
         credentials: 'include',
         body: payloadFactory(options.body),
       })
-        .then(async (res) => {
-          return await res.json();
-        })
+        .then(readResponse)
         .then((res) => {
           logger.info(res);
           return resolve(res);
@@ -220,9 +245,7 @@ class CoreService {
         credentials: 'include',
         body: payloadFactory(options.body),
       })
-        .then(async (res) => {
-          return await res.json();
-        })
+        .then(readResponse)
         .then((res) => {
           logger.info(res);
           return resolve(res);
@@ -247,9 +270,7 @@ class CoreService {
         headers: headersFactory(),
         credentials: 'include',
       })
-        .then(async (res) => {
-          return await res.json();
-        })
+        .then(readResponse)
         .then((res) => {
           logger.info(res);
           return resolve(res);
@@ -275,9 +296,7 @@ class CoreService {
         credentials: 'include',
         body: payloadFactory(options.body),
       })
-        .then(async (res) => {
-          return await res.json();
-        })
+        .then(readResponse)
         .then((res) => {
           logger.info(res);
           return resolve(res);
@@ -298,8 +317,10 @@ export {
   CoreService,
   headersFactory,
   payloadFactory,
+  readResponse,
   buildQueryUrl,
   getBaseHost,
+  getEndpointHost,
   getApiBaseProxyPath,
   getApiBasePath,
   getApiBaseUrl,

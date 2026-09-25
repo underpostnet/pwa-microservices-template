@@ -60,6 +60,8 @@ import { range, s4, setPad, timer } from '../client/components/core/CommonJs.js'
 import os from 'os';
 import nodePath from 'node:path';
 import { domainContextFactory } from './domains.js';
+import { ensureInotifyLimits } from './cluster.js';
+import { KUBECTL_SERVER_SIDE_APPLY } from './kubectl.js';
 import Underpost from '../index.js';
 import dotenv from 'dotenv';
 import { MongoBootstrap } from '../db/mongo/MongoBootstrap.js';
@@ -1084,6 +1086,16 @@ echo -e "[code]\nname=Visual Studio Code\nbaseurl=https://packages.microsoft.com
      */
     'crypto-policy': (path, options = DEFAULT_OPTION) => {
       shellExec(`sudo update-crypto-policies --set DEFAULT:SHA1`);
+    },
+    /**
+     * @method set-inotify
+     * @description Raises the host's inotify limits and persists them across reboots. The limits stop kubelet, container runtimes, and file watchers from failing with EMFILE on a node.
+     * @param {string} path - Unused.
+     * @param {UnderpostRunDefaultOptions} options - The default underpost runner options for customizing workflow.
+     * @memberof UnderpostRun
+     */
+    'set-inotify': (path, options = DEFAULT_OPTION) => {
+      ensureInotifyLimits();
     },
     /**
      * @method sync
@@ -2195,7 +2207,7 @@ ${Underpost.deploy
 `;
         // console.log(deploymentYaml);
         shellExec(
-          `kubectl apply -f - -n ${options.namespace} <<'EOF'
+          `${KUBECTL_SERVER_SIDE_APPLY} -f - -n ${options.namespace} <<'EOF'
 ${deploymentYaml}
 EOF
 `,
@@ -3118,15 +3130,20 @@ EOF`);
                 --cmd 'cd /home/dd/engine, \
                 underpost clone underpostnet/engine-cyberia, \
                 mkdir -p /home/dd/engine/src/client/public/itemledger \
+                  /home/dd/engine/src/client/public/objectlayer \
                   /home/dd/engine/src/client/public/cryptokoyn \
                   /home/dd/engine/src/client/components/cryptokoyn \
                   /home/dd/engine/src/client/components/itemledger \
+                  /home/dd/engine/src/client/components/objectlayer \
                   /home/dd/engine/hardhat, \
                 cp -a ./engine-cyberia/src/client/public/itemledger/. /home/dd/engine/src/client/public/itemledger/, \
+                cp -a ./engine-cyberia/src/client/public/objectlayer/. /home/dd/engine/src/client/public/objectlayer/, \
                 cp -a ./engine-cyberia/src/client/public/cryptokoyn/. /home/dd/engine/src/client/public/cryptokoyn/, \
                 cp -a ./engine-cyberia/src/client/components/cryptokoyn/. /home/dd/engine/src/client/components/cryptokoyn/, \
                 cp -a ./engine-cyberia/src/client/components/itemledger/. /home/dd/engine/src/client/components/itemledger/, \
+                cp -a ./engine-cyberia/src/client/components/objectlayer/. /home/dd/engine/src/client/components/objectlayer/, \
                 cp -a ./engine-cyberia/src/client/Itemledger.index.js /home/dd/engine/src/client/Itemledger.index.js, \
+                cp -a ./engine-cyberia/src/client/Objectlayer.index.js /home/dd/engine/src/client/Objectlayer.index.js, \
                 cp -a ./engine-cyberia/src/client/Cryptokoyn.index.js /home/dd/engine/src/client/Cryptokoyn.index.js, \
                 rm -rf ./engine-cyberia, \
                 sudo rm -rf ./engine-private/, \

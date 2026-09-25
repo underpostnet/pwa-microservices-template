@@ -5,7 +5,7 @@ import { Command } from 'commander';
 import { deployEnvFactory, getNpmRootPath, getUnderpostRootPath } from '../server/runtime/environment.js';
 import { commitData } from '../client/components/core/CommonJs.js';
 import { registerDomainCommand } from './domains.js';
-import { TEST_TIERS, testSuiteNames } from '../server/build/testing.js';
+import { TEST_PROJECTS, testDomainNames } from '../server/build/testing.js';
 import { EXECUTION_PROFILES, profileFromOptionsFactory, setExecutionProfile } from '../server/build/execution.js';
 import { SEVERITIES } from '../server/security/socketsecurity.js';
 
@@ -44,7 +44,7 @@ program
   .argument('[app-name]', 'The name of the new project.')
   .option('--deploy-id <deploy-id>', 'Create deploy ID conf env files')
   .option('--sub-conf <sub-conf>', 'Create sub conf env files')
-  .option('--cluster', 'Initialize the base cluster deploy folder engine-private/deploy from ./conf.js')
+  .option('--cluster', 'Initialize the base cluster deploy folder engine-private/deploy from ./underpost.config.js')
   .option('--build-repos', 'Create deploy ID repositories')
   .option('--build', 'Build the deployment to pwa-microservices-template (requires --deploy-id)')
   .option('--clean-template', 'Clean the build directory (pwa-microservices-template)')
@@ -637,7 +637,10 @@ program
   .option('--rm', 'Deletes selected remote assets and their manifest entries.')
   .option('--git', 'Restricts filesystem selection to Git-tracked files. Does not change Git state.')
   .option('--recursive', 'Compatibility option. Directories always select files recursively.')
-  .option('--tracked', 'Selects only manifest entries. An optional path limits their scope.')
+  .option(
+    '--tracked',
+    'Selects only manifest entries. An optional path limits their scope. An upload with no matching entry selects the local files.',
+  )
   .requiredOption('--deploy-id <deploy-id>', 'Selects the deployment configuration.')
   .option('--pull', 'Downloads selected manifest assets. Use --tracked to restore missing local files.')
   .option('--omit-unzip', 'With --pull, keeps the downloaded .zip file and skips extraction.')
@@ -1124,11 +1127,17 @@ program
   .command('test')
   .argument(
     '[suite]',
-    `A comma-separated list of suites or tiers to run. Suites: ${testSuiteNames().join(', ')}. ` +
-      `Tiers: ${TEST_TIERS.map(({ name }) => name).join(', ')}. Defaults to every tier, in tier order.`,
+    `A comma-separated list of domains or projects to run. Domains: ${testDomainNames().join(', ')}. ` +
+      `Projects: ${TEST_PROJECTS.map(({ name }) => name).join(', ')}. Defaults to every project, in order.`,
     '',
   )
   .option('--itc', 'Runs in this execution context instead of dispatching into deployment pods.')
+  .option(
+    '--changed [base]',
+    'Selects the domains the changed sources belong to, against a git ref (default: the working tree).',
+  )
+  .option('--list', 'Prints the projects a selector resolves to, and exits.')
+  .option('--print', 'Prints the resolved selector on stdout and exits, for a CI step to read.')
   .option('--deploy-list <deploy-list>', 'A comma-separated list of deployment IDs to run the suite inside.')
   .option('--grep <pattern>', 'Runs only tests whose name matches the pattern.')
   .option('--watch', 'Keeps the runner open and re-runs affected suites on change.')
@@ -1144,7 +1153,7 @@ program
   .option('--pod-name <pod-name>', 'Waits for this cluster object to reach --pod-status instead of running tests.')
   .option('--pod-status <pod-status>', 'Status --pod-name waits for (default: "Running").')
   .option('--kind-type <kind-type>', 'Kind --pod-name queries (default: "pods").')
-  .description('Runs the test tiers locally, inside deployment pods, or as a cluster Job with Allure reporting.')
+  .description('Runs the test projects locally, inside deployment pods, or as a cluster Job with Allure reporting.')
   .action(Underpost.test.callback);
 
 program
