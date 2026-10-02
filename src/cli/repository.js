@@ -1290,6 +1290,24 @@ Prevent build private config repo.`,
     },
 
     /**
+     * Names the repository a source channel fetches a product repository from: itself on
+     * `public`, its private mirror `<name>-private` on `private`.
+     * @param {string} repository - The public repository, as `owner/repo`.
+     * @param {string} [channel='public'] - `public` or `private`.
+     * @returns {string} The repository, as `owner/repo`.
+     * @throws {Error} When the channel is unknown or the repository already names a private mirror.
+     * @memberof UnderpostRepository
+     */
+    sourceRepoFactory(repository, channel = 'public') {
+      if (!['public', 'private'].includes(channel))
+        throw new Error(`[repo] unknown source channel '${channel}': use public or private`);
+      const slug = Underpost.repo.repoSlugFactory(repository);
+      if (slug.endsWith('-private'))
+        throw new Error(`[repo] '${repository}' is a private mirror; give the public repository`);
+      return channel === 'private' ? `${slug}-private` : slug;
+    },
+
+    /**
      * Names the private configuration repository a reference's conf lives in.
      * @param {string} reference - Deploy id or repository reference.
      * @returns {string} Repository name, without owner.
@@ -1454,6 +1472,23 @@ Prevent build private config repo.`,
         disableLog: true,
         silentOnError: true,
       }).trim();
+    },
+
+    /**
+     * Points the `origin` of a checkout at a GitHub repository, over SSH when a GitHub origin uses SSH, else HTTPS.
+     * @param {object} opts
+     * @param {string} [opts.path='.'] - Path to the git repository.
+     * @param {string} opts.repository - Repository `owner/repo` slug or clone URL.
+     * @memberof UnderpostRepository
+     */
+    setOrigin({ path: repoPath = '.', repository }) {
+      const slug = Underpost.repo.repoSlugFactory(repository);
+      const current = Underpost.repo.getRemoteUrl({ path: repoPath });
+      const github = /^(?:git@github\.com:|https:\/\/github\.com\/)/.exec(current)?.[0];
+      if (github && Underpost.repo.repoSlugFactory(current) === slug) return;
+      const url = github === 'git@github.com:' ? `git@github.com:${slug}.git` : `https://github.com/${slug}.git`;
+      shellExec(`cd "${repoPath}" && git remote ${current ? 'set-url' : 'add'} origin "${url}"`);
+      logger.info('setOrigin', { path: repoPath, url });
     },
 
     /**

@@ -18,8 +18,7 @@ import { MailerProvider } from '../../mailer/MailerProvider.js';
 import { DataBaseProviderService } from '../../db/DataBaseProvider.js';
 import { createPeerServer } from '../../server/network/peer.js';
 import { createValkeyConnection } from '../../db/valkey/Valkey.js';
-import { applySecurity, authMiddlewareFactory, contentViewOf } from '../../server/security/auth.js';
-import { runInContentView } from '../../db/content-view.js';
+import { applySecurity, authMiddlewareFactory } from '../../server/security/auth.js';
 import { ssrMiddlewareFactory } from '../../client-builder/ssr.js';
 import { buildSwaggerUiOptions } from '../../client-builder/client-build-docs.js';
 
@@ -27,8 +26,9 @@ import { shellExec } from '../../server/runtime/process.js';
 import { Config, devProxyHostFactory, isDevProxyContext, isTlsDevProxy } from '../../server/runtime/conf.js';
 import { developmentOrigins } from '../../server/network/router.js';
 import { metricsPathFactory } from '../../server/ops/monitoring.js';
-import { keepRawBody, publicRouteFallbackFactory } from '../../server/network/middlewares.js';
+import { keepRawBody, publicRouteFallbackFactory, staticFileHeaders } from '../../server/network/middlewares.js';
 import { entryShellRendererFactory } from '../../server/network/entry-metadata.js';
+import { objectLayerShellRendererFactory } from '../../server/network/object-layer-metadata.js';
 import { apiPathOf } from '../../server/domain/api-contract.js';
 import { consumedApisOf, loadApiExtension } from '../../server/domain/consumed-api.js';
 
@@ -153,28 +153,23 @@ class ExpressService {
     });
 
     // Static file serving
-    app.use(
-      '/',
-      express.static(directory ? directory : `.${rootHostPath}`, {
-        setHeaders: (res, filePath) => {
-          if (filePath.includes('/assets/')) {
-            res.set('Access-Control-Allow-Origin', '*');
-            res.set('Cross-Origin-Resource-Policy', 'cross-origin');
-          }
-        },
-      }),
-    );
+    app.use('/', express.static(directory ? directory : `.${rootHostPath}`, { setHeaders: staticFileHeaders }));
     // The PWA shell for the dynamic public routes is the same built document a static view is,
     // served under the same headers: the security middleware below applies a nonce CSP that the
     // shell's inline scripts cannot satisfy. Only its own namespaces match, so no API route,
     // asset or document is ever answered with it. An instance that resolves documents itself
-    // (its own database, the document API) renders each entry's metadata into its shell.
+    // renders an entry's metadata into its shell; an Object Layer is resolved at its authority by
+    // any instance that presents it.
     const resolvesDocuments = !apiBaseHost && !!db && Array.isArray(apis) && apis.includes('document');
+    const shellConfig = { host, path, metadata };
     app.use(
       publicRouteFallbackFactory({
         root: directory ? directory : `.${rootHostPath}`,
         path,
-        renderEntry: resolvesDocuments ? entryShellRendererFactory({ host, path, metadata }) : undefined,
+        renderers: {
+          ...(resolvesDocuments ? { entry: entryShellRendererFactory(shellConfig) } : {}),
+          objectLayer: objectLayerShellRendererFactory({ ...shellConfig, apis, consumes: consumed }),
+        },
       }),
     );
 
@@ -240,10 +235,6 @@ class ExpressService {
         const { GrpcServer } = await import(`../../grpc/${grpc.module}/grpc-server.js`);
         await GrpcServer.start({ host, path, port: grpc.port || 50051 });
       }
-
-      // A host with versioned content answers each request from the view its caller reads.
-      if (db?.partitions && Object.keys(db.partitions).length > 0)
-        app.use((req, res, next) => runInContentView(contentViewOf(req, { host, path }), next));
 
       // API router loading
       if (apis && apis.length > 0) {

@@ -2,7 +2,7 @@
  * Valkey connection and key-value store module.
  *
  * Responsibilities:
- *  - Manage per-instance Valkey connections keyed by `${host}${path}`.
+ *  - Manage per-instance Valkey connections keyed by `${host}${path}`: open and close.
  *  - Provide a thin, typed surface: get / set / del / incr and the raw client.
  *  - Expose connection status helpers.
  *
@@ -15,7 +15,7 @@
 import Valkey from 'iovalkey';
 import { loggerFactory } from '../../server/ops/logger.js';
 import Underpost from '../../index.js';
-import { latchRuntimeError } from '../../server/runtime/runtime-status.js';
+import { recordConnectionFailure, recordConnectionSuccess } from '../../server/runtime/runtime-status.js';
 
 const logger = loggerFactory(import.meta);
 
@@ -67,12 +67,12 @@ const createValkeyConnection = async (instance = {}, connectionOptions = {}) => 
 
   client.on('ready', () => {
     ValkeyStatus[key] = 'connected';
+    recordConnectionSuccess(`valkey:${key}`);
     logger.info('Valkey connected', { instance });
   });
   client.on('error', (err) => {
     ValkeyStatus[key] = 'error';
-    logger.error('Valkey error', { err: err?.message, instance });
-    latchRuntimeError();
+    logger.error('Valkey error', { err: err?.message, instance, failures: recordConnectionFailure(`valkey:${key}`) });
   });
   client.on('reconnecting', () => {
     ValkeyStatus[key] = 'reconnecting';
@@ -102,6 +102,23 @@ const createValkeyConnection = async (instance = {}, connectionOptions = {}) => 
   ValkeyInstances[key] = client;
   logger.info('Valkey instance registered', { key, status: ValkeyStatus[key] });
   return client;
+};
+
+/**
+ * Closes the Valkey client of an instance and drops it from the registry, so a short-lived
+ * process can exit. A no-op when the instance has no client.
+ *
+ * @param {{ host?: string, path?: string }} instance - Registry key descriptor.
+ * @memberof ValkeyService
+ */
+const closeValkeyConnection = (instance = {}) => {
+  const key = _instanceKey(instance);
+  const client = ValkeyInstances[key];
+  if (!client) return;
+  delete ValkeyInstances[key];
+  delete ValkeyStatus[key];
+  client.removeAllListeners('end');
+  client.disconnect();
 };
 
 // ─── Internal client resolver ─────────────────────────────────────────────────
@@ -200,6 +217,7 @@ class ValkeyAPI {
   /** The connected raw client of an instance; throws when it is not connected. */
   static client = _client;
   static createValkeyConnection = createValkeyConnection;
+  static closeValkeyConnection = closeValkeyConnection;
 }
 
-export { isValkeyEnable, createValkeyConnection, get, set, del, incr, ValkeyAPI };
+export { isValkeyEnable, createValkeyConnection, closeValkeyConnection, get, set, del, incr, ValkeyAPI };

@@ -34,6 +34,7 @@ import {
   loadConfServerJson,
   resolveEnvScoped,
   selectConfInstances,
+  undeclaredInstanceBuildsFactory,
   waitForPort,
   clusterInstancesFactory,
   deployTrafficEntriesFactory,
@@ -123,6 +124,8 @@ const logger = loggerFactory(import.meta);
  * @property {string} restartPolicy - The restart policy for the container.
  * @property {string} runtimeClassName - The runtime class name for the container.
  * @property {string} imagePullPolicy - The image pull policy for the container.
+ * @property {string} sourceRevision - The exact source revision an instance image is released from.
+ * @property {string} buildPath - The checkout the instance image is built from on this host (private channel).
  * @property {string} apiVersion - The API version for the container.
  * @property {string} claimName - The claim name for the volume.
  * @property {string} kindType - The kind of resource to create.
@@ -222,6 +225,8 @@ const DEFAULT_OPTION = {
   restartPolicy: '',
   runtimeClassName: '',
   imagePullPolicy: '',
+  sourceRevision: '',
+  buildPath: '',
   apiVersion: '',
   claimName: '',
   kindType: '',
@@ -481,7 +486,7 @@ class UnderpostRun {
     'dev-cluster': (path, options = DEFAULT_OPTION) => {
       const baseCommand = cli('underpost', { local: true });
       const mongoHosts = ['mongodb-0.mongodb-service'];
-      let primaryMongoHost = 'mongodb-0.mongodb-service';
+      let primaryPodName = 'mongodb-0';
       const clusterType = clusterTypeFactory(options);
       const clusterFlag = ` --${clusterType}`;
       const clusterInitFlag = clusterType === 'kind' ? '' : clusterFlag;
@@ -490,8 +495,10 @@ class UnderpostRun {
         shellExec(`${baseCommand} cluster${clusterOptions} --reset`);
         shellExec(`${baseCommand} cluster${clusterOptions}`);
 
+        // A Kind rebuild starts MongoDB on empty data.
+        const mongoResetFlag = clusterType === 'kind' ? ' --reset-mongodb' : '';
         shellExec(
-          `${baseCommand} cluster${clusterOptions} --mongodb --service-host ${mongoHosts.join(',')} --pull-image`,
+          `${baseCommand} cluster${clusterOptions} --mongodb${mongoResetFlag} --service-host ${mongoHosts.join(',')} --pull-image`,
         );
         shellExec(`${baseCommand} cluster${clusterOptions} --valkey --pull-image`);
       }
@@ -499,21 +506,20 @@ class UnderpostRun {
         shellExec(`${baseCommand} run kill '6379,27017'`);
       } else {
         try {
-          const primaryPodName =
+          primaryPodName =
             MongoBootstrap.getPrimaryPodName({
               namespace: options.namespace,
-              podName: 'mongodb-0',
-              disableAuth: options.dev,
-            }) || 'mongodb-0';
-          primaryMongoHost = `${primaryPodName}.mongodb-service`;
+              podName: primaryPodName,
+            }) || primaryPodName;
         } catch (error) {
           logger.warn('Failed to detect MongoDB primary pod, using default', {
             error: error.message,
-            default: primaryMongoHost,
+            default: primaryPodName,
           });
         }
+        // Forward the primary pod, not the service: the service picks any member.
         shellExec(
-          `${baseCommand} run expose mongodb-service --namespace ${options.namespace}${clusterFlag} --expose-container-ports 27017 --expose-host-ports 27017`,
+          `${baseCommand} run expose ${primaryPodName} --namespace ${options.namespace}${clusterFlag} --expose-container-ports 27017 --expose-host-ports 27017`,
           { async: true },
         );
         shellExec(
@@ -521,7 +527,7 @@ class UnderpostRun {
           { async: true },
         );
       }
-      const hostListenResult = etcHostFactory([primaryMongoHost]);
+      const hostListenResult = etcHostFactory([`${primaryPodName}.mongodb-service`]);
       logger.info(hostListenResult.renderHosts);
     },
 
@@ -1996,7 +2002,9 @@ EOF
      * @description Deploys the custom instances a deploy declares in `conf.instances.json`.
      *
      * Every input is a flag: `--deploy-id`, `--instance-id`, `--replicas`, `--node-name`.
-     * `--instance-id` naming a template id selects its whole variant family.
+     * `--instance-id` naming a template id selects its whole variant family. With
+     * `--source-revision`, each instance runs the image released for that exact revision, by
+     * digest: pulled from CI, or built from `--build-path` on this host.
      * @param {string} path - Unused; every input is a flag.
      * @param {UnderpostRunDefaultOptions} options - The default underpost runner options for customizing workflow
      * @memberof UnderpostRun
@@ -2036,6 +2044,21 @@ EOF
             namespace: options.namespace,
           }),
       });
+
+      const releasedImages = new Map();
+      const releasedImage = (image) => {
+        if (!releasedImages.has(image))
+          releasedImages.set(
+            image,
+            Underpost.image.release({
+              imageName: image,
+              revision: options.sourceRevision,
+              path: options.buildPath,
+              k3s: options.k3s,
+            }),
+          );
+        return releasedImages.get(image);
+      };
 
       let prePromoted = false;
       const fallbackChecks = instanceFallbackChecksFactory(confInstances);
@@ -2102,6 +2125,7 @@ EOF
         // `underpost/underpost-engine:${Underpost.version}`
         // `localhost/rockylinux9-underpost:${Underpost.version}`
         if (options.imageName) _image = options.imageName;
+        else if (options.sourceRevision) _image = releasedImage(_image);
         if (!_image) _image = `underpost/underpost-engine:${Underpost.version}`;
 
         if (_image && !_image.startsWith('localhost'))
@@ -2316,6 +2340,19 @@ EOF
       if (selected.length === 0) {
         logger.error(`Instance with id '${id}' not found in conf.instances.json for deployId '${deployId}'`);
         return;
+      }
+      // A world of the family the topology no longer declares leaves no build behind: neither its
+      // manifests in the project nor its build in the private conf.
+      if (!options.instanceOnly) {
+        const removed = undeclaredInstanceBuildsFactory({
+          family: id,
+          instances: confInstances,
+          env,
+          deploymentsPath: `${instanceProjectPathFactory(selected[0])}/manifests/deployments`,
+          buildsPath: `./engine-private/conf/${deployId}/instances`,
+        });
+        for (const target of removed) fs.removeSync(target);
+        if (removed.length) logger.info('[instance-build-manifest] Removed the builds of undeclared worlds', removed);
       }
       if (!options.instanceOnly && (selected.length > 1 || selected[0].id !== id)) {
         for (const instance of selected)
@@ -2601,15 +2638,14 @@ EOF
       // deploy-specific builders may then derive application env from the
       // normalized instance path/code.
       //
-      // A derived instance's env dir is generated in full: both development.env
-      // and production.env are written on every build, so a deploy in either
-      // environment always finds the env file its `cmd` sources, no matter which
-      // mode this build ran. The default/template instance owns the committed
-      // source files, so only its current-mode file is idempotently refreshed.
+      // Both development.env and production.env are written on every build, so a
+      // deploy in either environment finds the env file its `cmd` sources, no
+      // matter which mode this build ran. The default instance's files are their
+      // own template, so its refresh is idempotent.
       if (instance.templateId) {
         const instanceEnvDir = nodePath.dirname(instanceEnvFilePath(deployId, _id, env));
         fs.mkdirpSync(instanceEnvDir);
-        const envsToWrite = isDefaultInstance ? [env] : ['development', 'production'];
+        const envsToWrite = ['development', 'production'];
         for (const targetEnv of envsToWrite) {
           const templateEnvPath = instanceEnvFilePath(deployId, instance.templateId, targetEnv);
           if (!fs.existsSync(templateEnvPath))
@@ -2907,11 +2943,12 @@ EOF`);
 
     /**
      * @method promote
-     * @description Switches traffic between blue/green deployments for a specified deployment ID(s) (uses `dd.routes` for 'dd', or a specific ID).
+     * @description Routes a deployment to one of its blue/green colours, deployed and Ready: the one `--traffic`
+     * names, else the one not live (uses `dd.routes` for 'dd', or a specific ID). No build and no restart.
      * When `--tls` is set, rebuilds the proxy manifest with `--cert` so the HTTPProxy includes
      * TLS config, deletes stale Certificate resources, then reapplies the proxy and secret.yaml
      * (cert-manager Certificate resources) for each affected deployment.
-     * @param {string} path - The input value, identifier, or path for the operation (used as a comma-separated string: `deployId,env,replicas`).
+     * @param {string} path - `deployId[,env[,replicas]]`: env defaults to production, replicas to `--replicas`, else 1.
      * @param {UnderpostRunDefaultOptions} options - The default underpost runner options for customizing workflow
      * @memberof UnderpostRun
      */
@@ -2919,7 +2956,8 @@ EOF`);
       options = { ...options, gatewayApi: gatewayApiEnabledFactory(options) };
       let [inputDeployId, inputEnv, inputReplicas] = path.split(',');
       if (!inputEnv) inputEnv = 'production';
-      if (!inputReplicas) inputReplicas = 1;
+      if (!inputReplicas) inputReplicas = options.replicas || 1;
+      const targetOf = (currentTraffic) => options.traffic || (currentTraffic === 'blue' ? 'green' : 'blue');
       // TODO: normalize: --tls maps to --cert for deploy.js isValidTLSContext compatibility
       if (options.tls) options.cert = true;
 
@@ -2948,7 +2986,7 @@ EOF`);
             namespace: options.namespace,
             env: inputEnv,
           });
-          const targetTraffic = currentTraffic === 'blue' ? 'green' : 'blue';
+          const targetTraffic = targetOf(currentTraffic);
           Underpost.deploy.switchTraffic(deployId, inputEnv, targetTraffic, inputReplicas, options.namespace, options);
           applyCerts(deployId, targetTraffic);
         }
@@ -2957,7 +2995,7 @@ EOF`);
           namespace: options.namespace,
           env: inputEnv,
         });
-        const targetTraffic = currentTraffic === 'blue' ? 'green' : 'blue';
+        const targetTraffic = targetOf(currentTraffic);
         Underpost.deploy.switchTraffic(
           inputDeployId,
           inputEnv,
@@ -3122,39 +3160,7 @@ EOF`);
       for (const deployId of deployList) {
         const deployFlags =
           `--${clusterType}${env === 'production' ? ' --cert' : ' --self-signed'}${gatewayApiFlags}` +
-          `${options.namespace ? ` --namespace ${options.namespace}` : ''}` +
-          (deployId === 'dd-cyberia'
-            ? ` --image 'underpost/engine-cyberia:${version}'  \
-                --versions blue \
-                --image-pull-policy Always \
-                --cmd 'cd /home/dd/engine, \
-                underpost clone underpostnet/engine-cyberia, \
-                mkdir -p /home/dd/engine/src/client/public/itemledger \
-                  /home/dd/engine/src/client/public/objectlayer \
-                  /home/dd/engine/src/client/public/cryptokoyn \
-                  /home/dd/engine/src/client/components/cryptokoyn \
-                  /home/dd/engine/src/client/components/itemledger \
-                  /home/dd/engine/src/client/components/objectlayer \
-                  /home/dd/engine/hardhat, \
-                cp -a ./engine-cyberia/src/client/public/itemledger/. /home/dd/engine/src/client/public/itemledger/, \
-                cp -a ./engine-cyberia/src/client/public/objectlayer/. /home/dd/engine/src/client/public/objectlayer/, \
-                cp -a ./engine-cyberia/src/client/public/cryptokoyn/. /home/dd/engine/src/client/public/cryptokoyn/, \
-                cp -a ./engine-cyberia/src/client/components/cryptokoyn/. /home/dd/engine/src/client/components/cryptokoyn/, \
-                cp -a ./engine-cyberia/src/client/components/itemledger/. /home/dd/engine/src/client/components/itemledger/, \
-                cp -a ./engine-cyberia/src/client/components/objectlayer/. /home/dd/engine/src/client/components/objectlayer/, \
-                cp -a ./engine-cyberia/src/client/Itemledger.index.js /home/dd/engine/src/client/Itemledger.index.js, \
-                cp -a ./engine-cyberia/src/client/Objectlayer.index.js /home/dd/engine/src/client/Objectlayer.index.js, \
-                cp -a ./engine-cyberia/src/client/Cryptokoyn.index.js /home/dd/engine/src/client/Cryptokoyn.index.js, \
-                rm -rf ./engine-cyberia, \
-                sudo rm -rf ./engine-private/, \
-                node bin clone underpostnet/engine-cyberia-private, \
-                sudo mv ./engine-cyberia-private ./engine-private, \
-                node bin app load --env ${env} --args deploy-id=dd-cyberia, \
-                sudo chown -R dd:dd /home/dd/engine/src/client/public/cyberia, \
-                node bin app load --env ${env} --args deploy-id=dd-cyberia, \
-                node bin client dd-cyberia ${env}, \
-                node bin start dd-cyberia ${env} --run'`
-            : '');
+          `${options.namespace ? ` --namespace ${options.namespace}` : ''}`;
         deployFlagsById[deployId] = deployFlags;
         // SSR status and context documents belong to the ingress bootstrap, so
         // build them on the host before any workload Deployment is submitted.

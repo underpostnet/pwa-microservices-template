@@ -1807,24 +1807,34 @@ const dispatchBuildInstanceEnv = ({
 };
 
 /**
- * Loads a deploy project's optional instance env builder by convention.
- * `dd-cyberia` resolves to `src/projects/cyberia/instance-data.js`, whose
- * public integration export is `buildInstanceEnv`. Missing modules mean the
- * canonical env is copied unchanged; malformed exports fail explicitly.
+ * Loads one integration export of a deploy project by convention: `dd-cyberia` and `instance-data.js`
+ * resolve to `src/projects/cyberia/instance-data.js`.
+ * @param {string} deployId - Deployment id in `dd-<project>` form.
+ * @param {string} file - The module file inside the project.
+ * @param {string} name - The export.
+ * @returns {Promise<*>} The export, or null when the project, the module or the export is absent.
+ * @memberof ServerConfBuilder
+ */
+const loadProjectExport = async (deployId, file, name) => {
+  const match = /^dd-([a-z0-9][a-z0-9-]*)$/.exec(`${deployId || ''}`);
+  if (!match) return null;
+  const moduleUrl = new URL(`../../projects/${match[1]}/${file}`, import.meta.url);
+  if (!fs.existsSync(moduleUrl)) return null;
+  return (await import(moduleUrl.href))[name] ?? null;
+};
+
+/**
+ * Loads a deploy project's optional instance env builder, the `buildInstanceEnv` export of its
+ * `instance-data.js`. Without one the canonical env is copied unchanged.
  * @param {string} deployId - Deployment id in `dd-<project>` form.
  * @returns {Promise<Function|null>} Project env builder, when provided.
  * @memberof ServerConfBuilder
  */
 const loadProjectInstanceEnvBuilder = async (deployId) => {
-  const match = /^dd-([a-z0-9][a-z0-9-]*)$/.exec(`${deployId || ''}`);
-  if (!match) return null;
-  const moduleUrl = new URL(`../../projects/${match[1]}/instance-data.js`, import.meta.url);
-  if (!fs.existsSync(moduleUrl)) return null;
-  const projectModule = await import(moduleUrl.href);
-  if (projectModule.buildInstanceEnv === undefined) return null;
-  if (typeof projectModule.buildInstanceEnv !== 'function')
-    throw new TypeError(`${moduleUrl.pathname}: buildInstanceEnv must be a function`);
-  return projectModule.buildInstanceEnv;
+  const builder = await loadProjectExport(deployId, 'instance-data.js', 'buildInstanceEnv');
+  if (builder !== null && typeof builder !== 'function')
+    throw new TypeError(`${deployId} instance-data.js: buildInstanceEnv must be a function`);
+  return builder;
 };
 
 /**
@@ -1893,6 +1903,61 @@ const loadConfInstances = (deployId) => {
  */
 const selectConfInstances = (instances, id) =>
   instances.filter((instance) => instance.id === id || instance.templateId === id);
+
+/**
+ * @method publicClientIdFactory
+ * @description The public tree a client builds from: `src/client/public/<id>`, by its `publicRef`,
+ * else its own id.
+ * @param {string} client - The client id of `conf.client.json`.
+ * @param {object} [clientConf] - Its conf.
+ * @returns {string}
+ * @memberof ServerConfBuilder
+ */
+const publicClientIdFactory = (client, clientConf = {}) => clientConf.publicRef || client;
+
+/**
+ * @method clientPublicTreesFactory
+ * @description Every public tree the client builds of a deploy read: the one each client builds from
+ * and the one it completes it from (`publicCopyNonExistingFiles`), once each.
+ * @param {object} [confClient] - A parsed `conf.client.json`.
+ * @returns {string[]} Public tree ids, under `src/client/public/`.
+ * @memberof ServerConfBuilder
+ */
+const clientPublicTreesFactory = (confClient = {}) => [
+  ...new Set(
+    Object.entries(confClient).flatMap(([client, clientConf]) =>
+      [publicClientIdFactory(client, clientConf), clientConf.publicCopyNonExistingFiles].filter(Boolean),
+    ),
+  ),
+];
+
+/**
+ * @method undeclaredInstanceBuildsFactory
+ * @description The builds of a template family that the topology no longer declares: each
+ * `<id>-<env>` manifest directory of the project and each private instance build of a world
+ * `<family>-<variant>` that no instance has.
+ * @param {object} params
+ * @param {string} params.family - The template id.
+ * @param {Array<object>} params.instances - The expanded instances of the deploy.
+ * @param {string} params.env - `development` | `production`.
+ * @param {string} params.deploymentsPath - `<project>/manifests/deployments`.
+ * @param {string} params.buildsPath - `engine-private/conf/<deploy-id>/instances`.
+ * @returns {string[]} The paths to remove.
+ * @memberof ServerConfBuilder
+ */
+const undeclaredInstanceBuildsFactory = ({ family, instances, env, deploymentsPath, buildsPath }) => {
+  const declared = new Set(instances.map((instance) => instance.id));
+  const undeclared = (name) => name.startsWith(`${family}-`) && !declared.has(name);
+  const entries = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir) : []);
+  return [
+    ...entries(deploymentsPath)
+      .filter((entry) => entry.endsWith(`-${env}`) && undeclared(entry.slice(0, -`-${env}`.length)))
+      .map((entry) => `${deploymentsPath}/${entry}`),
+    ...entries(buildsPath)
+      .filter(undeclared)
+      .map((entry) => `${buildsPath}/${entry}`),
+  ];
+};
 
 /**
  * @method resolveEnvScoped
@@ -3236,11 +3301,8 @@ const buildTemplate = async ({ srcPath = './', toPath = '../pwa-microservices-te
   shellExec(`rm -rf ${toPath}/deploy`);
 
   fs.mkdirSync(`${toPath}/.github/workflows`, { recursive: true });
-  for (const restorePath of TEMPLATE_RESTORE_PATHS) {
-    const dest = `${toPath}/${restorePath}`;
-    if (fs.statSync(restorePath).isDirectory()) fs.copySync(restorePath, dest, { overwrite: true });
-    else fs.copyFileSync(restorePath, dest);
-  }
+  for (const restorePath of TEMPLATE_RESTORE_PATHS)
+    fs.copySync(restorePath, `${toPath}/${restorePath}`, { overwrite: true });
 
   // ── package.json: take engine deps/scripts/version, keep template identity. ──
   const originPackageJson = JSON.parse(fs.readFileSync('./package.json', 'utf8'));
@@ -3329,26 +3391,38 @@ const updatePrivateEngineTestRepo = async (deployId) => {
   if (!fs.existsSync(templatePath))
     throw new Error(`updatePrivateEngineTestRepo: assemble the template first (node bin/build ${deployId})`);
 
-  // Adopt the test repo's existing history when present (so the push is a delta);
-  // otherwise publish a fresh history on first push.
+  // The history of the last publish fetches only what the test repo gained since; a first
+  // publish clones it, and a repo that does not exist yet starts a fresh history.
   const parentPath = dir.dirname(templatePath);
-  shellExec(`cd ${parentPath} && sudo rm -rf ./${repoName}.git && underpost clone --bare ${username}/${repoName}`, {
-    silent: true,
-    disableLog: true,
-    silentOnError: true,
-  });
+  const publishPath = `${parentPath}/${repoName}`;
+  const gitDir = `${parentPath}/${repoName}.git`;
+  shellExec(`sudo rm -rf ${gitDir}`);
+  if (fs.existsSync(`${publishPath}/.git`)) {
+    logger.info('Fetch the published history', { repoName });
+    shellExec(`mv ${publishPath}/.git ${gitDir}`);
+    const auth = Underpost.repo.gitAuthFactory(`${username}/${repoName}`);
+    shellExec(
+      `git --git-dir=${gitDir} fetch "${auth.url}" HEAD && git --git-dir=${gitDir} update-ref HEAD FETCH_HEAD`,
+      {
+        env: auth.env,
+      },
+    );
+  } else {
+    logger.info('Clone the published history', { repoName });
+    shellExec(`cd ${parentPath} && underpost clone --bare ${username}/${repoName}`, { silentOnError: true });
+  }
 
   // Publishing from a work tree of its own leaves the template checkout its own git
   // history, and copying that tree from 0 keeps a stale file out of the published one.
-  const publishPath = `${parentPath}/${repoName}`;
   shellExec(`sudo rm -rf ${publishPath}`);
+  logger.info('Copy the assembled template', { from: templatePath, to: publishPath });
   fs.copySync(templatePath, publishPath, {
     filter: (src) => {
       const entries = dir.relative(templatePath, src).split(dir.sep);
       return !entries.includes('.git') && !entries.includes('node_modules');
     },
   });
-  if (fs.existsSync(`${parentPath}/${repoName}.git`)) shellExec(`mv ${parentPath}/${repoName}.git ${publishPath}/.git`);
+  if (fs.existsSync(gitDir)) shellExec(`mv ${gitDir} ${publishPath}/.git`);
 
   // `git init` converts the moved bare repo into a normal work-tree repo (bare
   // clones have no work tree, so `git add` would fail), and bootstraps a fresh
@@ -3433,10 +3507,14 @@ export {
   loadConfInstances,
   normalizeInstanceTopology,
   dispatchBuildInstanceEnv,
+  loadProjectExport,
   loadProjectInstanceEnvBuilder,
   loadInstanceTopology,
   readConfInstances,
+  clientPublicTreesFactory,
+  publicClientIdFactory,
   selectConfInstances,
+  undeclaredInstanceBuildsFactory,
   loadReplicas,
   cloneConf,
   getCapVariableName,

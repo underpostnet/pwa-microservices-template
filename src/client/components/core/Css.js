@@ -303,6 +303,17 @@ const dynamicColTokens = {};
 // The column widths a layout type takes at a given container width.
 const dynamicColRules = ({ id, type, width, limitCol }) => {
   switch (type) {
+    case 'a-33-b-33-c-33': {
+      const columns = width < limitCol ? 1 : width < limitCol * 1.5 ? 2 : 3;
+      return css`
+        .${id}-col-a, .${id}-col-b {
+          width: ${100 / columns}%;
+        }
+        .${id}-col-c {
+          width: ${columns === 3 ? 100 / 3 : 100}%;
+        }
+      `;
+    }
     case 'a-50-b-50':
       return width < limitCol
         ? css`
@@ -1095,6 +1106,27 @@ const imageShimmer = () =>
   </div>`;
 const renderChessPattern = (patternSize = 20) =>
   `background: repeating-conic-gradient(#808080 0 25%, #0000 0 50%) 50% / ${patternSize}px ${patternSize}px`;
+/** The pixel faces of the retro clients. The sensitive face has a small x-height, so it runs larger. */
+const renderRetroFontFaces = () =>
+  html`<style>
+    @font-face {
+      font-family: 'retro-font-title';
+      src: URL('${getProxyPath()}assets/fonts/EndlessBossBattleRegular-v7Ey.ttf') format('truetype');
+    }
+    @font-face {
+      font-family: 'retro-font';
+      src: URL('${getProxyPath()}assets/fonts/Pixeboy-z8XGD.ttf') format('truetype');
+    }
+    @font-face {
+      font-family: 'retro-font-sensitive';
+      src: URL('${getProxyPath()}assets/fonts/VT323-Regular.ttf') format('truetype');
+      size-adjust: 120%;
+    }
+    @font-face {
+      font-family: 'retro-font-cta';
+      src: URL('${getProxyPath()}assets/fonts/PressStart2P-Regular.ttf') format('truetype');
+    }
+  </style>`;
 const extractBackgroundImageUrl = (element) => {
   const style = window.getComputedStyle(element);
   const imageString = style.backgroundImage;
@@ -1145,6 +1177,7 @@ export {
   simpleIconsRender,
   extractBackgroundImageUrl,
   renderChessPattern,
+  renderRetroFontFaces,
   subThemeManager,
   lightenHex,
   darkenHex,

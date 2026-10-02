@@ -24,14 +24,13 @@ vi.mock('../../../src/api/atlas-sprite-sheet/atlas-sprite-sheet.store.js', () =>
 const objectLayerDomain = fs.existsSync('./src/api/object-layer');
 const objectLayerModule = async (path) => (objectLayerDomain ? await import(path) : {});
 
-const { resolveLedgerBindings, resolveObjectLayer, resolveTokenSupply, publishObjectLayer } = await objectLayerModule(
-  '../../../src/server/domain/object-layer-resolver.js',
-);
+const { resolveLedgerBindings, resolveObjectLayer, resolveRegisteredCids, resolveTokenSupply, publishObjectLayer } =
+  await objectLayerModule('../../../src/server/domain/object-layer-resolver.js');
 const { clearDomainCache, domainOrigin } = await import('../../../src/server/domain/domain-client.js');
 const { loadApiExtension } = await import('../../../src/server/domain/consumed-api.js');
 const { developmentOrigins, hostPortsFactory, localHostAddress } =
   await import('../../../src/server/network/router.js');
-const { contentViewOf, isServiceKey, jwtSign, servicePrincipal } = await import('../../../src/server/security/auth.js');
+const { isServiceKey, servicePrincipal } = await import('../../../src/server/security/auth.js');
 const { cacheCanonical, isObjectLayerAuthority, publishDefinition } = await objectLayerModule(
   '../../../src/api/object-layer/object-layer.publication.js',
 );
@@ -132,6 +131,22 @@ describe.skipIf(!objectLayerDomain)('ItemLedger resolution', () => {
     expect(await resolveLedgerBindings(cid, consumer)).toEqual([]);
     expect(await resolveTokenSupply({ chainId: 1, contractAddress: '0x0', tokenId: '1' }, consumer)).toBeNull();
   });
+
+  it('protects a registered definition when the ledger answers', async () => {
+    process.env.ITEM_LEDGER_API_ORIGIN = 'https://itemledger.com';
+    expect([...(await resolveRegisteredCids([cid], consumer))]).toEqual([cid]);
+  });
+
+  it('fails a registration check closed, naming the policy, when the ledger does not answer', async () => {
+    process.env.ITEM_LEDGER_API_ORIGIN = 'https://itemledger.com';
+    vi.stubGlobal('fetch', async () => {
+      throw new TypeError('fetch failed');
+    });
+    await expect(resolveRegisteredCids([cid], consumer)).rejects.toMatchObject({
+      status: 503,
+      message: expect.stringMatching(/^Registration safety: ItemLedger did not answer .*fetch failed/),
+    });
+  });
 });
 
 describe('cross-domain credentials', () => {
@@ -211,7 +226,7 @@ describe.skipIf(!objectLayerDomain)('database boundaries', () => {
 
   it('keeps the canonical protocol free of Cyberia modules', () => {
     for (const file of [
-      'src/client/components/object-layer/ObjectLayerProtocol.js',
+      'src/client/components/objectlayer-studio/ObjectLayerProtocol.js',
       'src/api/object-layer/object-layer.identity.js',
     ]) {
       const text = fs.readFileSync(path.join(root, file), 'utf8');
@@ -301,33 +316,6 @@ describe.skipIf(!objectLayerDomain)('one canonical writer', () => {
   });
 });
 
-describe('authoring view', () => {
-  const host = { host: 'www.cyberiaonline.com', path: '/' };
-  const bearer = (token) => ({ headers: { authorization: `Bearer ${token}` } });
-  const token = (role, options = host) => jwtSign({ _id: 'u1', role }, options, 5, 10);
-
-  beforeEach(() => {
-    process.env.JWT_SECRET = 'test-jwt-secret';
-    process.env.DOMAIN_API_SERVICE_KEY = 'service-key';
-  });
-  afterEach(() => {
-    delete process.env.JWT_SECRET;
-  });
-
-  it('shows the workspace to a moderator of the host only', () => {
-    expect(contentViewOf(bearer(token('moderator')), host)).toBe('workspace');
-    expect(contentViewOf(bearer(token('admin')), host)).toBe('workspace');
-    expect(contentViewOf(bearer(token('user')), host)).toBe('served');
-    expect(contentViewOf(bearer(token('moderator', { host: 'objectlayer.org', path: '/' })), host)).toBe('served');
-  });
-
-  it('serves the promoted release to everyone else', () => {
-    expect(contentViewOf({ headers: {} }, host)).toBe('served');
-    expect(contentViewOf(bearer('service-key'), host)).toBe('served');
-    expect(contentViewOf(bearer('not-a-token'), host)).toBe('served');
-  });
-});
-
 describe('API extensions', () => {
   it('mounts an API as its owner ships it when the host declares no extension', async () => {
     expect(await loadApiExtension('object-layer', {})).toBeUndefined();
@@ -342,7 +330,8 @@ describe('API extensions', () => {
 
   it.skipIf(!cyberiaContext)('loads the Cyberia Studio extensions with the hooks the generic APIs read', async () => {
     const objectLayer = await loadApiExtension('object-layer', { 'object-layer': 'cyberia' });
-    for (const hook of ['mount', 'resolveKey', 'beforeDelete']) expect(typeof objectLayer[hook], hook).toBe('function');
+    for (const hook of ['mount', 'resolveKey', 'beforeDelete', 'listParams'])
+      expect(typeof objectLayer[hook], hook).toBe('function');
     const atlas = await loadApiExtension('atlas-sprite-sheet', { 'atlas-sprite-sheet': 'cyberia' });
     for (const hook of ['mount', 'resolveKey']) expect(typeof atlas[hook], hook).toBe('function');
   });
