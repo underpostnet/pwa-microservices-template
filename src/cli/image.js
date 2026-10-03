@@ -17,6 +17,28 @@ import { assertSourceRevision } from '../server/release/source-release.js';
 const logger = loggerFactory(import.meta);
 
 /**
+ * The registry-qualified base images a Dockerfile pulls: no build stage, no `scratch`, no `$` reference.
+ * @param {string} dockerfile - The Dockerfile text.
+ * @returns {string[]}
+ */
+const dockerfileBaseImages = (dockerfile) => {
+  const stages = new Set();
+  const images = new Set();
+  for (const line of dockerfile.split('\n')) {
+    const match = line.match(/^\s*FROM\s+(?:--\S+\s+)*(\S+)(?:\s+AS\s+(\S+))?/i);
+    if (!match) continue;
+    const [, image, stage] = match;
+    if (!stages.has(image.toLowerCase()) && image !== 'scratch' && !image.includes('$')) {
+      const segments = image.split('/');
+      const hasRegistry = segments.length > 1 && /[.:]|^localhost$/.test(segments[0]);
+      images.add(hasRegistry ? image : `docker.io/${segments.length > 1 ? image : `library/${image}`}`);
+    }
+    if (stage) stages.add(stage.toLowerCase());
+  }
+  return [...images];
+};
+
+/**
  * @class UnderpostImage
  * @description Manages Docker image operations, including pulling, building, and loading images into Kubernetes clusters.
  * This class provides a set of static methods to handle image operations, including pulling base images,
@@ -41,13 +63,26 @@ class UnderpostImage {
      * @method pullBaseImages
      * @description Ensures the base image prerequisites for the runtime Dockerfiles
      * are present on the host (currently `docker.io/rockylinux/rockylinux:9`). This
-     * only pulls — it does NOT build. Builds run with `podman build --pull=never`,
-     * so the base must exist locally beforehand; that is the sole purpose of this
-     * step. Combine with `--build` in the same command to pull-then-build.
+     * only pulls — it does NOT build. A build pulls the other bases of its own Dockerfile.
      * @memberof UnderpostImage
      */
     pullBaseImages() {
       shellExec(`sudo podman pull docker.io/rockylinux/rockylinux:9`);
+    },
+    /**
+     * @method pullDockerfileBaseImages
+     * @description Pulls each base image of a Dockerfile that root Podman does not hold.
+     * Builds run with `--pull=never`, so every base must exist locally.
+     * @param {string} dockerfilePath - The Dockerfile to read.
+     * @memberof UnderpostImage
+     */
+    pullDockerfileBaseImages(dockerfilePath) {
+      if (!fs.existsSync(dockerfilePath)) return;
+      for (const image of dockerfileBaseImages(fs.readFileSync(dockerfilePath, 'utf8'))) {
+        const quoted = shellArgumentFactory(image);
+        const held = shellExec(`sudo podman image exists ${quoted}`, { silent: true, silentOnError: true });
+        if (held.code !== 0) shellExec(`sudo podman pull ${quoted}`);
+      }
     },
     /**
      * @method build
@@ -159,12 +194,12 @@ class UnderpostImage {
         .map(([k, v]) => `--build-arg ${shellArgumentFactory(`${k}=${v}`)}`);
       const buildArgStr = buildArgFlags.length ? ` ${buildArgFlags.join(' ')}` : '';
 
+      const dockerfile = `./${dockerfileName && typeof dockerfileName === 'string' ? dockerfileName : 'Dockerfile'}`;
       if (path)
         try {
+          UnderpostImage.API.pullDockerfileBaseImages(nodePath.join(path, dockerfile));
           shellExec(
-            `cd ${shellArgumentFactory(path)} && sudo podman build -f ${shellArgumentFactory(
-              `./${dockerfileName && typeof dockerfileName === 'string' ? dockerfileName : 'Dockerfile'}`,
-            )} -t ${shellArgumentFactory(imageName)}${target ? ` --target ${shellArgumentFactory(target)}` : ''} --pull=never --cap-add=CAP_AUDIT_WRITE${cache}${secretArgs}${buildArgStr} --network host`,
+            `cd ${shellArgumentFactory(path)} && sudo podman build -f ${shellArgumentFactory(dockerfile)} -t ${shellArgumentFactory(imageName)}${target ? ` --target ${shellArgumentFactory(target)}` : ''} --pull=never --cap-add=CAP_AUDIT_WRITE${cache}${secretArgs}${buildArgStr} --network host`,
           );
         } finally {
           for (const file of secretTmpFiles) {
@@ -194,8 +229,8 @@ class UnderpostImage {
     /**
      * @method release
      * @description The image a container release deploys, by digest. The public channel pulls the
-     * image CI built for the exact revision (`<repository>:sha-<revision>`); the private channel
-     * builds the checkout at that revision on this host. Either way the node runtime then holds it,
+     * `latest` image CI pushed (`<repository>:latest`); the private channel builds the checkout at
+     * the exact revision on this host. Either way the node runtime then holds it,
      * and the digest it reports names it.
      * @param {object} options
      * @param {string} options.imageName - The registry repository, e.g. `underpost/cyberia-server`.
@@ -210,7 +245,7 @@ class UnderpostImage {
       const repository = `${imageName || ''}`.replace(/[:@].*$/, '');
       if (!repository) throw new Error('image --release needs --image-name <repository>');
       const name = repository.split('/').pop();
-      const reference = path ? `localhost/${name}:${exact}` : `${repository}:sha-${exact}`;
+      const reference = path ? `localhost/${name}:${exact}` : `${repository}:latest`;
       if (path) UnderpostImage.API.build({ path, imageName: `${name}:${exact}`, kubeadm: !k3s, k3s });
       else shellExec(crictlCommandFactory(`pull ${shellArgumentFactory(reference)}`, { k3s }));
       const status = JSON.parse(
