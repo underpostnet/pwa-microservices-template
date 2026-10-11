@@ -12,7 +12,7 @@ import {
   readDeployRoutes,
   resolveDeployList,
 } from '../server/network/router.js';
-import { cronDeployIdResolve, loadCronDeployEnv } from '../server/ops/cron.js';
+import { cronDeployIdResolve, loadCronDeployEnv, processDeployEnvResolve } from '../server/ops/cron.js';
 import { loggerFactory } from '../server/ops/logger.js';
 import { timer, generateRandomPasswordSelection } from '../client/components/core/CommonJs.js';
 import {
@@ -39,6 +39,7 @@ import {
   monitoringConfigFactory,
   prometheusConfFactory,
   scrapeDeployListFactory,
+  staleSeriesMatchersFactory,
   webhookSecretFactory,
 } from '../server/ops/monitoring.js';
 import axios from 'axios';
@@ -102,6 +103,8 @@ class UnderpostMonitor {
      * @param {string} [options.grafanaHost=''] - Hostname to publish Grafana under, at `/grafana`.
      * @param {boolean} [options.nodePort=false] - Publish Grafana on the node's LAN address.
      * @param {boolean} [options.webhookToken=false] - Print the shared event webhook token and exit.
+     * @param {boolean} [options.pruneSeries=false] - Delete the series of targets the configuration no longer renders.
+     * @param {boolean} [options.dryRun=false] - With `pruneSeries`, list the retired series without deleting them.
      * @param {string} [options.events=''] - Comma-separated event ids to provision; empty selects every registered event.
      * @param {string} [options.webhookUrl=''] - URL Alertmanager delivers events to.
      * @param {string} [options.extraTargets=''] - Comma-separated additional `host:port` scrape targets.
@@ -138,6 +141,8 @@ class UnderpostMonitor {
         grafanaHost: '',
         nodePort: false,
         webhookToken: false,
+        pruneSeries: false,
+        dryRun: false,
         events: '',
         webhookUrl: '',
         extraTargets: '',
@@ -158,7 +163,12 @@ class UnderpostMonitor {
       if (options.exposeGrafana) return Underpost.monitor.exposeGrafana(options);
       if (options.metricsServer) return await Underpost.monitor.deployMetricsServer(options);
       if (options.observability) return await Underpost.monitor.deployObservability({ ...options, deployId });
-      if (options.syncProm) return await Underpost.monitor.syncObservability({ ...options, deployId });
+      if (options.syncProm) {
+        const context = await Underpost.monitor.syncObservability({ ...options, deployId });
+        if (options.pruneSeries) await Underpost.monitor.pruneStaleSeries(options);
+        return context;
+      }
+      if (options.pruneSeries) return await Underpost.monitor.pruneStaleSeries(options);
       if (deployId === 'dd' && deployRoutesExists()) {
         for (const _deployId of readDeployRoutes())
           Underpost.monitor.callback(
@@ -440,12 +450,10 @@ class UnderpostMonitor {
      * The webhook triggers root-equivalent remediation on the edge from an
      * unauthenticated POST, so the stack is never provisioned without one.
      *
-     * Two machines have to agree on it: the cluster provisions the Alertmanager
-     * Secret, and the hub runs the receiver that validates what Alertmanager
-     * sends. So the deploy environment wins over the machine-local host store
-     * store — `engine-private` is shared, and a token written there reaches both
-     * sides on the next pull. A token minted here is machine-local by
-     * definition, which is why minting says so.
+     * The Alertmanager Secret and the control-plane receiver must agree on it.
+     * The host configuration in `engine-private` is the shared source, and
+     * `loadCronDeployEnv` puts it in `process.env`. A token minted here is
+     * machine-local, so minting says where to persist it.
      * @returns {string} Shared bearer token.
      * @memberof UnderpostMonitor
      */
@@ -457,7 +465,7 @@ class UnderpostMonitor {
       const token = generateRandomPasswordSelection(48);
       Underpost.host.store.set('UNDERPOST_EVENT_TOKEN', token);
       logger.warn('Minted a machine-local event webhook token', {
-        hint: 'persist it as UNDERPOST_EVENT_TOKEN in the cron deploy env so the hub receiver shares it',
+        hint: `persist it as UNDERPOST_EVENT_TOKEN in ${Underpost.host.sourceLabel(processDeployEnvResolve())}`,
         read: 'node bin monitor --webhook-token',
       });
       return token;
@@ -788,7 +796,7 @@ EOF
           namespace,
         }),
       );
-      const alertmanagerConf = stamp(alertmanagerConfFactory({ webhookUrl }));
+      const alertmanagerConf = stamp(alertmanagerConfFactory({ webhookUrl, events }));
 
       // disableLog: shellExec echoes the command, and this heredoc carries the
       // webhook token.
@@ -854,6 +862,8 @@ EOF
         await Underpost.monitor.reconcileGrafanaAdmin({ namespace, ...grafanaAdmin });
       } else if (options.deferGrafanaAdmin) grafanaAdminSyncState.set(context, grafanaAdmin);
 
+      if (events.length > 0) await Underpost.monitor.verifyEventWebhook({ webhookUrl, token });
+
       logger.info('Observability configuration synced', {
         namespace,
         deployIds: context.deployIds,
@@ -863,6 +873,131 @@ EOF
         grafanaAdminSecret: UNDERPOST_MONITORING.grafana.adminSecretName,
       });
       return context;
+    },
+
+    /**
+     * @method pruneStaleSeries
+     * @description Deletes the series of every target that the current configuration no longer renders.
+     *
+     * Prometheus keeps a retired target until retention ends, so Grafana keeps showing a removed
+     * domain or probe. The active targets decide what stays. Pruning is refused unless they carry
+     * exactly the probes the private configuration renders, so a stale reload deletes nothing.
+     * The delete runs through the admin API that the Prometheus manifest enables.
+     * @param {object} [options]
+     * @param {string} [options.namespace='default'] - Namespace holding the stack.
+     * @param {boolean} [options.dryRun=false] - List the retired series without deleting them.
+     * @param {number} [options.timeoutMs=60000] - Wait for Prometheus to run the rendered probes.
+     * @returns {Promise<{matchers: string[], series: Array<object>}>} Selectors and the series they matched.
+     * @memberof UnderpostMonitor
+     */
+    async pruneStaleSeries(options = {}) {
+      const namespace = options.namespace || 'default';
+      const { prometheus } = UNDERPOST_MONITORING;
+      const state = Underpost.event.deployedEventState({ namespace });
+      if (!state.readable)
+        throw new Error(`[observability] the deployed event set is unreadable; nothing is pruned (${state.reason})`);
+      if (state.ids.length === 0)
+        throw new Error('[observability] no event is deployed (suspended for maintenance?); nothing is pruned');
+      const rendered = new Set(
+        Underpost.event
+          .definitions(state.ids.filter((id) => Underpost.event.EVENTS[id]))
+          .flatMap((event) => event.probes.flatMap((probe) => probe.targets)),
+      );
+
+      const localPort = await Underpost.monitor.findFreePort();
+      const portForward = shellExec(
+        `exec kubectl port-forward service/${prometheus.name} ${localPort}:${prometheus.port} -n ${namespace} ` +
+          `</dev/null >/dev/null 2>&1`,
+        { async: true, silent: true, disableLog: true, silentOnError: true },
+      );
+      const api = `http://127.0.0.1:${localPort}/api/v1`;
+      try {
+        // A reload reaches the target list within seconds; the wait also covers the port-forward start.
+        const deadline = Date.now() + (options.timeoutMs ?? 60000);
+        let active;
+        let current = false;
+        do {
+          try {
+            const { data } = await axios.get(`${api}/targets`, { params: { state: 'active' }, timeout: 5000 });
+            active = data.data.activeTargets.map(({ labels }) => labels);
+            const probed = new Set(active.filter((labels) => labels.underpost_event).map((labels) => labels.instance));
+            current = probed.size === rendered.size && [...rendered].every((target) => probed.has(target));
+          } catch (_) {}
+          if (!current && Date.now() < deadline) await timer(2000);
+        } while (!current && Date.now() < deadline);
+        if (!active) throw new Error('[observability] Prometheus did not answer through kubectl port-forward');
+        if (!current)
+          throw new Error(
+            '[observability] Prometheus does not probe what the private configuration renders; ' +
+              'run node bin monitor --sync-prom, and withdraw OUT_OF_SYNC events with event <id> --undeploy',
+          );
+
+        const matchers = staleSeriesMatchersFactory(active);
+        const query = new URLSearchParams(matchers.map((matcher) => ['match[]', matcher])).toString();
+        const { data } = await axios.get(`${api}/series?${query}`, { timeout: 30000 });
+        const series = data.data;
+        logger.info(options.dryRun ? '[dry-run] Retired series' : 'Retired series', {
+          series: series.length,
+          targets: [...new Set(series.map((labels) => `${labels.job} ${labels.instance || ''}`.trim()))].sort(),
+        });
+        if (options.dryRun || series.length === 0) return { matchers, series };
+
+        try {
+          await axios.post(`${api}/admin/tsdb/delete_series?${query}`, null, { timeout: 120000 });
+          await axios.post(`${api}/admin/tsdb/clean_tombstones`, null, { timeout: 300000 });
+        } catch (error) {
+          if (error.response?.status === 503)
+            throw new Error(
+              '[observability] the Prometheus admin API is disabled; enable it with node bin monitor --observability',
+            );
+          throw error;
+        }
+        logger.info('Retired series pruned', { series: series.length });
+        return { matchers, series };
+      } finally {
+        try {
+          portForward?.kill?.('SIGTERM');
+        } catch (_) {}
+      }
+    },
+
+    /**
+     * @method verifyEventWebhook
+     * @description Sends an empty Alertmanager payload to the dispatcher with the projected token.
+     *
+     * A refused token means every Alertmanager delivery is refused too: nothing is remediated or mailed.
+     * An unreachable dispatcher is reported but does not fail the sync, because maintenance stops it.
+     * @param {object} params
+     * @param {string} params.webhookUrl - URL Alertmanager delivers to.
+     * @param {string} params.token - Token projected into the Alertmanager Secret.
+     * @returns {Promise<{status: (number|string), accepted: boolean}>} What the dispatcher answered.
+     * @throws {Error} When the dispatcher refuses the token.
+     * @memberof UnderpostMonitor
+     */
+    async verifyEventWebhook({ webhookUrl, token }) {
+      let status;
+      try {
+        ({ status } = await axios.post(
+          webhookUrl,
+          { status: 'firing', alerts: [] },
+          { headers: { Authorization: `Bearer ${token}` }, timeout: 5000, validateStatus: () => true },
+        ));
+      } catch (error) {
+        logger.warn('Event dispatcher is unreachable; no alert is remediated until it answers', {
+          webhookUrl,
+          error: error.code || error.message,
+          fix: 'node bin event --service',
+        });
+        return { status: error.code || 'unreachable', accepted: false };
+      }
+      if (status === 401)
+        throw new Error(
+          `[observability] the event dispatcher at ${webhookUrl} refuses the token Alertmanager presents, ` +
+            'so no alert is remediated or mailed; restart it with the shared token: node bin event --service',
+        );
+      if (status === 202) logger.info('Event dispatcher accepts the Alertmanager token', { webhookUrl });
+      else logger.warn('Event dispatcher answered unexpectedly', { webhookUrl, status });
+      return { status, accepted: status === 202 };
     },
 
     /**

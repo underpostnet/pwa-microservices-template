@@ -280,6 +280,12 @@ program
   )
   .option('--unblock-ingress-port <ports>', 'Withdraws the port rules --block-ingress-port installed.')
   .option('--mac', 'Prints the MAC address of the main network interface.')
+  .option(
+    '--static-ipv4',
+    "Pins the default interface's current IPv4 address, gateway and DNS as a static NetworkManager profile. " +
+      'A timer restores the previous profile after 5 minutes unless the new binding is verified.',
+  )
+  .option('--dry-run', 'With --static-ipv4, prints the commands without applying them.')
   .description('Displays the current public machine IP addresses.')
   .action(Underpost.dns.ipDispatcher);
 
@@ -727,8 +733,14 @@ program
   .option('--expose-grafana', 'Republishes Grafana with --grafana-host / --node-port without redeploying the stack.')
   .option(
     '--webhook-token',
-    'Prints the shared event webhook token, to persist as UNDERPOST_EVENT_TOKEN in the cron deploy env.',
+    'Prints the shared event webhook token, to persist as UNDERPOST_EVENT_TOKEN in the host configuration.',
   )
+  .option(
+    '--prune-series',
+    'Deletes Prometheus series of targets the current configuration no longer renders (retired domains and probes). ' +
+      'Runs after --sync-prom when both are given.',
+  )
+  .option('--dry-run', 'With --prune-series, lists the retired series without deleting them.')
   .option(
     '--node-name <k8s-node-name>',
     'Pins every monitoring workload to this node; moving Grafana deletes and recreates its node-local data.',
@@ -927,8 +939,8 @@ const edgeCommandFactory = (name, description) =>
     .option('--wireguard-stop', 'Tears down the interface and removes its transient packet rules.')
     .option('--check', 'Waits for an active interface and a fresh handshake with its required peer.')
     .option('--check-timeout <seconds>', 'Maximum wait for --check (default: 30).')
-    .option('--expected-role <role>', 'Refuses restart/check unless this host has the expected node role.')
-    .option('--expected-id <peer-id>', 'Refuses restart/check unless this node represents the expected peer id.')
+    .option('--expected-role <role>', 'Refuses setup/restart/check unless this host has the expected node role.')
+    .option('--expected-id <peer-id>', 'Refuses setup/restart/check unless this node represents the expected peer id.')
     .option('--wireguard-reset', 'Removes generated host state, keeping keys, topology and node identity.')
     .option('--wireguard-reinstall', 'Full purge, package reinstall and re-key; updates the selected topology key.')
     .option('--dry-run', 'Prints the files and commands the run would apply, without touching the host.')
@@ -1531,16 +1543,11 @@ program
   .command('source-release')
   .argument(
     '<operation>',
-    'repository: the repository of a source channel; mirror: publish a private revision; job: run a Release Job; ' +
+    'repository: the repository of a source channel; job: run a Release Job; ' +
       'prune: remove the release workspaces of the store.',
   )
-  .argument(
-    '<subject>',
-    'The public repository (repository, mirror), the release id (job), or the release to keep (prune).',
-  )
+  .argument('<subject>', 'The public repository (repository), the release id (job), or the release to keep (prune).')
   .option('--channel <channel>', 'For repository: the source channel, public or private.', 'public')
-  .option('--revision <sha>', 'For mirror: the exact source revision to publish.')
-  .option('--branch <branch>', 'For mirror: the public branch (default: the private repository default branch).')
   .option('--deploy-id <deploy-id>', 'For job: the deployment the release belongs to.')
   .option('--image <image>', 'For job: the container image the Job runs.')
   .option('--cmd <command>', 'For job: the shell command line the Job runs.')
@@ -1556,7 +1563,7 @@ program
   .option('--timeout <seconds>', 'For job: the deadline of the Job, in seconds.', '3600')
   .option('--image-pull-policy <policy>', 'For job: Always, IfNotPresent or Never.', 'IfNotPresent')
   .option('--dry-run', 'For job: print the Job manifest and run nothing.')
-  .description('Source channels, the private-to-public mirror, the Release Job and the release store.')
+  .description('Source channels, the Release Job and the release store.')
   .action(Underpost.sourceRelease.callback);
 
 export { program };

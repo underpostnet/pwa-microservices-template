@@ -99,6 +99,8 @@ const UNDERPOST_MONITORING = {
     port: 39099,
     path: '/event',
   },
+  // Marks the probe of the tunnel that every other probe from the control plane crosses.
+  vantageLabel: 'underpost_vantage',
 };
 
 /**
@@ -242,6 +244,42 @@ const deployedEventIdsFactory = (...documents) =>
   ]
     .filter((id) => id && id !== '.+')
     .sort();
+
+/** Renders values as one anchored alternation inside a PromQL string literal. */
+const promqlAlternationFactory = (values = []) =>
+  [...new Set(values)]
+    .sort()
+    .map((value) => promRegexEscape(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"'))
+    .join('|');
+
+/**
+ * @method staleSeriesMatchersFactory
+ * @description Series selectors for every target that the running configuration no longer scrapes.
+ *
+ * A retired job is matched whole. A job that remains is matched on its retired instances only.
+ * No active target means no selector, so an empty answer never deletes everything.
+ * @param {Array<{job?: string, instance?: string}>} [activeTargets] - Labels of the active targets.
+ * @returns {string[]} `match[]` selectors for the admin delete API.
+ * @memberof UnderpostMonitoring
+ */
+const staleSeriesMatchersFactory = (activeTargets = []) => {
+  const instancesByJob = new Map();
+  for (const { job, instance } of activeTargets) {
+    if (!job || !instance) continue;
+    if (!instancesByJob.has(job)) instancesByJob.set(job, []);
+    instancesByJob.get(job).push(instance);
+  }
+  if (instancesByJob.size === 0) return [];
+  return [
+    `{job=~".+",job!~"${promqlAlternationFactory([...instancesByJob.keys()])}"}`,
+    ...[...instancesByJob.entries()]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(
+        ([job, instances]) =>
+          `{job="${job.replace(/"/g, '\\"')}",instance=~".+",instance!~"${promqlAlternationFactory(instances)}"}`,
+      ),
+  ];
+};
 
 /**
  * @method prometheusConfFactory
@@ -465,14 +503,30 @@ ${rules.length > 0 ? rules.join('\n') : '      []'}
  * Deliveries always carry the bearer token from the mounted Secret: the
  * receiver runs on the host with root-equivalent reach on the edge, so an
  * unauthenticated variant of this route is not a mode worth having.
+ *
+ * An event that declares `inhibits` silences those events for every other subject while it
+ * fires for the vantage subject. Their probes cross the same tunnel, so they fail with it.
  * @param {object} params
  * @param {string} params.webhookUrl - Absolute URL of the dispatcher's receiver.
  * @param {string} [params.repeatInterval] - How long before an unresolved alert is redelivered.
+ * @param {Array<{id: string, inhibits?: string[]}>} [params.events] - Rendered events.
  * @returns {string} `alertmanager.yml` contents.
  * @memberof UnderpostMonitoring
  */
-const alertmanagerConfFactory = ({ webhookUrl, repeatInterval = '1h' } = {}) => {
-  const { alertmanager } = UNDERPOST_MONITORING;
+const alertmanagerConfFactory = ({ webhookUrl, repeatInterval = '1h', events = [] } = {}) => {
+  const { alertmanager, vantageLabel } = UNDERPOST_MONITORING;
+  const rendered = new Set(events.map((event) => event.id));
+  const inhibitRules = events
+    .map((event) => ({ id: event.id, targets: (event.inhibits || []).filter((id) => rendered.has(id)) }))
+    .filter(({ targets }) => targets.length > 0)
+    .map(
+      ({ id, targets }) => `  - source_matchers:
+      - underpost_event = "${id}"
+      - ${vantageLabel} = "true"
+    target_matchers:
+      - underpost_event =~ "${targets.join('|')}"
+      - ${vantageLabel} != "true"`,
+    );
   return `global:
   resolve_timeout: 5m
 
@@ -502,7 +556,7 @@ receivers:
           authorization:
             type: Bearer
             credentials_file: /etc/alertmanager/secret/${alertmanager.tokenKey}
-`;
+${inhibitRules.length > 0 ? `\ninhibit_rules:\n${inhibitRules.join('\n')}\n` : ''}`;
 };
 
 /**
@@ -1720,5 +1774,6 @@ export {
   prometheusConfFactory,
   scrapeDeployListFactory,
   serviceDnsFactory,
+  staleSeriesMatchersFactory,
   webhookSecretFactory,
 };

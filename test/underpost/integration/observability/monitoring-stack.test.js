@@ -2,6 +2,9 @@
 
 import { expect } from 'chai';
 import fs from 'fs-extra';
+import http from 'node:http';
+import Underpost from '../../../../src/index.js';
+import UnderpostMonitor from '../../../../src/cli/monitor.js';
 import { cronJobYamlFactory } from '../../../../src/server/ops/cron.js';
 import {
   UNDERPOST_MONITORING,
@@ -29,9 +32,11 @@ import {
   prometheusConfFactory,
   scrapeDeployListFactory,
   serviceDnsFactory,
+  staleSeriesMatchersFactory,
   webhookSecretFactory,
 } from '../../../../src/server/ops/monitoring.js';
 import { hubTunnelAddressFactory } from '../../../../src/cli/wireguard.js';
+import { shellHarness } from '../../../support/shell-harness.js';
 
 // A deploy that mixes every runtime shape the router can carry: two scrapeable
 // Express paths, one non-Express runtime, and one redirect-only entry.
@@ -268,12 +273,38 @@ describe('alertmanagerConfFactory', () => {
   it('always presents the mounted bearer token', () => {
     expect(conf).to.include(`credentials_file: /etc/alertmanager/secret/${UNDERPOST_MONITORING.alertmanager.tokenKey}`);
   });
+
+  it('renders no inhibition when no event declares one', () => {
+    expect(conf).to.not.include('inhibit_rules');
+  });
+
+  it('silences the rendered dependants of a vantage alert, never the alert itself', () => {
+    const inhibited = alertmanagerConfFactory({
+      webhookUrl: 'http://10.0.0.5:9099/event',
+      events: [
+        { id: 'wireguard-spoke-down', inhibits: ['wireguard-spoke-down', 'public-ingress-down', 'not-rendered'] },
+        { id: 'public-ingress-down' },
+      ],
+    });
+    const { vantageLabel } = UNDERPOST_MONITORING;
+    expect(inhibited).to.include('inhibit_rules:');
+    expect(inhibited).to.include(`- underpost_event = "wireguard-spoke-down"\n      - ${vantageLabel} = "true"`);
+    expect(inhibited).to.include(`- underpost_event =~ "wireguard-spoke-down|public-ingress-down"`);
+    expect(inhibited).to.include(`- ${vantageLabel} != "true"`);
+    expect(inhibited).to.not.include('not-rendered');
+  });
 });
 
 describe('blackboxConfFactory', () => {
   it('defines exactly the modules the probes name', () => {
     const conf = blackboxConfFactory();
     for (const module of ['http_2xx', 'tcp_connect', 'icmp']) expect(conf).to.include(`${module}:`);
+  });
+
+  it('lets the icmp prober open its unprivileged socket, with the raw socket as fallback', () => {
+    const deployment = fs.readFileSync('./manifests/blackbox-exporter/deployment.yaml', 'utf8');
+    expect(deployment).to.include("- name: net.ipv4.ping_group_range\n            value: '0 2147483647'");
+    expect(deployment).to.include('- NET_RAW');
   });
 });
 
@@ -898,5 +929,87 @@ describe('cron job bandwidth publication', () => {
   it('creates the directory, so a node that never ran the collector still publishes', () => {
     const volume = manifest.slice(manifest.indexOf(UNDERPOST_MONITORING.nodeExporter.textfileDirectory));
     expect(volume).to.include('type: DirectoryOrCreate');
+  });
+});
+
+describe('staleSeriesMatchersFactory', () => {
+  it('matches retired jobs whole and retired instances of the live jobs', () => {
+    expect(
+      staleSeriesMatchersFactory([
+        { job: 'blackbox-icmp', instance: '10.0.0.1' },
+        { job: 'blackbox-http_2xx-1', instance: 'https://www.example.com/' },
+      ]),
+    ).to.deep.equal([
+      '{job=~".+",job!~"blackbox-http_2xx-1|blackbox-icmp"}',
+      '{job="blackbox-http_2xx-1",instance=~".+",instance!~"https://www\\\\.example\\\\.com/"}',
+      '{job="blackbox-icmp",instance=~".+",instance!~"10\\\\.0\\\\.0\\\\.1"}',
+    ]);
+  });
+
+  it('selects nothing when no target is active, so an empty answer deletes nothing', () => {
+    expect(staleSeriesMatchersFactory([])).to.deep.equal([]);
+  });
+});
+
+describe('pruneStaleSeries', () => {
+  const ACTIVE = { job: 'blackbox-icmp', instance: '10.0.0.1', underpost_event: 'wireguard-spoke-down' };
+  let server;
+  let requests;
+  let harness;
+
+  // Prometheus' HTTP API, reached through the port-forward the harness stands in for.
+  beforeEach(async () => {
+    requests = [];
+    harness = shellHarness();
+    server = http.createServer((req, res) => {
+      requests.push(`${req.method} ${decodeURIComponent(req.url)}`);
+      const json = (body) => res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify(body));
+      if (req.url.startsWith('/api/v1/targets')) return json({ data: { activeTargets: [{ labels: ACTIVE }] } });
+      if (req.url.startsWith('/api/v1/series'))
+        return json({ data: [{ __name__: 'probe_success', job: 'blackbox-icmp', instance: '10.0.0.9' }] });
+      res.writeHead(204).end();
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    vi.spyOn(UnderpostMonitor.API, 'findFreePort').mockResolvedValue(server.address().port);
+    vi.spyOn(Underpost.event, 'deployedEventState').mockReturnValue({
+      readable: true,
+      ids: ['wireguard-spoke-down'],
+      reason: '',
+    });
+  });
+
+  afterEach(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    harness.restore();
+    vi.restoreAllMocks();
+  });
+
+  const rendering = (targets) => vi.spyOn(Underpost.event, 'definitions').mockReturnValue([{ probes: [{ targets }] }]);
+
+  it('deletes the series of retired targets and cleans the tombstones', async () => {
+    rendering(['10.0.0.1']);
+    const result = await UnderpostMonitor.API.pruneStaleSeries({ timeoutMs: 0 });
+    expect(result.series).to.have.length(1);
+    expect(requests.some((entry) => entry.startsWith('POST /api/v1/admin/tsdb/delete_series?match[]='))).to.equal(true);
+    expect(requests).to.include('POST /api/v1/admin/tsdb/clean_tombstones');
+  });
+
+  it('lists the retired series without deleting them under a dry run', async () => {
+    rendering(['10.0.0.1']);
+    await UnderpostMonitor.API.pruneStaleSeries({ timeoutMs: 0, dryRun: true });
+    expect(requests.some((entry) => entry.startsWith('POST'))).to.equal(false);
+  });
+
+  it('refuses while Prometheus does not probe what the private configuration renders', async () => {
+    rendering(['10.0.0.1', '10.0.0.2']);
+    await expect(UnderpostMonitor.API.pruneStaleSeries({ timeoutMs: 0 })).rejects.toThrow(
+      'run node bin monitor --sync-prom',
+    );
+    expect(requests.some((entry) => entry.startsWith('POST'))).to.equal(false);
+  });
+
+  it('refuses while every event is withdrawn for maintenance', async () => {
+    vi.spyOn(Underpost.event, 'deployedEventState').mockReturnValue({ readable: true, ids: [], reason: '' });
+    await expect(UnderpostMonitor.API.pruneStaleSeries({ timeoutMs: 0 })).rejects.toThrow('no event is deployed');
   });
 });

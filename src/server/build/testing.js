@@ -180,6 +180,8 @@ const TEST_PROJECTS = [
       'src/client-builder/build-manifest.js',
       'src/client-builder/client-build-docs.js',
       'src/client/components/core/BuildManifest.js',
+      'src/client/components/core/ShellLayout.js',
+      'src/client/components/core/ShellNavigation.js',
       'src/projects/underpost/*.js',
       'src/runtime/nginx/Nginx.js',
       'src/server/build/docs.js',
@@ -222,20 +224,25 @@ const TEST_PROJECTS = [
     sources: [
       'src/api/atlas-sprite-sheet/atlas-sprite-sheet.generator.js',
       'src/api/cyberia-content-release/cyberia-content-release.model.js',
+      'src/projects/cyberia/procedural/context.js',
+      'src/projects/cyberia/procedural/core/*.js',
+      'src/projects/cyberia/procedural/generators/**/*.js',
+      'src/projects/cyberia/procedural/palettes/*.js',
+      'src/projects/cyberia/procedural/profiles/*.js',
       'src/api/cyberia-server-defaults/*.js',
       'src/projects/cyberia/compose-stack.js',
-      'src/projects/cyberia/content-artifact.js',
-      'src/projects/cyberia/content-release.js',
-      'src/projects/cyberia/domain-ownership.js',
-      'src/projects/cyberia/instance-backup.js',
+      'src/projects/cyberia/content/content-artifact.js',
+      'src/projects/cyberia/content/content-release.js',
+      'src/projects/cyberia/stack/domain-ownership.js',
+      'src/projects/cyberia/instance/instance-backup.js',
       'src/projects/cyberia/instance-data.js',
-      'src/projects/cyberia/local-stack.js',
-      'src/projects/cyberia/map-preview-generator.js',
-      'src/projects/cyberia/object-layer-catalog.js',
-      'src/projects/cyberia/release-content.js',
-      'src/projects/cyberia/server-key.js',
-      'src/projects/cyberia/shape-generator.js',
-      'src/projects/cyberia/stat-balance.js',
+      'src/projects/cyberia/stack/local-stack.js',
+      'src/projects/cyberia/instance/map-preview-generator.js',
+      'src/projects/cyberia/catalog/object-layer-catalog.js',
+      'src/projects/cyberia/content/release-content.js',
+      'src/projects/cyberia/runtime/server-key.js',
+      'src/projects/cyberia/object-layer/shape-generator.js',
+      'src/projects/cyberia/stats/stat-balance.js',
     ],
     description:
       'Cyberia content artifact consumption, instance data, releases, sprite atlases, map previews, stats ' +
@@ -345,8 +352,12 @@ const TEST_PROJECTS = [
       'src/api/object-layer/object-layer.publication.js',
       'src/db/DataBaseProvider.js',
       'src/db/served-databases.js',
-      'src/projects/cyberia/content-artifact.js',
-      'src/projects/cyberia/content-release.js',
+      'src/projects/cyberia/content/content-artifact.js',
+      'src/projects/cyberia/content/content-release.js',
+      'src/projects/cyberia/procedural/engine.js',
+      'src/projects/cyberia/procedural/jobs/*.js',
+      'src/projects/cyberia/procedural/source.js',
+      'src/projects/cyberia/procedural/spec.js',
       'test/support/mongod.js',
     ],
     // Every content-release test does real database round trips: a release build copies ten collections.
@@ -355,7 +366,8 @@ const TEST_PROJECTS = [
       'Cyberia against real boundaries: content releases on a MongoDB replica set — build, validate, ' +
       'promote, roll back, prune, restart, concurrent promotion, runtime isolation and one data source ' +
       'for every role — the content ' +
-      'artifact materialization and saga import, the product CLI, the audio seed and the map preview ' +
+      'artifact materialization and saga import, the Procedural Engine — the two generation modes, jobs, the background worker, ' +
+      'leases, human review and promotion — the product CLI, the audio seed and the map preview ' +
       'refresh. The database suites need a mongod binary (UNDERPOST_MONGOD_BIN or PATH), the content suites ' +
       'a built cyberia-content artifact (CYBERIA_CONTENT_ROOT or ./cyberia-content); each skips without its ' +
       'requirement.',
@@ -422,24 +434,34 @@ const TEST_PROJECTS = [
  * process. `selection` runs the whole selection in one process. Batches run one at a
  * time. `vitest` limits each process. A footprint can stop file parallelism, but it
  * never starts it for a project that sets `parallel` off.
+ *
+ * `budget` is the share of the host one batch can use. The runner stops a batch whose
+ * process tree holds more than `memoryShare` of the memory, or that leaves less than
+ * `reserveShare` of it available to the host. A batch runs at `nice` priority, and
+ * `cpuShare` of the CPUs sizes the thread pools of the tools it starts.
  * @memberof UnderpostTesting
  */
 const TEST_FOOTPRINTS = Object.freeze({
   safe: {
-    description: 'One project per fresh process, one worker, one file and one test at a time. The default.',
+    description:
+      'One project per fresh process, one worker, one file and one test at a time, inside a host budget. The default.',
     batch: 'project',
     vitest: { pool: 'forks', maxWorkers: 1, fileParallelism: false, maxConcurrency: 1 },
+    budget: { memoryShare: 0.3, reserveShare: 0.1, cpuShare: 0.5, nice: 10 },
   },
   balanced: {
-    description: 'One project per fresh process, two workers, parallel files where the project permits.',
+    description:
+      'One project per fresh process, two workers, parallel files where the project permits, inside a host budget.',
     batch: 'project',
     vitest: { pool: 'forks', maxWorkers: 2, maxConcurrency: 2 },
+    budget: { memoryShare: 0.5, reserveShare: 0.05, cpuShare: 0.75, nice: 5 },
   },
   ci: {
     description:
       'The whole selection in one process, on the Vitest default workers. For a runner that owns its machine.',
     batch: 'selection',
     vitest: {},
+    budget: null,
   },
 });
 
@@ -456,6 +478,29 @@ const testFootprintFactory = (name = '') => {
   if (!Object.hasOwn(TEST_FOOTPRINTS, key))
     throw new Error(`[test] unknown footprint '${key}' — expected one of ${Object.keys(TEST_FOOTPRINTS).join(', ')}`);
   return { name: key, ...TEST_FOOTPRINTS[key] };
+};
+
+/**
+ * @method testBudgetFactory
+ * @description Resolves the budget of a footprint against one host.
+ * @param {object} params
+ * @param {string} [params.footprint] - Footprint name.
+ * @param {number} params.totalMemoryBytes - Memory of the host, or of its container limit.
+ * @param {number} params.cpus - CPUs the runner can use.
+ * @returns {{memoryBytes: number, reserveBytes: number, threads: number, nice: number}|null} The budget,
+ *   or null for a footprint without one.
+ * @throws {Error} When the footprint is unknown.
+ * @memberof UnderpostTesting
+ */
+const testBudgetFactory = ({ footprint = '', totalMemoryBytes, cpus }) => {
+  const { budget } = testFootprintFactory(footprint);
+  if (!budget) return null;
+  return {
+    memoryBytes: Math.floor(totalMemoryBytes * budget.memoryShare),
+    reserveBytes: Math.floor(totalMemoryBytes * budget.reserveShare),
+    threads: Math.max(1, Math.floor(cpus * budget.cpuShare)),
+    nice: budget.nice,
+  };
 };
 
 /**
@@ -749,11 +794,13 @@ const testExecutionPlanFactory = ({ selector = '', contexts = [], footprint = ''
  * `failed`: tests failed and the batch wrote its report. `error`: the runner failed
  * before it wrote a report, or the process did not start. `killed`: SIGKILL, often
  * the kernel out-of-memory killer. `signaled`: another signal from outside.
+ * `over-budget`: the runner stopped the batch at its memory budget or host reserve.
  * `timeout`: the batch ran past its limit. `interrupted`: the operator stopped the run.
  * @param {object} [outcome]
  * @param {number|null} [outcome.exitCode] - Exit code, or null when a signal ended the process.
  * @param {string|null} [outcome.signal] - Signal that ended the process.
  * @param {boolean} [outcome.timedOut] - The runner stopped the batch at its time limit.
+ * @param {string} [outcome.overBudget] - Why the runner stopped the batch at its budget.
  * @param {boolean} [outcome.interrupted] - The operator stopped the run during the batch.
  * @param {boolean} [outcome.reported] - The batch wrote its report.
  * @returns {string} Status.
@@ -763,10 +810,12 @@ const testBatchStatus = ({
   exitCode = null,
   signal = null,
   timedOut = false,
+  overBudget = '',
   interrupted = false,
   reported = false,
 } = {}) => {
   if (interrupted) return 'interrupted';
+  if (overBudget) return 'over-budget';
   if (timedOut) return 'timeout';
   if (signal === 'SIGKILL') return 'killed';
   if (signal) return 'signaled';
@@ -910,7 +959,8 @@ const testRunFailureReportFactory = ({ batches = [], merge } = {}, evidence = {}
     const { tail = '' } = evidence[batch.index] ?? {};
     sections.push(
       [
-        `Batch ${batch.index} (${batch.projects.join(',')}) ${batch.status}: ${tail ? 'end of' : 'no output in'} ${batch.log ?? 'its log'}`,
+        `Batch ${batch.index} (${batch.projects.join(',')}) ${batch.status}${batch.reason ? ` (${batch.reason})` : ''}: ` +
+          `${tail ? 'end of' : 'no output in'} ${batch.log ?? 'its log'}`,
         ...(tail ? tail.split('\n').map((line) => `   | ${line}`) : []),
       ].join('\n'),
     );
@@ -920,7 +970,7 @@ const testRunFailureReportFactory = ({ batches = [], merge } = {}, evidence = {}
     const lines = failedTests.length > 0 ? thresholdLines : tail ? tail.split('\n') : [];
     sections.push(
       [
-        `Merge ${merge.status}: ${failedTests.length > 0 ? 'it replays the failed tests above' : 'end of its log'}${merge.log ? `, ${merge.log}` : ''}`,
+        `Merge ${merge.status}${merge.reason ? ` (${merge.reason})` : ''}: ${failedTests.length > 0 ? 'it replays the failed tests above' : 'end of its log'}${merge.log ? `, ${merge.log}` : ''}`,
         ...lines.map((line) => `   | ${line}`),
       ].join('\n'),
     );
@@ -1362,6 +1412,7 @@ export {
   runnableTestProjects,
   staleTestRuns,
   testBatchStatus,
+  testBudgetFactory,
   testDomainNames,
   testExecutionPlanFactory,
   testFootprintFactory,

@@ -4,6 +4,7 @@ import { expect } from 'chai';
 import fs from 'fs-extra';
 import http from 'node:http';
 import os from 'node:os';
+import Underpost from '../../../../src/index.js';
 import UnderpostEvent from '../../../../src/cli/event.js';
 import UnderpostMonitor from '../../../../src/cli/monitor.js';
 import UnderpostSSH from '../../../../src/cli/ssh.js';
@@ -204,6 +205,19 @@ describe('event execution targets', () => {
     expect(UnderpostEvent.API.spokeTarget('worker-b')).to.include({ via: 'local', user: '', host: '' });
   });
 
+  it('marks only the probe of this machine own tunnel as the vantage subject', () => {
+    eventFixture({ hostname: 'control-node' });
+    vi.spyOn(os, 'networkInterfaces').mockReturnValue({
+      eth0: [{ family: 'IPv4', address: '198.51.100.2', internal: false }],
+    });
+    const probes = UnderpostEvent.API.EVENTS['wireguard-spoke-down'].probes();
+    const { vantageLabel } = UNDERPOST_MONITORING;
+    expect(probes.map(({ targets, labels }) => [targets[0], labels[vantageLabel]])).to.deep.equal([
+      ['10.0.0.1', 'true'],
+      ['10.0.0.3', undefined],
+    ]);
+  });
+
   it('names the command that registers an unknown or identity-less spoke', () => {
     eventFixture();
     expect(() => UnderpostEvent.API.spokeTarget('ghost')).to.throw('register it with --peer-add');
@@ -354,6 +368,20 @@ describe('event remediation handlers', () => {
       expect(run.mock.calls[0][0]).to.include('worker-b');
     });
 
+    it('rebuilds the control plane tunnel on this machine with no SSH hop', async () => {
+      eventFixture({ hostname: 'control-node' });
+      vi.spyOn(os, 'networkInterfaces').mockReturnValue({
+        eth0: [{ family: 'IPv4', address: '198.51.100.2', internal: false }],
+      });
+      const run = stubRunCommand();
+      const result = await UnderpostEvent.API.repairSpokes({}, [{ labels: { underpost_spoke: 'control-a' } }]);
+      expect(run.mock.calls[0][0]).to.equal(
+        "node bin wireguard --wireguard-setup --wireguard-restart --check --check-timeout 30 --expected-role 'control' --expected-id 'control-a'",
+      );
+      expect(run.mock.calls[0][1]).to.include({ user: '', host: '' });
+      expect(result.targets[0]).to.include({ via: 'local', ok: true });
+    });
+
     // Spokes are independent hosts; a partial recovery beats none.
     it('does not let one unresolvable spoke stop the others', async () => {
       eventFixture();
@@ -478,7 +506,7 @@ describe('event remediation handlers', () => {
       const result = await UnderpostEvent.API.repairPublicIngress({ dryRun: true });
       expect(run.mock.calls.map(([command]) => command)).to.deep.equal([
         'node bin ip --unblock-all-ingress',
-        'node bin wireguard --wireguard-setup --wireguard-restart',
+        "node bin wireguard --wireguard-setup --wireguard-restart --check --check-timeout 30 --expected-role 'hub'",
       ]);
       expect(result.ok).to.equal(false);
     });
@@ -646,6 +674,12 @@ describe('event dispatch and publication', () => {
     const result = await UnderpostEvent.API.runCommand('uptime', { user: 'u', host: 'h' });
     expect(result).to.deep.equal({ ok: true, output: 'done' });
     expect(runner.mock.calls[0][1]).to.include({ user: 'u', host: 'h', remote: true });
+  });
+
+  // The output reaches the notification mail, where colour codes are noise.
+  it('returns the command output without terminal colour codes', async () => {
+    vi.spyOn(UnderpostSSH.API, 'sshRemoteRunner').mockResolvedValue('\u001b[32minfo\u001b[39m done\n');
+    expect(await UnderpostEvent.API.runCommand('uptime', {})).to.deep.equal({ ok: true, output: 'info done' });
   });
 
   // The generated SSH script is in the thrown message and tells a reader nothing.
@@ -933,6 +967,25 @@ describe('alertmanager webhook receiver', () => {
     expect((await post('{ not json')).status).to.equal(400);
   });
 
+  it('confirms at sync time that the dispatcher accepts the projected token', async () => {
+    const webhookUrl = `${address}${UNDERPOST_MONITORING.eventWebhook.path}`;
+    expect(await UnderpostMonitor.API.verifyEventWebhook({ webhookUrl, token: TOKEN })).to.deep.equal({
+      status: 202,
+      accepted: true,
+    });
+    await expect(UnderpostMonitor.API.verifyEventWebhook({ webhookUrl, token: 'rotated' })).rejects.toThrow(
+      'refuses the token Alertmanager presents',
+    );
+  });
+
+  it('reports an unreachable dispatcher without failing the sync', async () => {
+    const webhookUrl = `${address}${UNDERPOST_MONITORING.eventWebhook.path}`;
+    await new Promise((resolve) => server.close(resolve));
+    expect(await UnderpostMonitor.API.verifyEventWebhook({ webhookUrl, token: TOKEN })).to.include({
+      accepted: false,
+    });
+  });
+
   // Remediation can take minutes and Alertmanager retries any delivery it does
   // not see accepted, so the answer comes before the dispatch.
   it('accepts the delivery before dispatching, and names what it accepted', async () => {
@@ -1015,6 +1068,30 @@ describe('event CLI', () => {
     await UnderpostEvent.API.callback('', { list: true });
   });
 
+  // A threshold rule reads scraped host metrics and declares no probe by design.
+  it('warns of missing probe targets only for a rule that reads probe_success', async () => {
+    vi.spyOn(UnderpostMonitor.API, 'readDeployedEventState').mockReturnValue({ readable: true, ids: [], reason: '' });
+    const definition = (expr) => ({
+      id: 'fixture-event',
+      role: 'node',
+      description: 'fixture',
+      schedule: { probeInterval: '1m', alertFor: '5m' },
+      alert: { name: 'FixtureAlert', expr, for: '5m' },
+      probes: [],
+      remediation: [],
+      notifications: [],
+    });
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const warned = async (expr) => {
+      printed.mockClear();
+      vi.spyOn(UnderpostEvent.API, 'definitions').mockReturnValue([definition(expr)]);
+      await UnderpostEvent.API.callback('', { list: true });
+      return printed.mock.calls.some(([line]) => `${line}`.includes('no resolvable targets'));
+    };
+    expect(await warned('node_load1 > 4')).to.equal(false);
+    expect(await warned('probe_success == 0')).to.equal(true);
+  });
+
   it('reports an unreadable cluster and an event no longer declared', async () => {
     vi.spyOn(UnderpostMonitor.API, 'readDeployedEventState').mockReturnValue({
       readable: false,
@@ -1083,6 +1160,7 @@ describe('dispatcher service reconciliation', () => {
   beforeEach(() => {
     harness = shellHarness();
     vi.spyOn(UnderpostEvent.API, 'serviceJournal').mockReturnValue('journal line\n');
+    vi.spyOn(Underpost.host, 'read').mockReturnValue({ UNDERPOST_EVENT_TOKEN: 'fixture-webhook-token' });
   });
 
   afterEach(() => {
@@ -1118,6 +1196,14 @@ describe('dispatcher service reconciliation', () => {
     vi.spyOn(UnderpostEvent.API, 'serviceInstalledPort').mockReturnValue(0);
     eventFixture({ hostname: 'hub-node' });
     expect(() => UnderpostEvent.API.service({})).to.throw("requires 'event-service'");
+  });
+
+  it('refuses to install a receiver whose token is not in the shared host configuration', () => {
+    vi.spyOn(UnderpostEvent.API, 'serviceInstalledPort').mockReturnValue(0);
+    vi.spyOn(UnderpostEvent.API, 'assertDispatchReady').mockReturnValue([]);
+    vi.spyOn(Underpost.host, 'read').mockReturnValue({});
+    eventFixture({ hostname: 'control-node' });
+    expect(() => UnderpostEvent.API.service({})).to.throw('UNDERPOST_EVENT_TOKEN is not in');
   });
 
   it('refuses to install a unit no Node binary can start', () => {

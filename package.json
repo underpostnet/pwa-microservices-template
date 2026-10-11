@@ -10,10 +10,10 @@
         "test": "node bin test",
         "test:changed": "node bin test --changed",
         "test:coverage": "COVERAGE_ENFORCE=1 node bin test underpost,ecosystem,object-layer,item-ledger:unit,cryptokoyn,cyberia",
-        "dev": "NODE_ENV=development nodemon src/server",
+        "dev": "NODE_ENV=development node src/dev src/server",
         "dev:container": "NODE_ENV=development node src/server",
         "prod:container": "NODE_ENV=production node src/server",
-        "dev:api": "NODE_ENV=development nodemon --watch src --ignore src/client src/api",
+        "dev:api": "NODE_ENV=development node src/dev src/api",
         "dev:client": "NODE_ENV=development node src/client.dev",
         "dev:proxy": "NODE_ENV=development node src/proxy proxy",
         "docs": "typedoc --options typedoc.json",
@@ -90,7 +90,7 @@
         "cors": "^2.8.6",
         "d3": "^7.9.0",
         "dexie": "^4.4.6",
-        "dotenv": "^18.0.3",
+        "dotenv": "^18.0.5",
         "easymde": "^2.21.0",
         "esbuild": "^0.28.2",
         "ethers": "~6.17.0",
@@ -103,7 +103,7 @@
         "fullcalendar": "^7.1.0",
         "helmet": "^8.3.0",
         "html-minifier-terser": "^7.2.0",
-        "http-proxy-middleware": "^4.2.0",
+        "httpxy": "^0.5.5",
         "ignore-walk": "^9.0.0",
         "iovalkey": "^0.4.0",
         "js-yaml": "^5.4.1",
@@ -112,16 +112,16 @@
         "jszip": "^3.10.2",
         "mariadb": "^3.5.4",
         "marked": "^18.0.14",
-        "mongoose": "^9.10.2",
+        "mongoose": "^9.10.3",
         "morgan": "^1.12.1",
-        "nodemailer": "^10.0.3",
+        "nodemailer": "^10.0.13",
         "peer": "^1.0.2",
         "peerjs": "^1.5.5",
         "prom-client": "^15.1.2",
         "rrule": "^2.8.1",
-        "shelljs": "^0.10.0",
+        "shelljs": "^0.8.5",
         "sitemap": "^9.0.1",
-        "socket.io": "^4.8.3",
+        "socket.io": "^4.8.4",
         "sortablejs": "^1.15.0",
         "split-file": "^2.3.0",
         "swagger-autogen": "^2.23.7",
@@ -137,8 +137,7 @@
         "workbox-expiration": "^7.4.1",
         "workbox-precaching": "^7.4.1",
         "workbox-routing": "^7.4.1",
-        "workbox-strategies": "^7.4.1",
-        "nodemon": "^3.0.1"
+        "workbox-strategies": "^7.4.1"
     },
     "publishConfig": {
         "provenance": true,
@@ -157,14 +156,16 @@
             "path-to-regexp": ">=8.4.0"
         },
         "ws": "^8.20.2",
-        "qs": ">=6.16.0"
+        "qs": "^6.16.0",
+        "proxy-addr": "^2.0.8",
+        "sharp": "^0.35.5"
     },
     "devDependencies": {
-        "@socketsecurity/cli": "1.1.179",
-        "@vitest/coverage-v8": "5.0.1",
-        "allure-vitest": "3.12.2",
+        "@socketsecurity/cli": "1.4.1",
+        "@vitest/coverage-v8": "5.0.3",
+        "allure-vitest": "3.13.0",
         "bumpp": "^12.3.0",
-        "chai": "^6.2.2",
-        "vitest": "5.0.1"
+        "chai": "^6.3.0",
+        "vitest": "5.0.3"
     }
 }

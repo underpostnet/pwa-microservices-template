@@ -16,12 +16,13 @@
  * @namespace UnderpostEvent
  */
 
+import crypto from 'node:crypto';
 import http from 'node:http';
 import fs from 'fs-extra';
 import os from 'node:os';
 import nodePath from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { loadCronDeployEnv, parseList } from '../server/ops/cron.js';
+import { loadCronDeployEnv, parseList, processDeployEnvResolve } from '../server/ops/cron.js';
 import { timer } from '../client/components/core/CommonJs.js';
 import { installRootFile, shellExec, sleepSync } from '../server/runtime/process.js';
 import {
@@ -157,6 +158,14 @@ const plainText = (value = '') =>
     // eslint-disable-next-line no-control-regex
     .replace(/\u001b\[[0-9;]*m/g, '')
     .trim();
+
+/** Rebuilds, restarts and verifies one WireGuard node, refused on any other identity. */
+const wireguardRepairCommandFactory = ({ role, peerId = '' }) =>
+  [
+    'node bin wireguard --wireguard-setup --wireguard-restart --check --check-timeout 30',
+    `--expected-role ${shellArgumentFactory(role)}`,
+    ...(peerId ? [`--expected-id ${shellArgumentFactory(peerId)}`] : []),
+  ].join(' ');
 
 /** Gives each event subject an independent webhook cooldown. */
 const eventCooldownKeyFactory = (eventId, alerts = []) => {
@@ -325,8 +334,15 @@ const EVENTS = {
       Underpost.event.spokes().map((spoke) => ({
         module: 'icmp',
         targets: [spoke.local ? Underpost.event.hubAddress() : spoke.address],
-        labels: { underpost_role: 'spoke', underpost_spoke: spoke.id },
+        labels: {
+          underpost_role: 'spoke',
+          underpost_spoke: spoke.id,
+          ...(spoke.local ? { [UNDERPOST_MONITORING.vantageLabel]: 'true' } : {}),
+        },
       })),
+    // Every probe from the control plane crosses its own tunnel; while that tunnel is down,
+    // only its local repair applies. The hub event stays live as the escalation.
+    inhibits: ['wireguard-spoke-down', 'public-ingress-down'],
     remediation: () =>
       Underpost.event.spokes().map((spoke) => {
         try {
@@ -793,7 +809,7 @@ class UnderpostEvent {
           targets.push({ role: 'hub', address: '', via: 'unresolved', commands: [], ok: false, output: error.message });
           continue;
         }
-        const commands = ['node bin wireguard --wireguard-restart --check --check-timeout 30 --expected-role hub'];
+        const commands = [wireguardRepairCommandFactory({ role: 'hub' })];
         const result = await Underpost.event.runCommand(commands[0], {
           ...options,
           user: target.user,
@@ -874,9 +890,7 @@ class UnderpostEvent {
           });
           continue;
         }
-        const commands = [
-          `node bin wireguard --wireguard-restart --check --check-timeout 30 --expected-role ${shellArgumentFactory(target.nodeRole)} --expected-id ${shellArgumentFactory(target.spokeId)}`,
-        ];
+        const commands = [wireguardRepairCommandFactory({ role: target.nodeRole, peerId: target.spokeId })];
         const result = await Underpost.event.runCommand(commands[0], {
           ...options,
           user: target.user,
@@ -1020,10 +1034,7 @@ class UnderpostEvent {
         }
         // Ingress first: a blocked edge would make the tunnel rebuild look
         // successful while nothing could still reach it.
-        const commands = [
-          'node bin ip --unblock-all-ingress',
-          'node bin wireguard --wireguard-setup --wireguard-restart',
-        ];
+        const commands = ['node bin ip --unblock-all-ingress', wireguardRepairCommandFactory({ role: 'hub' })];
         const outputs = [];
         let ok = true;
         for (const command of commands) {
@@ -1489,7 +1500,7 @@ class UnderpostEvent {
           remote: Boolean(user),
           silent: options.silent === true,
         });
-        return { ok: true, output: `${output || ''}` };
+        return { ok: true, output: plainText(output) };
       } catch (error) {
         // What the command said, not the wrapper that carried it: the generated
         // SSH script is in the thrown message and tells a reader nothing.
@@ -1795,11 +1806,15 @@ class UnderpostEvent {
      * @description Renders the dispatcher's systemd unit.
      *
      * The unit depends only on the host network so it survives the tunnel it repairs.
+     * It pins `NODE_ENV`, so the receiver loads the same host configuration as the installer.
+     * The token fingerprint changes the unit when the token rotates, so `--service` restarts it.
      * @param {object} [params]
      * @param {number} [params.port] - Listening port.
      * @param {string} [params.workingDirectory] - Engine checkout the unit runs from.
      * @param {string} [params.user] - Account the unit runs as.
      * @param {string} [params.execPath] - Node binary the unit executes; probed by the caller.
+     * @param {string} [params.env] - Deploy environment the receiver loads.
+     * @param {string} [params.tokenFingerprint] - Short digest of the webhook token.
      * @returns {string} Rendered unit file.
      * @memberof UnderpostEvent
      */
@@ -1808,11 +1823,14 @@ class UnderpostEvent {
       workingDirectory = process.cwd(),
       user = os.userInfo().username,
       execPath = process.execPath,
+      env = processDeployEnvResolve(),
+      tokenFingerprint = '',
     } = {}) {
       return systemdUnitFactory({
         header:
           '# Generated by `underpost event --service`. Do not edit by hand:\n' +
-          '# the next run rewrites the file and restarts the service.',
+          '# the next run rewrites the file and restarts the service.' +
+          (tokenFingerprint ? `\n# Webhook token sha256: ${tokenFingerprint}` : ''),
         sections: {
           Unit: {
             Description: `Underpost operational event dispatcher on :${port}`,
@@ -1826,7 +1844,10 @@ class UnderpostEvent {
             Type: 'simple',
             User: user,
             WorkingDirectory: workingDirectory,
-            Environment: `PATH=${nodePath.dirname(execPath)}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin`,
+            Environment: [
+              `PATH=${nodePath.dirname(execPath)}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin`,
+              `NODE_ENV=${env}`,
+            ],
             ExecStart: `${execPath} ${workingDirectory}/bin event --serve --port ${port}`,
             Restart: 'on-failure',
             RestartSec: EVENT_SERVICE.restartSeconds,
@@ -2009,6 +2030,14 @@ class UnderpostEvent {
 
       Underpost.event.assertDispatchReady();
 
+      const env = processDeployEnvResolve();
+      const token = `${Underpost.host.read(env).UNDERPOST_EVENT_TOKEN || ''}`.trim();
+      if (!token)
+        throw new Error(
+          `[event] UNDERPOST_EVENT_TOKEN is not in ${Underpost.host.sourceLabel(env)}; Alertmanager and this ` +
+            'receiver must read one shared token. Mint one with: node bin monitor --webhook-token',
+        );
+
       const node = Underpost.event.serviceNodePath();
       if (!node.probed) {
         logger.error('No Node binary the dispatcher service can execute', {
@@ -2025,6 +2054,8 @@ class UnderpostEvent {
       const unit = Underpost.event.serviceUnitFactory({
         port,
         execPath: node.path,
+        env,
+        tokenFingerprint: crypto.createHash('sha256').update(token).digest('hex').slice(0, 12),
       });
       const changed = installRootFile({
         target: EVENT_SERVICE.unitPath,
@@ -2099,7 +2130,13 @@ class UnderpostEvent {
         };
         if (req.method !== 'POST' || req.url.split('?')[0] !== UNDERPOST_MONITORING.eventWebhook.path)
           return reply(404, { error: 'not found' });
-        if (req.headers.authorization !== `Bearer ${token}`) return reply(401, { error: 'unauthorized' });
+        if (req.headers.authorization !== `Bearer ${token}`) {
+          logger.warn('Event webhook refused a delivery with a different token; nothing is remediated', {
+            remote: req.socket.remoteAddress,
+            fix: 'node bin event --service && node bin monitor --sync-prom',
+          });
+          return reply(401, { error: 'unauthorized' });
+        }
 
         let body = '';
         req.on('data', (chunk) => {
@@ -2225,7 +2262,8 @@ class UnderpostEvent {
                     .map((recipient) => recipient.email)
                     .join(', ')}`,
             );
-          if (definition.probes.length === 0) console.log(`  ${'no resolvable targets'.yellow}`);
+          if (definition.probes.length === 0 && `${definition.alert.expr}`.includes('probe_success'))
+            console.log(`  ${'no resolvable targets'.yellow}`);
         }
         return;
       }
@@ -2276,6 +2314,7 @@ export {
   eventFirewallCommandsFactory,
   eventServicePortFactory,
   probeDetail,
+  wireguardRepairCommandFactory,
 };
 
 export default UnderpostEvent;
