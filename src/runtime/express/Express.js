@@ -20,13 +20,17 @@ import { createPeerServer } from '../../server/network/peer.js';
 import { createValkeyConnection } from '../../db/valkey/Valkey.js';
 import { applySecurity, authMiddlewareFactory } from '../../server/security/auth.js';
 import { ssrMiddlewareFactory } from '../../client-builder/ssr.js';
-import { buildSwaggerUiOptions } from '../../client-builder/client-build-docs.js';
 
 import { shellExec } from '../../server/runtime/process.js';
 import { Config, devProxyHostFactory, isDevProxyContext, isTlsDevProxy } from '../../server/runtime/conf.js';
 import { developmentOrigins } from '../../server/network/router.js';
 import { metricsPathFactory } from '../../server/ops/monitoring.js';
-import { keepRawBody, publicRouteFallbackFactory, staticFileHeaders } from '../../server/network/middlewares.js';
+import {
+  keepRawBody,
+  publicRouteFallbackFactory,
+  ssrViewHeaderRoutes,
+  staticFileHeaders,
+} from '../../server/network/middlewares.js';
 import { publicRouteRenderersFactory } from '../../server/network/public-route-renderers.js';
 import { apiPathOf } from '../../server/domain/api-contract.js';
 import { consumedApisOf, loadApiExtension } from '../../server/domain/consumed-api.js';
@@ -152,6 +156,12 @@ class ExpressService {
       req.lang = typeof lang === 'string' && lang.toLowerCase().match('es') ? 'es' : 'en';
       return next();
     });
+
+    for (const [route, setHeaders] of ssrViewHeaderRoutes(
+      (client && confSSR[getCapVariableName(client)]?.views) || [],
+      path,
+    ))
+      app.use(route, setHeaders);
 
     // Static file serving
     app.use('/', express.static(directory ? directory : `.${rootHostPath}`, { setHeaders: staticFileHeaders }));
@@ -304,8 +314,7 @@ class ExpressService {
     // Swagger UI setup (after security middleware so responses carry correct CSP headers)
     if (swaggerEnabled) {
       const swaggerDoc = JSON.parse(fs.readFileSync(swaggerJsonPath, 'utf8'));
-      const swaggerUiOptions = await buildSwaggerUiOptions();
-      app.use(swaggerPath, swaggerUi.serve, swaggerUi.setup(swaggerDoc, swaggerUiOptions));
+      app.use(swaggerPath, swaggerUi.serve, swaggerUi.setup(swaggerDoc));
     }
 
     // SSR middleware loading
