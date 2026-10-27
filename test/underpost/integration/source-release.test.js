@@ -204,6 +204,14 @@ describe('the release store and the checkout origin', () => {
       expect(unpushed()).toEqual({ count: 2, branch: 'main', hasUnpushed: true });
     });
 
+    it('counts a branch the origin does not have from where it forks', () => {
+      git(work, 'remote', 'add', 'origin', remote('widget-private').url);
+      commit('first');
+      git(work, 'checkout', '-q', '-b', 'topic');
+      commitLocal('second');
+      expect(unpushed()).toEqual({ count: 1, branch: 'topic', hasUnpushed: true });
+    });
+
     it('fetches an SSH GitHub origin over HTTPS', () => {
       git(work, 'config', `url.file://${base}/remotes/.insteadOf`, 'https://github.com/acme/');
       git(work, 'remote', 'add', 'origin', 'git@github.com:acme/widget-private.git');
@@ -219,6 +227,35 @@ describe('the release store and the checkout origin', () => {
       const { hasUnpushed, error } = unpushed();
       expect(hasUnpushed).toBe(false);
       expect(error).toMatch(/fetch failed/);
+    });
+  });
+
+  describe('the branches of origin', () => {
+    const remoteBranches = () => git(work, 'branch', '-r');
+    const pushTopic = () => git(work, 'push', '-q', remote('widget-private').url, 'HEAD:refs/heads/topic');
+
+    beforeEach(() => {
+      git(work, 'config', `url.file://${base}/remotes/.insteadOf`, 'https://github.com/acme/');
+      git(work, 'remote', 'add', 'origin', 'git@github.com:acme/widget-private.git');
+      commit('first');
+    });
+
+    it('fetches every origin branch and prunes the ones origin dropped', () => {
+      pushTopic();
+      expect(Underpost.repo.fetchOrigin(work)).toEqual({});
+      expect(remoteBranches()).toMatch('origin/topic');
+      git(work, 'push', '-q', remote('widget-private').url, '--delete', 'topic');
+      expect(Underpost.repo.fetchOrigin(work)).toEqual({});
+      expect(remoteBranches()).not.toMatch('origin/topic');
+    });
+
+    it('deletes a branch from an SSH GitHub origin over HTTPS, with its remote-tracking ref', () => {
+      pushTopic();
+      Underpost.repo.fetchOrigin(work);
+      expect(Underpost.repo.deleteRemoteBranch({ path: work, branch: 'topic' })).toBe(true);
+      expect(git(work, 'ls-remote', '--heads', remote('widget-private').url)).not.toMatch('topic');
+      expect(remoteBranches()).not.toMatch('origin/topic');
+      expect(Underpost.repo.deleteRemoteBranch({ path: work, branch: 'topic' })).toBe(false);
     });
   });
 });
