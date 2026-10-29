@@ -194,7 +194,10 @@ const TEST_PROJECTS = [
       'src/server/ops/logger.js',
       'src/server/ops/metrics.js',
       'src/server/runtime/conf.js',
+      'src/server/runtime/retry.js',
+      'src/server/storage/backup.js',
       'src/server/storage/cache.js',
+      'src/server/storage/object-store.js',
     ],
     description: 'Platform logic: configuration, build, release, delivery and operational helpers.',
   },
@@ -351,10 +354,17 @@ const TEST_PROJECTS = [
     groupOrder: 9,
     // Non-recursive: the ordered areas underneath are projects of their own.
     recursive: false,
-    sources: ['src/api/google-auth/*.js', 'src/api/test/*.js', 'src/api/user/*.js', 'src/server/security/auth.js'],
+    sources: [
+      'src/api/google-auth/*.js',
+      'src/api/test/*.js',
+      'src/api/user/*.js',
+      'src/server/release/release-tasks.js',
+      'src/server/security/auth.js',
+      'src/server/storage/mongo-archive.js',
+    ],
     description:
       'Platform APIs served over a real server and a real database — sign-in, refresh sessions and recovery — ' +
-      'and the test runner on real processes.',
+      'durable release tasks, dump archives, and the test runner on real processes.',
   },
   {
     name: 'ecosystem:integration',
@@ -408,12 +418,12 @@ const TEST_PROJECTS = [
       'promote, roll back, prune, restart, concurrent promotion, runtime isolation and one data source ' +
       'for every role — the content ' +
       'artifact materialization and saga import, the Procedural Engine — the two generation modes, jobs, the background worker, ' +
-      'leases, human review and promotion, map populations and their background publication — accounts, launch tickets, gameplay leases and their handover, universe ' +
+      'leases, human review and promotion, map populations, their working graph and background publication — accounts, launch tickets, gameplay leases and their handover, universe ' +
       'profiles across worlds, player state commits, the runtime index sync, the operator view of ' +
       'profiles and sessions, friendships and status notes over the player gRPC service, market profiles, ' +
       'terminals, listings and settlement, the server registry ' +
       'and universes — the product CLI, the audio seed and the map ' +
-      'preview refresh, and the Market, Universe, Player Studio, Item Generation and Map Population editors in a browser. The database suites need a mongod ' +
+      'preview refresh, and the Market, Universe, Instance, Player Studio, Item Generation and Map Population editors in a browser. The database suites need a mongod ' +
       'binary (UNDERPOST_MONGOD_BIN or PATH), the browser suites Playwright and UNDERPOST_BROWSER_BIN, the content suites ' +
       'a built cyberia-content artifact (CYBERIA_CONTENT_ROOT or ./cyberia-content); each skips without its ' +
       'requirement.',
