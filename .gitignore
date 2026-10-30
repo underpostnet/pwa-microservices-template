@@ -9,6 +9,7 @@
 /build
 /coverage
 /.vitest
+/.typedoc.*.json
 /security-reports
 /allure-results
 /.env
@@ -61,4 +62,9 @@ gitleaks-report.json
 # `node bin/cyberia run-workflow stage-cli`. Build output, never committed.
 /underpost-cli.tgz
 /src/runtime/engine-cyberia/underpost-cli.tgz
+
+# graphify: share only the engine report and its stamp.
+/docs/graphify-out/*
+!/docs/graphify-out/GRAPH_REPORT.md
+!/docs/graphify-out/graph.stamp.json
 

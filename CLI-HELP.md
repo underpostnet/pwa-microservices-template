@@ -17,6 +17,7 @@
 | Command | Description |
 | --- | --- |
 | [`new`](#underpost-new) | Initializes a new Underpost project, service, or configuration. |
+| [`site`](#underpost-site) | Provisions sites in the configuration of a deployment: clients, host/path routes, and the existing APIs and components they use. Each operation prints its change plan and applies it as one change set. |
 | [`client`](#underpost-client) | Builds client assets, single replicas, and/or syncs environment ports. |
 | [`start`](#underpost-start) | Initiates application servers, build pipelines, or other defined services based on the deployment ID. |
 | [`clone`](#underpost-clone) | Clones a specified GitHub repository into the current directory. |
@@ -50,7 +51,8 @@
 | [`lxd`](#underpost-lxd) | Manages LXD virtual machines as K3s nodes (control plane or workers). |
 | [`baremetal`](#underpost-baremetal) | Manages baremetal server operations, including installation, database setup, commissioning, and user management. |
 | [`package`](#underpost-package) | Generates the package manifests a deploy id owns, from the engine manifest and the deploy's product catalog, and installs the dependencies that catalog pins. |
-| [`socketsecurity`](#underpost-socketsecurity) | Security audit through Socket.dev: dependency security (advisories, supply chain alerts, reachability, security patches in .socket/manifest.json) and source code risk (alerts on this project's own code). |
+| [`socketsecurity`](#underpost-socketsecurity) | Security audit through the Socket.dev free plan: dependency security (advisories, supply chain alerts, free security patches in .socket/manifest.json) and source code risk (alerts on this project's own code). |
+| [`graphify`](#underpost-graphify) | Builds the code graph of this checkout with the pinned Graphify release, code only. It commits GRAPH_REPORT.md and its stamp in docs/graphify-out. |
 | [`release`](#underpost-release) | Release orchestrator for building new versions and deploying releases of the Underpost CLI. |
 | [`source-release`](#underpost-source-release) | Source channels, the Release Job and the release store. |
 
@@ -60,7 +62,7 @@
 
 Initializes a new Underpost project, service, or configuration.
 
-**Usage:** `underpost new [options] [app-name]`
+**Usage:** `underpost new [options] [command] [app-name]`
 
 ### Arguments
 
@@ -79,11 +81,219 @@ Initializes a new Underpost project, service, or configuration.
 | `--build` | Build the deployment to pwa-microservices-template (requires --deploy-id) |
 | `--clean-template` | Clean the build directory (pwa-microservices-template) |
 | `--sync-conf` | Sync configuration to private repositories (requires --deploy-id) |
-| `--sync-start` | Sync start scripts in deploy ID package.json with root package.json (use 'dd' as --deploy-id to sync all dd.routes) |
 | `--purge` | Remove deploy ID conf and all related repositories (requires --deploy-id) |
 | `--dev` | Sets the development cli context |
 | `--default-conf` | Create default deploy ID conf env files |
 | `--conf-workflow-id <workflow-id>` | Set custom configuration workflow ID for conf generation |
+| `-h, --help` | display help for command |
+
+### Commands
+
+| Command | Description |
+| --- | --- |
+| `api [options] <api-id>` | Generates a new API from a template API, and registers it in a deployment when one is named. |
+| `ws [options] <ws-id>` | Generates a new WebSocket server from a template server, and binds it to routes when a deployment is named. |
+
+---
+
+## underpost new api
+
+Generates a new API from a template API, and registers it in a deployment when one is named.
+
+**Usage:** `underpost new api [options] <api-id>`
+
+### Arguments
+
+| Argument | Description |
+| --- | --- |
+| `api-id` | Id of the new API: src/api/<api-id> and src/client/services/<api-id>. |
+
+### Options
+
+| Option | Description |
+| --- | --- |
+| `--from <api-id>` | Template API the sources are generated from (default: default). |
+| `--deploy-id <deploy-id>` | Registers the API in this deployment, as `underpost site add-api` does. |
+| `--client <client-id>` | With --deploy-id: adds the API to the services of this client. |
+| `--host <host>` | With --deploy-id: registers the API only on the routes of this hostname. |
+| `--dry-run` | With --deploy-id: prints the registration plan without writing it. |
+| `-h, --help` | display help for command |
+
+---
+
+## underpost new ws
+
+Generates a new WebSocket server from a template server, and binds it to routes when a deployment is named.
+
+**Usage:** `underpost new ws [options] <ws-id>`
+
+### Arguments
+
+| Argument | Description |
+| --- | --- |
+| `ws-id` | Id of the new WebSocket server: src/ws/<ws-id>. |
+
+### Options
+
+| Option | Description |
+| --- | --- |
+| `--from <ws-id>` | Template WebSocket server the sources are generated from (default: default). |
+| `--deploy-id <deploy-id>` | Binds the server to routes of this deployment. |
+| `--host <host>` | With --deploy-id: hostname of the routes. |
+| `--paths <paths>` | With --deploy-id: comma-separated route paths (default: /). |
+| `--dry-run` | With --deploy-id: prints the binding plan without writing it. |
+| `-h, --help` | display help for command |
+
+---
+
+## underpost site
+
+Provisions sites in the configuration of a deployment: clients, host/path routes, and the existing APIs and components they use. Each operation prints its change plan and applies it as one change set.
+
+**Usage:** `underpost site [options] [command]`
+
+### Options
+
+| Option | Description |
+| --- | --- |
+| `-h, --help` | display help for command |
+
+### Commands
+
+| Command | Description |
+| --- | --- |
+| `create [options] <host>` | Creates a site: a cloned client, its primary route and its redirect route. |
+| `clone-client [options] <from-client-id> <to-client-id>` | Clones a client under a new id: its conf.client.json and conf.ssr.json entries, components, services, SSR components, index module and public assets, and a route next to each route that serves the source client. |
+| `clone-route [options] <from-route> <to-route>` | Clones a route and its development variants; the database name of a client route reads DB_NAME_<CLIENT>. |
+| `add-api [options] <api-id>` | Registers an existing API on every route that serves APIs (a non-empty apis list), in the development variants and replicas of the deployment. |
+| `add-component [options] <component-id>` | Registers a client component in the component lists of the deployment and its replicas. |
+| `help [command]` | display help for command |
+
+---
+
+## underpost site create
+
+Creates a site: a cloned client, its primary route and its redirect route.
+
+**Usage:** `underpost site create [options] <host>`
+
+### Arguments
+
+| Argument | Description |
+| --- | --- |
+| `host` | Site hostname. The site serves www.<host> and redirects <host> to it. |
+
+### Options
+
+| Option | Description |
+| --- | --- |
+| `--client <client-id>` | Id of the new client. |
+| `--deploy-id <deploy-id>` | Deployment the site is created in. |
+| `--path <path>` | Route path of both hostnames. (default: "/") |
+| `--from <client-id>` | Source client the new client is cloned from. (default: "default") |
+| `--from-deploy-id <deploy-id>` | Deployment of the source client (default: the default template). |
+| `--replace` | Replaces different entries at the two site routes. |
+| `--dry-run` | Prints the change plan without writing it. |
+| `-h, --help` | display help for command |
+
+---
+
+## underpost site clone-client
+
+Clones a client under a new id: its conf.client.json and conf.ssr.json entries, components, services, SSR components, index module and public assets, and a route next to each route that serves the source client.
+
+**Usage:** `underpost site clone-client [options] <from-client-id> <to-client-id>`
+
+### Arguments
+
+| Argument | Description |
+| --- | --- |
+| `from-client-id` | Source client. |
+| `to-client-id` | New client. |
+
+### Options
+
+| Option | Description |
+| --- | --- |
+| `--deploy-id <deploy-id>` | Deployment the clone is created in. |
+| `--from-deploy-id <deploy-id>` | Deployment of the source client (default: --deploy-id). |
+| `--replace` | Replaces different entries at the clone routes. |
+| `--dry-run` | Prints the change plan without writing it. |
+| `-h, --help` | display help for command |
+
+---
+
+## underpost site clone-route
+
+Clones a route and its development variants; the database name of a client route reads DB_NAME_<CLIENT>.
+
+**Usage:** `underpost site clone-route [options] <from-route> <to-route>`
+
+### Arguments
+
+| Argument | Description |
+| --- | --- |
+| `from-route` | Source route, <host>[/path]. |
+| `to-route` | Target route, <host>[/path]. |
+
+### Options
+
+| Option | Description |
+| --- | --- |
+| `--deploy-id <deploy-id>` | Deployment the route is created in. |
+| `--from-deploy-id <deploy-id>` | Deployment of the source route (default: --deploy-id). |
+| `--client <client-id>` | Client the route serves instead of the source client. |
+| `--replace` | Replaces a different entry at the target route. |
+| `--dry-run` | Prints the change plan without writing it. |
+| `-h, --help` | display help for command |
+
+---
+
+## underpost site add-api
+
+Registers an existing API on every route that serves APIs (a non-empty apis list), in the development variants and replicas of the deployment.
+
+**Usage:** `underpost site add-api [options] <api-id>`
+
+### Arguments
+
+| Argument | Description |
+| --- | --- |
+| `api-id` | Existing API (src/api/<api-id>). |
+
+### Options
+
+| Option | Description |
+| --- | --- |
+| `--deploy-id <deploy-id>` | Deployment. |
+| `--client <client-id>` | Adds the API to the services of this client. |
+| `--host <host>` | Registers the API only on the routes of this hostname. |
+| `--dry-run` | Prints the change plan without writing it. |
+| `-h, --help` | display help for command |
+
+---
+
+## underpost site add-component
+
+Registers a client component in the component lists of the deployment and its replicas.
+
+**Usage:** `underpost site add-component [options] <component-id>`
+
+### Arguments
+
+| Argument | Description |
+| --- | --- |
+| `component-id` | Component module name (src/client/components/<submodule>/<component-id>.js). |
+
+### Options
+
+| Option | Description |
+| --- | --- |
+| `--deploy-id <deploy-id>` | Deployment. |
+| `--all-deploys` | Every deployment in the route table, instead of --deploy-id. |
+| `--client <client-id>` | Limits the clients to one. |
+| `--submodule <submodule-id>` | Limits the component lists to one submodule. |
+| `--dry-run` | Prints the change plan without writing it. |
 | `-h, --help` | display help for command |
 
 ---
@@ -118,6 +328,9 @@ Builds client assets, single replicas, and/or syncs environment ports.
 | `--ssr` | Rebuild only SSR views defined in conf.ssr.json, leaving client assets untouched |
 | `--env <env>` | Target environment for the build (e.g. "production", "development"). Falls back to --dev, then NODE_ENV. |
 | `--dev` | Sets the development cli context (shorthand for --env development). |
+| `--docs <mode>` | TypeDoc site policy: auto (build in a full production build, keep the published site otherwise), skip, build, or watch (development preview of one client). (default: "auto") |
+| `--docs-only` | Builds the documentation of the selected clients without their client assets. |
+| `--build-id <build-id>` | Names the build in its logs and TypeDoc events (push-bundle sets it). |
 | `-h, --help` | display help for command |
 
 ---
@@ -145,7 +358,8 @@ Initiates application servers, build pipelines, or other defined services based 
 | `--skip-pull-repo-base` | Skips cloning the engine source repository, uses current workspace code directly. |
 | `--skip-pull-private-repo` | Skips cloning the private configuration repository, uses the engine-private already in the workspace. |
 | `--skip-full-build` | Skips the full client bundle build during deployment. |
-| `--pull-bundle` | Downloads the pre-built client bundle from Cloudinary via pull-bundle before starting. Use together with --skip-full-build to skip the local build entirely. |
+| `--pull-bundle` | Restores the client bundle the deployment conf names instead of building the client (run pull-bundle). |
+| `--bundle <reference>` | Restores this exact client bundle instead of building the client: <release-id>/<build-id>@sha256:<digest>. |
 | `--private-test-repo` | During --build, clone the private test source repo (engine-test-<id>) instead of the production engine-<id> repo. |
 | `-h, --help` | display help for command |
 
@@ -243,6 +457,7 @@ Manages commits to a GitHub repository, supporting various commit types and opti
 | `--switch-repo <url>` | Switches the git remote (origin) to <url> and force-pulls the target branch, overwriting the current working tree (discards local commits and tracked changes). Accepts a full URL or "owner/repo". |
 | `--target-branch <branch>` | Target branch for --switch-repo (default: remote default branch). |
 | `--delete-remote-branch <branch>` | Deletes <branch> from origin, reaching a GitHub origin with GITHUB_TOKEN, and drops its remote-tracking ref. |
+| `--merge-dependabot` | Fetches origin and merges every origin/dependabot/* branch into master, one at a time. Stashes local changes first and restores them, with the original branch, at the end. A failed merge is aborted; remote branches are never deleted. |
 | `-h, --help` | display help for command |
 
 ---
@@ -393,6 +608,7 @@ Manages Kubernetes clusters, defaulting to Kind cluster initialization.
 | `--mongodb` | Initializes the cluster with a MongoDB statefulset. |
 | `--service-host <host>` | Set custom host/IP for exposed MongoDB and Valkey clients. |
 | `--postgresql` | Initializes the cluster with a PostgreSQL statefulset. |
+| `--kafka` | Initializes the cluster with the basic Kafka KRaft statefulset in the kafka namespace. |
 | `--mongodb4` | Initializes the cluster with a MongoDB 4.4 service. |
 | `--mongo-express` | Deploys the mongo-express web client for inspecting the MongoDB statefulset databases and collections. Reuses the mongodb-secret credentials, and drops them when the deployed mongod runs without --auth. Combine with --node-port to expose it on the node network. |
 | `--valkey` | Initializes the cluster with a Valkey service. |
@@ -629,6 +845,7 @@ Manages Docker images, including building, saving, and loading into Kubernetes c
 | `--pull-dockerhub <dockerhub-image>` | Sets a custom Docker Hub image for base image pulls. |
 | `--release` | Container release: print the digest of the image for --revision, pulled from CI (latest) or, with --path, built here. |
 | `--revision <sha>` | With --release: the exact source revision. |
+| `--digest <reference>` | Pulls an image reference on the node runtime and prints it by digest. |
 | `--import-tar <tar-path>` | Load a pre-built image tar archive (e.g. ./image-v1.0.0.tar) into the enabled target(s) without building. Combine with --kind, --kubeadm, --k3s and/or --docker-compose; the archive is loaded into each enabled one. |
 | `-h, --help` | display help for command |
 
@@ -1082,7 +1299,7 @@ Runs specified scripts using various runners.
 
 | Argument | Description |
 | --- | --- |
-| `runner-id` | The runner ID to run. Options: status,expose,dev-cluster,metadata,ipfs-expose,svc-ls,svc-rm,node-move,cluster-build,template-deploy,template-deploy-local,docker-image,clean,pull,ssh-deploy,ide,crypto-policy,set-inotify,sync,net-tables,stop,tz,get-traffic,restore-mongo,ingress-refresh,instance-promote,instance,deploy-key,instance-build-manifest,ls-deployments,host-update,install-crio,dd-container,ip-info,db-client,git-conf,promote,cluster,gateway-status,deploy,disk-clean,disk-devices,disk-usage,dev,service,etc-hosts,log,ps,pid-info,background,ports,deploy-test,tf-vae-test,spark-template,kill,generate-pass,gpu-env,tf-gpu-test,deploy-job,push-bundle,pull-bundle,kubeadm-wireguard,build-cluster-deployment-manifests,monitor-ui,shared-dir,shared-dir-add-user. |
+| `runner-id` | The runner ID to run. Options: status,expose,dev-cluster,metadata,ipfs-expose,svc-ls,svc-rm,node-move,cluster-build,template-deploy,template-deploy-local,docker-image,clean,pull,ssh-deploy,ide,crypto-policy,set-inotify,sync,net-tables,stop,tz,get-traffic,restore-mongo,ingress-refresh,instance-promote,instance,deploy-key,instance-build-manifest,ls-deployments,host-update,install-crio,dd-container,ip-info,db-client,git-conf,promote,cluster,gateway-status,deploy,disk-clean,disk-devices,disk-usage,dev,service,etc-hosts,log,ps,pid-info,background,ports,deploy-test,tf-vae-test,spark-template,kill,generate-pass,gpu-env,tf-gpu-test,playwright,deploy-job,push-bundle,pull-bundle,verify-bundle,prune-bundles,kubeadm-wireguard,build-cluster-deployment-manifests,monitor-ui,shared-dir,shared-dir-add-user. |
 | `path` | The input value, identifier, or path for the operation. |
 
 ### Options
@@ -1148,6 +1365,8 @@ Runs specified scripts using various runners.
 | `--user <user>` | Sets user context for the runner execution. |
 | `--hosts <hosts>` | Comma-separated list of hosts for the runner execution. |
 | `--split <mb>` | Zip part size in MB for push-bundle, or "none" to upload a single zip. Defaults to 8. |
+| `--release <release-id>` | For push-bundle: the deploy release the client bundle belongs to. |
+| `--bundle <reference>` | For pull-bundle and verify-bundle: the exact client bundle, <release-id>/<build-id>@sha256:<digest>. For prune-bundles: the comma-separated bundles to keep. |
 | `--instance-id <instance-id>` | Sets instance id context for the runner execution. |
 | `--pid <process-id>` | Sets process id context for the runner execution. |
 | `--timeout-response <duration>` | Sets HTTPProxy per-route response timeout (e.g., "1s", "300ms", "infinity"). |
@@ -1328,8 +1547,14 @@ Manages baremetal server operations, including installation, database setup, com
 | `--control-server-install` | Installs the baremetal control server. |
 | `--control-server-uninstall` | Uninstalls the baremetal control server. |
 | `--control-server-restart` | Restarts the baremetal control server. |
-| `--control-server-db-install` | Installs up the database for the baremetal control server. |
-| `--control-server-db-uninstall` | Uninstalls the database for the baremetal control server. |
+| `--control-server-stop` | Stops the baremetal control server. |
+| `--control-server-db-install` | Installs PostgreSQL 17 on this host for the control server, and reconciles the MAAS role and database from DB_PG_MAAS_*. Idempotent. |
+| `--control-server-db-status` | Reports the control server database: host installation, MAAS role and owner, databases. |
+| `--control-server-db-tables [database]` | Lists the tables of a control server database (default: DB_PG_MAAS_NAME). |
+| `--control-server-db-drop <database>` | Drops the MAAS database and role. The value must repeat the DB_PG_MAAS_NAME database name. |
+| `--control-server-db-uninstall` | Stops the control server database and removes its packages. The data directory stays. |
+| `--control-server-db-purge-data` | With --control-server-db-uninstall: also deletes the data directory, when it holds no database but the MAAS one. |
+| `--dry-run` | With a --control-server-db-* option: reports each change without making it. |
 | `--create-machine` | Creates a new baremetal machine entry in the database. |
 | `--mac <mac>` | Specifies the MAC address for baremetal machine operations. Use "random" for random MAC, "hardware" to use device's actual MAC (no spoofing), or specify a MAC address. |
 | `--ipxe` | Chainloads iPXE to normalize identity before commissioning. |
@@ -1410,7 +1635,7 @@ Generates the package manifests a deploy id owns, from the engine manifest and t
 
 ## underpost socketsecurity
 
-Security audit through Socket.dev: dependency security (advisories, supply chain alerts, reachability, security patches in .socket/manifest.json) and source code risk (alerts on this project's own code).
+Security audit through the Socket.dev free plan: dependency security (advisories, supply chain alerts, free security patches in .socket/manifest.json) and source code risk (alerts on this project's own code).
 
 **Usage:** `underpost socketsecurity [options]`
 
@@ -1419,17 +1644,31 @@ Security audit through Socket.dev: dependency security (advisories, supply chain
 | Option | Description |
 | --- | --- |
 | `--audit` | Audits the checkout (default). Dependency security: segregation, npm audit, the Socket patch scan and, with SOCKET_CLI_API_TOKEN set, the Socket full scan of the dependency manifests. Source code risk: with SOCKET_CLI_API_TOKEN set, the alerts Socket's registry analysis raises on this project's own published package, as refactoring tasks. Writes the JSON and Markdown reports. |
-| `--reach` | Runs the full application reachability analysis over the local working tree with the Socket scan (tier 1 evidence); no pushed commit is needed. |
-| `--ci` | Audits, then exits non-zero when the Socket scan violates the organization policy or a finding remains at --fail-on. |
+| `--ci` | Audits, then exits non-zero when the Socket scan fails or violates the organization policy, or a finding the policy does not ignore or monitor remains at --fail-on. |
 | `--fail-on <severity>` | Severity --ci fails at. One of: critical, high, moderate, low, info. Defaults to high. |
-| `--fix` | Runs the remediation pass before the audit: npm audit fix, every available Socket patch, socket fix without major upgrades, socket patch apply. |
-| `--major` | With --fix: lets socket fix apply major upgrades. |
-| `--patch-scan` | Lists the Socket patches available for the installed packages. |
+| `--fix` | Runs the remediation pass before the audit: npm audit fix, every available free Socket patch, socket patch apply. |
+| `--patch-scan` | Lists the free Socket patches available for the installed packages. |
 | `--patch-get <identifier>` | Downloads one patch (UUID, CVE, GHSA or PURL) into .socket/manifest.json and applies it. |
 | `--patch-apply` | Applies the patch manifest; the prepare hook. A host without the Socket CLI skips it. |
 | `--patch-setup` | Installs the prepare hook in package.json. |
 | `--out <dir>` | Report directory (default: security-reports). |
 | `--dry-run` | Previews --patch-setup; verifies --patch-apply without writing. |
+| `-h, --help` | display help for command |
+
+---
+
+## underpost graphify
+
+Builds the code graph of this checkout with the pinned Graphify release, code only. It commits GRAPH_REPORT.md and its stamp in docs/graphify-out.
+
+**Usage:** `underpost graphify [options]`
+
+### Options
+
+| Option | Description |
+| --- | --- |
+| `--check` | Checks the code graph against the work tree, without Graphify and without a write; fails when it is stale. |
+| `--revision <revision>` | Checks the code graph that this commit holds, instead of the work tree. |
 | `-h, --help` | display help for command |
 
 ---
@@ -1460,6 +1699,8 @@ Release orchestrator for building new versions and deploying releases of the Und
 | `--mongo-user <user>` | For --build: override DB_USER in the template .env.example for the smoke test. |
 | `--mongo-password <password>` | For --build: override DB_PASSWORD in the template .env.example for the smoke test. |
 | `--valkey-host <host>` | For --build: override VALKEY_HOST in the template .env.example for the smoke test (e.g., "192.168.1.82"). |
+| `--no-graphify` | For --build: builds no code graph (see `underpost graphify`). |
+| `--cli-docs` | Regenerates CLI-HELP.md, the served CLI reference and the README command index from the command definitions. |
 | `-h, --help` | display help for command |
 
 ---
