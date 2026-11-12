@@ -5,13 +5,15 @@
  */
 
 import fs from 'fs-extra';
-import { awaitDeployMonitor } from './conf.js';
+import nodePath from 'node:path';
+import { awaitDeployMonitor, deployBasePortFactory } from './conf.js';
 import { actionInitLog, loggerFactory } from '../ops/logger.js';
 import { shellArgumentFactory, shellCd, shellExec, shellExecAsync } from './process.js';
 import {
   RUNTIME_STATUS,
   setRuntimeStatus,
   startInternalStatusServer,
+  stopInternalStatusServer,
   deployStatusPort,
   setStartContainerStatus,
 } from './runtime-status.js';
@@ -179,10 +181,14 @@ class UnderpostStartUp {
       // the deployment-resolved port so it always matches the monitor's target.
       startInternalStatusServer(deployStatusPort(deployId, env));
       try {
-        setRuntimeStatus(deployId, env, RUNTIME_STATUS.BUILD);
-        if (options.build === true) await Underpost.start.build(deployId, env, options);
+        if (options.build === true) {
+          setRuntimeStatus(deployId, env, RUNTIME_STATUS.BUILD);
+          await Underpost.start.build(deployId, env, options);
+        }
         setRuntimeStatus(deployId, env, RUNTIME_STATUS.INIT);
         if (options.run === true) await Underpost.start.run(deployId, env, options);
+        // A call without --run frees the port and exits, so the pod command goes to its next step.
+        else await stopInternalStatusServer();
       } catch (error) {
         logger.error('Deployment build/init failed', { deployId, env, message: error?.message });
         setRuntimeStatus(deployId, env, RUNTIME_STATUS.ERROR);
@@ -204,14 +210,15 @@ class UnderpostStartUp {
      * @memberof UnderpostStartUp
      */
     pullRepoBase(deployId = 'dd-default', options = {}) {
-      const buildBasePath = `/home/dd`;
+      const buildBasePath = nodePath.dirname(ENGINE_PATH);
       // `--private-test-repo` clones the isolated test source repo published by
       // `node bin/build <deployId> --update-private`, instead of the production one.
       const repoName = Underpost.repo.engineRepoFactory(deployId, { test: options?.privateTestRepo === true });
-      shellExec(`cd ${buildBasePath} && underpost clone ${process.env.GITHUB_USERNAME}/${repoName}`);
-      shellExec(`mkdir -p ${ENGINE_PATH}`);
-      shellExec(`cd ${buildBasePath} && sudo cp -a ./${repoName}/. ./engine`);
-      shellExec(`cd ${buildBasePath} && sudo rm -rf ./${repoName}`);
+      const clonePath = nodePath.join(buildBasePath, repoName);
+      shellExec(`underpost clone ${process.env.GITHUB_USERNAME}/${repoName}`, { cwd: buildBasePath });
+      fs.ensureDirSync(ENGINE_PATH);
+      fs.copySync(clonePath, ENGINE_PATH, { overwrite: true, preserveTimestamps: true });
+      fs.removeSync(clonePath);
       shellCd(ENGINE_PATH);
       // Dependencies before the link: stage 2 boots through this checkout's `bin/index.js`
       // and cannot start without its node_modules.
@@ -313,6 +320,14 @@ class UnderpostStartUp {
      * @memberof UnderpostStartUp
      */
     async run(deployId = 'dd-default', env = 'development', options = {}) {
+      // A manifest names the internal port it was built with; after a change of the route order an app binds it.
+      const internalPort = parseInt(process.env.UNDERPOST_INTERNAL_PORT);
+      const basePort = deployBasePortFactory(deployId, env);
+      if (!Number.isNaN(internalPort) && internalPort !== basePort)
+        throw new Error(
+          `The manifest of ${deployId} names the internal port ${internalPort}, but its ${env} environment sets ` +
+            `PORT ${basePort}: redeploy ${deployId} with node bin deploy --build-manifest`,
+        );
       const runCmd = env === 'production' ? 'run prod:container' : 'run dev:container';
       const makeDeployCallback = (cmd) => (code, out, msg) => {
         if (code !== 0) {
@@ -348,7 +363,6 @@ class UnderpostStartUp {
           for (const domain of [Underpost.secret, Underpost.host, Underpost.app])
             domain.clean({
               env,
-              namespace: 'default',
               args: {},
               dryRun: false,
               force: domain === Underpost.host,
